@@ -13,10 +13,18 @@ jobs:
     name: Lint & Security
     runs-on: ubuntu-latest
     steps:
+      - name: Generate Token
+        id: generate-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
       - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
-          token: ${{ secrets.SUBMODULE_TOKEN || github.token }}
+          token: ${{ steps.generate-token.outputs.token }}
       
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -51,10 +59,18 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
+      - name: Generate Token
+        id: generate-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
       - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
-          token: ${{ secrets.SUBMODULE_TOKEN || github.token }}
+          token: ${{ steps.generate-token.outputs.token }}
       
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2

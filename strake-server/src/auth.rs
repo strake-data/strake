@@ -1,13 +1,13 @@
-use tonic::{Status, metadata::MetadataMap};
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
+use async_trait::async_trait;
+use deadpool_postgres::Pool;
+use futures::future::BoxFuture;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use futures::future::BoxFuture;
-use tower::{Layer, Service, ServiceExt};
-use async_trait::async_trait;
-use tonic::codegen::http::{Request, Response};
 use tonic::body::Body;
-use deadpool_postgres::Pool;
-use argon2::{Argon2, PasswordHash, PasswordVerifier};
+use tonic::codegen::http::{Request, Response};
+use tonic::{metadata::MetadataMap, Status};
+use tower::{Layer, Service, ServiceExt};
 
 use moka::future::Cache;
 use std::time::Duration;
@@ -38,10 +38,12 @@ impl ApiKeyAuthenticator {
 impl Authenticator for ApiKeyAuthenticator {
     async fn authenticate(&self, metadata: &MetadataMap) -> Result<AuthenticatedUser, Status> {
         let token = match metadata.get("authorization") {
-            Some(t) => t.to_str().map_err(|_| Status::unauthenticated("Invalid auth header"))?,
+            Some(t) => t
+                .to_str()
+                .map_err(|_| Status::unauthenticated("Invalid auth header"))?,
             None => return Err(Status::unauthenticated("Missing authorization header")),
         };
-        
+
         let token_str = if token.starts_with("Bearer ") {
             &token[7..]
         } else {
@@ -55,9 +57,9 @@ impl Authenticator for ApiKeyAuthenticator {
 
         // We need at least the prefix length (e.g., 8)
         if token_str.len() < 8 {
-             return Err(Status::unauthenticated("Invalid API Key format"));
+            return Err(Status::unauthenticated("Invalid API Key format"));
         }
-        
+
         let prefix = &token_str[..8];
 
         let client = self.pool.get().await.map_err(|e| {
@@ -81,14 +83,21 @@ impl Authenticator for ApiKeyAuthenticator {
             let user_id: String = row.get("user_id");
             let permissions: Vec<String> = row.get("permissions");
 
-            let parsed_hash = PasswordHash::new(&hash_str).map_err(|_| {
-                Status::internal("Invalid key hash in database")
-            })?;
+            let parsed_hash = PasswordHash::new(&hash_str)
+                .map_err(|_| Status::internal("Invalid key hash in database"))?;
 
-            if argon2.verify_password(token_str.as_bytes(), &parsed_hash).is_ok() {
+            if argon2
+                .verify_password(token_str.as_bytes(), &parsed_hash)
+                .is_ok()
+            {
                 // Update last_used_at (fire and forget or best effort)
                 let key_id: uuid::Uuid = row.get("id");
-                let _ = client.execute("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1", &[&key_id]).await;
+                let _ = client
+                    .execute(
+                        "UPDATE api_keys SET last_used_at = NOW() WHERE id = $1",
+                        &[&key_id],
+                    )
+                    .await;
 
                 let user = AuthenticatedUser {
                     id: user_id,
@@ -156,7 +165,7 @@ where
 
         Box::pin(async move {
             let metadata = MetadataMap::from_headers(req.headers().clone());
-            
+
             match authenticator.authenticate(&metadata).await {
                 Ok(user) => {
                     req.extensions_mut().insert(user);
@@ -175,8 +184,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tower::{ServiceBuilder, ServiceExt};
     use tonic::server::NamedService;
+    use tower::{ServiceBuilder, ServiceExt};
 
     #[derive(Clone)]
     struct MockAuthenticator;
@@ -201,12 +210,10 @@ mod tests {
         }
 
         fn call(&mut self, _req: Request<Body>) -> Self::Future {
-            Box::pin(async move {
-                Ok(Response::new(Body::empty()))
-            })
+            Box::pin(async move { Ok(Response::new(Body::empty())) })
         }
     }
-    
+
     impl NamedService for MockService {
         const NAME: &'static str = "mock";
     }
@@ -221,13 +228,13 @@ mod tests {
         // This reproduces the structure where AuthLayer holds a Buffer.
         // Use a small buffer size to ensure we exercise the logic.
         let buffered = ServiceBuilder::new()
-             .layer(layer)
-             .buffer(1)
-             .service(service);
-        
+            .layer(layer)
+            .buffer(1)
+            .service(service);
+
         // Use the buffered service (which involves AuthLayer cloning the inner service)
         let mut client = buffered;
-        
+
         // This should not panic
         let req = Request::new(Body::empty());
         let _ = client.ready().await.unwrap().call(req).await.unwrap();

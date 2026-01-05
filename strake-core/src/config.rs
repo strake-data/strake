@@ -4,8 +4,6 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
 
-
-
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub sources: Vec<SourceConfig>,
@@ -69,9 +67,15 @@ fn default_limit() -> Option<usize> {
     Some(1000)
 }
 
-fn default_max_attempts() -> u32 { 5 }
-fn default_base_delay_ms() -> u64 { 1000 }
-fn default_max_delay_ms() -> u64 { 60000 }
+fn default_max_attempts() -> u32 {
+    5
+}
+fn default_base_delay_ms() -> u64 {
+    1000
+}
+fn default_max_delay_ms() -> u64 {
+    60000
+}
 
 #[derive(Debug, Deserialize, Default)]
 pub struct AppConfig {
@@ -226,11 +230,11 @@ fn default_cache_ttl_seconds() -> u64 {
 
 impl AppConfig {
     pub fn from_file(path: &str) -> Result<Self> {
-        let content = fs::read_to_string(path)
-            .context(format!("Failed to read config file at {}", path))?;
+        let content =
+            fs::read_to_string(path).context(format!("Failed to read config file at {}", path))?;
         let mut config: AppConfig = serde_yaml::from_str(&content)
             .context(format!("Failed to parse app config file at {}", path))?;
-            
+
         // Environment variable overrides for server settings
         if let Ok(addr) = std::env::var("STRAKE_SERVER__LISTEN_ADDR") {
             config.server.listen_addr = addr;
@@ -241,17 +245,16 @@ impl AppConfig {
         if let Ok(url) = std::env::var("STRAKE_API_URL") {
             config.server.api_url = url;
         }
-        
+
         Ok(config)
     }
 }
 
 impl Config {
     pub fn from_file(path: &str) -> Result<Self> {
-        let content = fs::read_to_string(path)
-            .context(format!("Failed to read config file at {}", path))?;
-        let config = serde_yaml::from_str(&content)
-            .context("Failed to parse config file")?;
+        let content =
+            fs::read_to_string(path).context(format!("Failed to read config file at {}", path))?;
+        let config = serde_yaml::from_str(&content).context("Failed to parse config file")?;
         Ok(config)
     }
 }

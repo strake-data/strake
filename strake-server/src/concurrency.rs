@@ -1,21 +1,21 @@
-use std::sync::Arc;
-use std::time::Duration;
-use std::task::{Context, Poll};
+use async_trait::async_trait;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::Duration;
 use tonic::Status;
 use tower::{Layer, Service, ServiceExt};
-use async_trait::async_trait;
 
 /// Abstraction for connection slot management
 #[async_trait]
 pub trait ConnectionSlotManager: Send + Sync {
     /// Acquire a slot, waiting up to `timeout` if none available
     async fn acquire(&self, timeout: Duration) -> Result<ConnectionSlot, SlotError>;
-    
+
     /// Current active connections
     fn active_count(&self) -> usize;
-    
+
     /// Maximum allowed connections
     fn max_connections(&self) -> usize;
 }
@@ -62,7 +62,7 @@ impl ConcurrencyLayer {
             queue_timeout: DEFAULT_QUEUE_TIMEOUT,
         }
     }
-    
+
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.queue_timeout = timeout;
         self
@@ -114,8 +114,12 @@ where
                     Ok(slot) => Some(slot),
                     Err(e) => {
                         let status = match e {
-                            SlotError::QueueTimeout => Status::unavailable("Service Unavailable: Connection queue full"),
-                            SlotError::LicenseExceeded => Status::resource_exhausted("License connection limit exceeded"),
+                            SlotError::QueueTimeout => {
+                                Status::unavailable("Service Unavailable: Connection queue full")
+                            }
+                            SlotError::LicenseExceeded => {
+                                Status::resource_exhausted("License connection limit exceeded")
+                            }
                             SlotError::Internal(msg) => Status::internal(msg),
                         };
                         return Err(Box::new(status) as Box<dyn std::error::Error + Send + Sync>);
@@ -124,7 +128,7 @@ where
             } else {
                 None
             };
-            
+
             // Map inner error to our Box error.
             // slot is dropped here at the end of the scope, releasing the license.
             // Use oneshot to ensure readiness (resolves 'send_item called without first calling poll_reserve')

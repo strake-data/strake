@@ -1,17 +1,17 @@
-use std::collections::HashMap;
-use std::sync::Arc;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use datafusion::datasource::TableProvider;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
-use datafusion::datasource::TableProvider;
 use datafusion_table_providers::postgres::PostgresTableFactory;
 use datafusion_table_providers::sql::db_connection_pool::postgrespool::PostgresConnectionPool;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio_postgres::Config;
 
-use crate::config::{TableConfig, RetrySettings};
-use super::common::{SqlMetadataFetcher, FetchedMetadata, SqlProviderFactory, next_retry_delay};
+use super::common::{next_retry_delay, FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory};
 use super::wrappers::register_tables;
+use crate::config::{RetrySettings, TableConfig};
 
 pub struct PostgresMetadataFetcher {
     pub connection_string: String,
@@ -20,14 +20,19 @@ pub struct PostgresMetadataFetcher {
 #[async_trait]
 impl SqlMetadataFetcher for PostgresMetadataFetcher {
     async fn fetch_metadata(&self, schema: &str, table: &str) -> Result<FetchedMetadata> {
-         fetch_postgres_comments(&self.connection_string, schema, table).await
+        fetch_postgres_comments(&self.connection_string, schema, table).await
     }
 }
 
 #[async_trait]
 impl SqlProviderFactory for PostgresTableFactory {
-    async fn create_table_provider(&self, table_ref: TableReference) -> Result<Arc<dyn TableProvider>> {
-        self.table_provider(table_ref).await.map_err(|e| anyhow::anyhow!(e))
+    async fn create_table_provider(
+        &self,
+        table_ref: TableReference,
+    ) -> Result<Arc<dyn TableProvider>> {
+        self.table_provider(table_ref)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
     }
 }
 
@@ -43,16 +48,38 @@ pub async fn register_postgres(
 ) -> Result<()> {
     let mut attempt = 0;
     loop {
-        match try_register_postgres(context, catalog_name, name, connection_string, pool_size, cb.clone(), explicit_tables).await {
+        match try_register_postgres(
+            context,
+            catalog_name,
+            name,
+            connection_string,
+            pool_size,
+            cb.clone(),
+            explicit_tables,
+        )
+        .await
+        {
             Ok(_) => return Ok(()),
             Err(e) => {
                 attempt += 1;
                 if attempt >= retry.max_attempts {
-                    tracing::error!("Failed to register Postgres source '{}' after {} attempts: {}", name, retry.max_attempts, e);
+                    tracing::error!(
+                        "Failed to register Postgres source '{}' after {} attempts: {}",
+                        name,
+                        retry.max_attempts,
+                        e
+                    );
                     return Err(e);
                 }
                 let delay = next_retry_delay(attempt, retry.base_delay_ms, retry.max_delay_ms);
-                tracing::warn!("Connection failed for source '{}'. Retrying in {:?} (Attempt {}/{}): {}", name, delay, attempt, retry.max_attempts, e);
+                tracing::warn!(
+                    "Connection failed for source '{}'. Retrying in {:?} (Attempt {}/{}): {}",
+                    name,
+                    delay,
+                    attempt,
+                    retry.max_attempts,
+                    e
+                );
                 tokio::time::sleep(delay).await;
             }
         }
@@ -70,30 +97,46 @@ async fn try_register_postgres(
 ) -> Result<()> {
     let pool = create_pg_pool(connection_string, pool_size).await?;
     let factory = PostgresTableFactory::new(pool);
-    
+
     let tables_to_register: Vec<(String, String)> = if let Some(config_tables) = explicit_tables {
-        config_tables.iter().map(|t| {
-             let target_schema = t.schema.clone().unwrap_or_else(|| name.to_string());
-             (t.name.clone(), target_schema)
-        }).collect()
+        config_tables
+            .iter()
+            .map(|t| {
+                let target_schema = t.schema.clone().unwrap_or_else(|| name.to_string());
+                (t.name.clone(), target_schema)
+            })
+            .collect()
     } else {
-        introspect_pg_tables(connection_string).await?
+        introspect_pg_tables(connection_string)
+            .await?
             .into_iter()
             .map(|t| (t, name.to_string()))
             .collect()
     };
-    
+
     let fetcher: Option<Box<dyn SqlMetadataFetcher>> = Some(Box::new(PostgresMetadataFetcher {
-         connection_string: connection_string.to_string(),
+        connection_string: connection_string.to_string(),
     }));
 
-    register_tables(context, catalog_name, name, fetcher, &factory, cb, tables_to_register).await?;
+    register_tables(
+        context,
+        catalog_name,
+        name,
+        fetcher,
+        &factory,
+        cb,
+        tables_to_register,
+    )
+    .await?;
     Ok(())
 }
 
-async fn create_pg_pool(connection_string: &str, pool_size: usize) -> Result<Arc<PostgresConnectionPool>> {
-    use tokio_postgres::config::Host;
+async fn create_pg_pool(
+    connection_string: &str,
+    pool_size: usize,
+) -> Result<Arc<PostgresConnectionPool>> {
     use secrecy::SecretString;
+    use tokio_postgres::config::Host;
 
     let mut params = HashMap::new();
     let config = connection_string
@@ -113,7 +156,10 @@ async fn create_pg_pool(connection_string: &str, pool_size: usize) -> Result<Arc
 
     if let Some(password) = config.get_password() {
         let pass_str = std::str::from_utf8(password).context("Invalid password encoding")?;
-        params.insert("password".to_string(), SecretString::from(pass_str.to_string()));
+        params.insert(
+            "password".to_string(),
+            SecretString::from(pass_str.to_string()),
+        );
         params.insert("pass".to_string(), SecretString::from(pass_str.to_string()));
     }
 
@@ -125,8 +171,14 @@ async fn create_pg_pool(connection_string: &str, pool_size: usize) -> Result<Arc
         params.insert("port".to_string(), SecretString::from(port.to_string()));
     }
 
-    params.insert("max_pool_size".to_string(), SecretString::from(pool_size.to_string()));
-    params.insert("sslmode".to_string(), SecretString::from("disable".to_string()));
+    params.insert(
+        "max_pool_size".to_string(),
+        SecretString::from(pool_size.to_string()),
+    );
+    params.insert(
+        "sslmode".to_string(),
+        SecretString::from("disable".to_string()),
+    );
 
     let pool = PostgresConnectionPool::new(params)
         .await
@@ -157,7 +209,11 @@ pub async fn introspect_pg_tables(connection_string: &str) -> Result<Vec<String>
     Ok(rows.iter().map(|row| row.get(0)).collect())
 }
 
-pub async fn fetch_postgres_comments(connection_string: &str, schema: &str, table: &str) -> Result<FetchedMetadata> {
+pub async fn fetch_postgres_comments(
+    connection_string: &str,
+    schema: &str,
+    table: &str,
+) -> Result<FetchedMetadata> {
     let (client, connection) = tokio_postgres::connect(connection_string, tokio_postgres::NoTls)
         .await
         .context("Failed to connect to Postgres for metadata")?;
@@ -169,8 +225,9 @@ pub async fn fetch_postgres_comments(connection_string: &str, schema: &str, tabl
     });
 
     // Query for both table (objsubid=0) and column (objsubid>0) descriptions
-    let rows = client.query(
-        "
+    let rows = client
+        .query(
+            "
         SELECT
             d.objsubid,
             d.description,
@@ -181,15 +238,17 @@ pub async fn fetch_postgres_comments(connection_string: &str, schema: &str, tabl
         LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = d.objsubid
         WHERE c.relname = $2 AND n.nspname = $1
         ",
-        &[&schema, &table],
-    ).await.context("Failed to query postgres metadata")?;
+            &[&schema, &table],
+        )
+        .await
+        .context("Failed to query postgres metadata")?;
 
     let mut metadata = FetchedMetadata::default();
 
     for row in rows {
         let objsubid: i32 = row.get(0);
         let desc: String = row.get(1);
-        
+
         if objsubid == 0 {
             // Table description
             metadata.table_description = Some(desc);

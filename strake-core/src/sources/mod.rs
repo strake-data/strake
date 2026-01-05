@@ -1,14 +1,13 @@
+use crate::config::SourceConfig;
+use anyhow::Result;
 use async_trait::async_trait;
 use datafusion::prelude::SessionContext;
-use anyhow::Result;
-use crate::config::SourceConfig;
 
-pub mod sql;
-pub mod flight;
 pub mod file;
-pub mod rest;
+pub mod flight;
 pub mod grpc;
-
+pub mod rest;
+pub mod sql;
 
 #[async_trait]
 pub trait SourceProvider: Send + Sync {

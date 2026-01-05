@@ -1,14 +1,14 @@
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use std::time::{Duration, Instant};
 use std::collections::VecDeque;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 
+use arrow::datatypes::SchemaRef;
 use datafusion::datasource::TableProvider;
-use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::error::Result as DataFusionResult;
 use datafusion::logical_expr::Expr;
-use arrow::datatypes::SchemaRef;
+use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
+use datafusion::physical_plan::ExecutionPlan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CircuitState {
@@ -64,7 +64,9 @@ impl AdaptiveCircuitBreaker {
 
     pub async fn state(&self) -> CircuitState {
         let mut state_guard = self.state.write().await;
-        if state_guard.0 == CircuitState::Open && state_guard.1.elapsed() > self.config.reset_timeout {
+        if state_guard.0 == CircuitState::Open
+            && state_guard.1.elapsed() > self.config.reset_timeout
+        {
             state_guard.0 = CircuitState::HalfOpen;
             let mut success_count = self.success_count.lock().await;
             *success_count = 0;
@@ -169,7 +171,7 @@ impl TableProvider for CircuitBreakerTableProvider {
         let current_state = self.cb.state().await;
         if current_state == CircuitState::Open {
             return Err(datafusion::error::DataFusionError::External(
-                anyhow::anyhow!("Circuit breaker is OPEN for this source").into()
+                anyhow::anyhow!("Circuit breaker is OPEN for this source").into(),
             ));
         }
 

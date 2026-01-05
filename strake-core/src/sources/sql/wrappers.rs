@@ -1,15 +1,15 @@
-use std::sync::Arc;
-use std::any::Any;
 use anyhow::Result;
 use async_trait::async_trait;
-use datafusion::prelude::SessionContext;
-use datafusion::datasource::{TableProvider, TableType};
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::datasource::{TableProvider, TableType};
 use datafusion::logical_expr::Expr;
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
+use std::any::Any;
+use std::sync::Arc;
 
-use super::common::{SqlMetadataFetcher, SqlProviderFactory, FetchedMetadata};
+use super::common::{FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory};
 
 pub async fn register_tables(
     context: &SessionContext,
@@ -20,19 +20,18 @@ pub async fn register_tables(
     cb: Arc<crate::query::circuit_breaker::AdaptiveCircuitBreaker>,
     tables: Vec<(String, String)>, // (table_name, target_schema_name)
 ) -> Result<()> {
-    use datafusion::catalog::MemorySchemaProvider;
     use crate::query::circuit_breaker::CircuitBreakerTableProvider;
-    
+    use datafusion::catalog::MemorySchemaProvider;
+
     // Ensure catalog exists
-    let catalog = context.catalog(target_catalog).ok_or(anyhow::anyhow!("Catalog {} not found", target_catalog))?;
-    
+    let catalog = context
+        .catalog(target_catalog)
+        .ok_or(anyhow::anyhow!("Catalog {} not found", target_catalog))?;
+
     for (table_name, target_schema) in tables {
         // Ensure the schema exists
         if catalog.schema(&target_schema).is_none() {
-            catalog.register_schema(
-                &target_schema,
-                Arc::new(MemorySchemaProvider::new()),
-            )?;
+            catalog.register_schema(&target_schema, Arc::new(MemorySchemaProvider::new()))?;
         }
 
         let table_ref = TableReference::bare(table_name.as_str());
@@ -40,11 +39,16 @@ pub async fn register_tables(
             Ok(provider) => {
                 let metadata = if let Some(fetcher) = &metadata_fetcher {
                     match fetcher.fetch_metadata("public", &table_name).await {
-                         Ok(c) => c,
-                         Err(e) => {
-                             tracing::warn!("Failed to fetch metadata for {}.{}: {}", target_schema, table_name, e);
-                             FetchedMetadata::default()
-                         }
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to fetch metadata for {}.{}: {}",
+                                target_schema,
+                                table_name,
+                                e
+                            );
+                            FetchedMetadata::default()
+                        }
                     }
                 } else {
                     FetchedMetadata::default()
@@ -66,29 +70,44 @@ pub async fn register_tables(
                         new_fields.push(field.clone());
                     }
                 }
-                
+
                 let mut schema_metadata = existing_schema.metadata().clone();
                 if let Some(table_desc) = metadata.table_description {
-                    schema_metadata.insert("ARROW:FLIGHT:SQL:REMARKS".to_string(), table_desc.clone());
+                    schema_metadata
+                        .insert("ARROW:FLIGHT:SQL:REMARKS".to_string(), table_desc.clone());
                     schema_metadata.insert("description".to_string(), table_desc.clone());
                     schema_metadata.insert("comment".to_string(), table_desc.clone());
                     schema_metadata.insert("remarks".to_string(), table_desc.clone());
                 }
-                
+
                 let new_schema = Arc::new(Schema::new_with_metadata(new_fields, schema_metadata));
-                
+
                 let enriched_provider = Arc::new(MetadataEnrichedTableProvider {
                     inner: provider,
                     schema: new_schema,
                 });
 
-                let cb_provider = Arc::new(CircuitBreakerTableProvider::new(enriched_provider, cb.clone()));
-                
-                let qualified = TableReference::full(target_catalog, &*target_schema, table_name.as_str());
+                let cb_provider = Arc::new(CircuitBreakerTableProvider::new(
+                    enriched_provider,
+                    cb.clone(),
+                ));
+
+                let qualified =
+                    TableReference::full(target_catalog, &*target_schema, table_name.as_str());
                 if let Err(e) = context.register_table(qualified, cb_provider) {
-                     tracing::warn!("Failed to register table {}.{}: {}", target_schema, table_name, e);
+                    tracing::warn!(
+                        "Failed to register table {}.{}: {}",
+                        target_schema,
+                        table_name,
+                        e
+                    );
                 } else {
-                     tracing::info!("Registered {}.{}.{}", target_catalog, target_schema, table_name);
+                    tracing::info!(
+                        "Registered {}.{}.{}",
+                        target_catalog,
+                        target_schema,
+                        table_name
+                    );
                 }
             }
             Err(e) => {
@@ -130,7 +149,8 @@ impl TableProvider for MetadataEnrichedTableProvider {
     fn supports_filters_pushdown(
         &self,
         filters: &[&Expr],
-    ) -> datafusion::common::Result<Vec<datafusion::logical_expr::TableProviderFilterPushDown>> {
+    ) -> datafusion::common::Result<Vec<datafusion::logical_expr::TableProviderFilterPushDown>>
+    {
         self.inner.supports_filters_pushdown(filters)
     }
 }

@@ -1,11 +1,11 @@
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use strake_core::federation::FederationEngine;
-use strake_core::config::{Config, RetrySettings};
-use std::time::Instant;
 use rand::Rng;
-use tracing::{info, warn, error};
 use serde::Serialize;
+use std::time::Instant;
+use strake_core::config::{Config, RetrySettings};
+use strake_core::federation::FederationEngine;
+use tracing::{error, info, warn};
 
 #[derive(Parser)]
 #[command(name = "strake-bench")]
@@ -22,7 +22,7 @@ enum Commands {
         /// TPC-H query numbers to run (e.g. 1 3 6 10)
         #[arg(short, long, num_args = 1..)]
         queries: Vec<u32>,
-        
+
         /// Number of iterations per query
         #[arg(short, long, default_value_t = 3)]
         iterations: u32,
@@ -30,7 +30,7 @@ enum Commands {
         /// Probability of injecting chaotic failures (0.0 to 1.0)
         #[arg(short, long, default_value_t = 0.0)]
         chaos: f64,
-        
+
         /// Output format (json or text)
         #[arg(short, long, default_value = "text")]
         format: String,
@@ -52,7 +52,12 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { queries, iterations, chaos, format } => {
+        Commands::Run {
+            queries,
+            iterations,
+            chaos,
+            format,
+        } => {
             run_benchmarks(queries, iterations, chaos, format).await?;
         }
     }
@@ -60,16 +65,25 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_benchmarks(queries: Vec<u32>, iterations: u32, chaos_prob: f64, format: String) -> Result<()> {
+async fn run_benchmarks(
+    queries: Vec<u32>,
+    iterations: u32,
+    chaos_prob: f64,
+    format: String,
+) -> Result<()> {
     info!("Initializing Strake Federation Engine for Benchmarking...");
-    
-    let config_path = std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config/tpch.yaml".to_string());
-    let config = Config::from_file(&config_path).unwrap_or(Config { sources: vec![], cache: Default::default() });
-    
+
+    let config_path =
+        std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config/tpch.yaml".to_string());
+    let config = Config::from_file(&config_path).unwrap_or(Config {
+        sources: vec![],
+        cache: Default::default(),
+    });
+
     // Increase limits for benchmarking to allow full TPC-H scans at SF=0.5 (3M rows)
     let _limits = strake_core::config::QueryLimits::default();
     let _retry = RetrySettings::default();
-    
+
     let engine = FederationEngine::new(
         config,
         "strake".to_string(),
@@ -79,31 +93,41 @@ async fn run_benchmarks(queries: Vec<u32>, iterations: u32, chaos_prob: f64, for
         100, // global_budget
         vec![],
         vec![],
-    ).await.context("Failed to initialize FederationEngine")?;
-    
+    )
+    .await
+    .context("Failed to initialize FederationEngine")?;
+
     let mut results = vec![];
 
     for &q in &queries {
         info!("Running TPC-H Q{} for {} iterations...", q, iterations);
-        
+
         let sql = get_tpch_query(q)?;
-        
+
         for i in 1..=iterations {
             let start = Instant::now();
-            
+
             // Chaos Injection
             let mut result_status = "SUCCESS".to_string();
             let mut error_msg = None;
 
             if rand::rng().random_bool(chaos_prob) {
-                warn!("Injecting chaos: Simulated Source Timeout for Q{} Iteration {}", q, i);
+                warn!(
+                    "Injecting chaos: Simulated Source Timeout for Q{} Iteration {}",
+                    q, i
+                );
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 result_status = "ERROR".to_string();
                 error_msg = Some("Simulated Source Timeout (Chaos Injection)".to_string());
             } else {
                 match engine.execute_query(&sql, None).await {
                     Ok(_) => {
-                        info!("Q{} Iteration {}: SUCCESS in {}ms", q, i, start.elapsed().as_millis());
+                        info!(
+                            "Q{} Iteration {}: SUCCESS in {}ms",
+                            q,
+                            i,
+                            start.elapsed().as_millis()
+                        );
                     }
                     Err(e) => {
                         error!("Q{} Iteration {}: FAILED - {:?}", q, i, e); // Use {:?} for more detail
@@ -112,7 +136,7 @@ async fn run_benchmarks(queries: Vec<u32>, iterations: u32, chaos_prob: f64, for
                     }
                 }
             }
-            
+
             results.push(BenchResult {
                 query: q,
                 iteration: i,
@@ -145,9 +169,15 @@ fn get_tpch_query(q: u32) -> Result<String> {
 fn print_text_report(results: &[BenchResult]) {
     println!("\nSTRAKE PERFORMANCE REPORT");
     println!("=========================");
-    println!("{:<8} {:<10} {:<15} {:<10}", "Query", "Iteration", "Duration (ms)", "Status");
+    println!(
+        "{:<8} {:<10} {:<15} {:<10}",
+        "Query", "Iteration", "Duration (ms)", "Status"
+    );
     println!("---------------------------------------------------------");
     for r in results {
-        println!("{:<8} {:<10} {:<15} {:<10}", r.query, r.iteration, r.duration_ms, r.status);
+        println!(
+            "{:<8} {:<10} {:<15} {:<10}",
+            r.query, r.iteration, r.duration_ms, r.status
+        );
     }
 }

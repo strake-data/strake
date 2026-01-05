@@ -1,11 +1,11 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
 use anyhow::Result;
 use async_trait::async_trait;
 use datafusion::datasource::TableProvider;
 use datafusion::sql::TableReference;
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Debug, Default)]
 pub struct FetchedMetadata {
@@ -20,7 +20,10 @@ pub trait SqlMetadataFetcher: Send + Sync {
 
 #[async_trait]
 pub trait SqlProviderFactory: Send + Sync {
-    async fn create_table_provider(&self, table_ref: TableReference) -> Result<Arc<dyn TableProvider>>;
+    async fn create_table_provider(
+        &self,
+        table_ref: TableReference,
+    ) -> Result<Arc<dyn TableProvider>>;
 }
 
 #[derive(Debug, Clone, Deserialize)]

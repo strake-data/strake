@@ -1,11 +1,11 @@
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
-use std::env;
 use owo_colors::OwoColorize;
+use std::env;
 
-mod models;
-mod db;
 mod commands;
+mod db;
+mod models;
 
 #[derive(Parser)]
 #[command(name = "strake-cli")]
@@ -90,9 +90,9 @@ enum Commands {
     },
     /// Test connections to defined sources
     TestConnection {
-         /// Path to the sources.yaml file
-         #[arg(default_value = "sources.yaml")]
-         file: String,
+        /// Path to the sources.yaml file
+        #[arg(default_value = "sources.yaml")]
+        file: String,
     },
     /// Describe the current configuration and metadata
     Describe {
@@ -142,10 +142,11 @@ enum Template {
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     dotenv().ok();
-    
+
     // Default to localhost for testing, but typically comes from env
-    let db_url = env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://postgres:postgres@rust-postgres_devcontainer-db-1:5432/postgres".to_string());
+    let db_url = env::var("DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://postgres:postgres@rust-postgres_devcontainer-db-1:5432/postgres".to_string()
+    });
 
     let cli = Cli::parse();
 
@@ -165,7 +166,12 @@ async fn run_cli(cli: &Cli, db_url: &str) -> Result<(), anyhow::Error> {
         Commands::Validate { file, offline } => {
             commands::validate(file, *offline).await?;
         }
-        Commands::Apply { file, force, dry_run, expected_version } => {
+        Commands::Apply {
+            file,
+            force,
+            dry_run,
+            expected_version,
+        } => {
             let client = db::connect(db_url).await?;
             commands::apply(&client, file, *force, *dry_run, *expected_version).await?;
         }
@@ -173,7 +179,11 @@ async fn run_cli(cli: &Cli, db_url: &str) -> Result<(), anyhow::Error> {
             let client = db::connect(db_url).await?;
             commands::diff(&client, file).await?;
         }
-        Commands::Introspect { source, file, registered } => {
+        Commands::Introspect {
+            source,
+            file,
+            registered,
+        } => {
             let client = if *registered {
                 Some(db::connect(db_url).await?)
             } else {
@@ -181,18 +191,27 @@ async fn run_cli(cli: &Cli, db_url: &str) -> Result<(), anyhow::Error> {
             };
             commands::introspect(source, file, *registered, client.as_ref()).await?;
         }
-        Commands::Search { source, file, domain } => {
+        Commands::Search {
+            source,
+            file,
+            domain,
+        } => {
             commands::search(source, file, domain.as_deref()).await?;
         }
-        Commands::Add { source, table, file, domain } => {
+        Commands::Add {
+            source,
+            table,
+            file,
+            domain,
+        } => {
             commands::add(source, table, domain.as_deref(), file).await?;
         }
         Commands::TestConnection { file } => {
-             commands::test_connection(file).await?;
+            commands::test_connection(file).await?;
         }
         Commands::Describe { file, domain } => {
-             let client = db::connect(db_url).await?;
-             commands::describe(&client, file, domain.as_deref()).await?;
+            let client = db::connect(db_url).await?;
+            commands::describe(&client, file, domain.as_deref()).await?;
         }
         Commands::Domain { subcommand } => {
             let client = db::connect(db_url).await?;

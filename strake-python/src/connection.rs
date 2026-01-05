@@ -1,9 +1,9 @@
+use arrow::datatypes::Schema;
+use arrow::pyarrow::ToPyArrow;
+use arrow::record_batch::RecordBatch;
 use pyo3::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
-use arrow::pyarrow::ToPyArrow;
-use arrow::record_batch::RecordBatch;
-use arrow::datatypes::Schema;
 
 use crate::backend::{Backend, EmbeddedBackend, RemoteBackend};
 use crate::errors::{to_py_err, to_py_value_err};
@@ -20,84 +20,93 @@ impl StrakeConnection {
     #[new]
     #[pyo3(signature = (dsn_or_config, api_key = None))]
     fn new(dsn_or_config: String, api_key: Option<String>) -> PyResult<Self> {
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| to_py_err("Failed to create runtime", e))?;
-        
-        let backend = if dsn_or_config.starts_with("grpc://") || dsn_or_config.starts_with("grpcs://") {
-            // Remote mode
-            let client = runtime.block_on(async {
-                RemoteBackend::new(dsn_or_config, api_key).await
-            }).map_err(|e| to_py_err("Remote connection failed", e))?;
-            
-            Backend::Remote(client)
-        } else {
-            // Embedded mode
-            let engine = runtime.block_on(async {
-                EmbeddedBackend::new(&dsn_or_config).await
-            }).map_err(|e| to_py_value_err("Engine initialization failed", e))?;
-            
-            Backend::Embedded(engine)
-        };
-        
-        Ok(Self {
-            backend,
-            runtime,
-        })
+        let runtime =
+            tokio::runtime::Runtime::new().map_err(|e| to_py_err("Failed to create runtime", e))?;
+
+        let backend =
+            if dsn_or_config.starts_with("grpc://") || dsn_or_config.starts_with("grpcs://") {
+                // Remote mode
+                let client = runtime
+                    .block_on(async { RemoteBackend::new(dsn_or_config, api_key).await })
+                    .map_err(|e| to_py_err("Remote connection failed", e))?;
+
+                Backend::Remote(client)
+            } else {
+                // Embedded mode
+                let engine = runtime
+                    .block_on(async { EmbeddedBackend::new(&dsn_or_config).await })
+                    .map_err(|e| to_py_value_err("Engine initialization failed", e))?;
+
+                Backend::Embedded(engine)
+            };
+
+        Ok(Self { backend, runtime })
     }
-    
+
     /// Execute a SQL query and return results as a PyArrow Table.
     #[pyo3(signature = (query, params = None))]
-    fn sql(&mut self, query: String, params: Option<HashMap<String, PyObject>>, py: Python) -> PyResult<Py<PyAny>> {
-            // TODO: validation of params or interpolation logic
-            if let Some(_p) = params {
-                 return Err(to_py_value_err("Parameter binding", "Not yet implemented in this version"));
-            }
+    fn sql(
+        &mut self,
+        query: String,
+        params: Option<HashMap<String, PyObject>>,
+        py: Python,
+    ) -> PyResult<Py<PyAny>> {
+        // TODO: validation of params or interpolation logic
+        if let Some(_p) = params {
+            return Err(to_py_value_err(
+                "Parameter binding",
+                "Not yet implemented in this version",
+            ));
+        }
 
-        let (schema, batches) = self.runtime.block_on(async {
-            self.backend.execute(&query).await
-        }).map_err(|e| to_py_err("Query execution failed", e))?;
-        
+        let (schema, batches) = self
+            .runtime
+            .block_on(async { self.backend.execute(&query).await })
+            .map_err(|e| to_py_err("Query execution failed", e))?;
+
         // Convert to PyArrow
         let pyarrow = py.import("pyarrow")?;
-        let py_schema = schema.to_pyarrow(py)
+        let py_schema = schema
+            .to_pyarrow(py)
             .map_err(|e| to_py_err("Arrow schema conversion failed", e))?;
-        
+
         let is_empty = batches.is_empty();
-        
+
         let mut py_batches = Vec::with_capacity(batches.len());
         for batch in batches {
-            let py_batch = batch.to_pyarrow(py)
+            let py_batch = batch
+                .to_pyarrow(py)
                 .map_err(|e| to_py_err("Arrow conversion failed", e))?;
             py_batches.push(py_batch);
         }
-        
+
         let table = if is_empty {
-             pyarrow
+            pyarrow
                 .getattr("Table")?
                 .call_method1("from_batches", (py_batches, py_schema))?
         } else {
-             // Use schema from batches to avoid nullability mismatch issues between Plan schema and Batch schema
-             pyarrow
+            // Use schema from batches to avoid nullability mismatch issues between Plan schema and Batch schema
+            pyarrow
                 .getattr("Table")?
                 .call_method1("from_batches", (py_batches,))?
         };
-        
+
         Ok(table.unbind())
     }
 
     /// Returns the logical plan of the query without executing it.
     fn trace(&mut self, query: String, _py: Python) -> PyResult<String> {
-        self.runtime.block_on(async {
-            self.backend.trace(&query).await
-        }).map_err(|e| to_py_err("Trace failed", e))
+        self.runtime
+            .block_on(async { self.backend.trace(&query).await })
+            .map_err(|e| to_py_err("Trace failed", e))
     }
 
     /// Returns a list of available tables and sources.
     #[pyo3(signature = (table_name = None))]
     fn describe(&mut self, table_name: Option<String>, _py: Python) -> PyResult<String> {
-        self.runtime.block_on(async {
-            self.backend.describe(table_name).await
-        }).map_err(|e| to_py_err("Describe failed", e))
+        self.runtime
+            .block_on(async { self.backend.describe(table_name).await })
+            .map_err(|e| to_py_err("Describe failed", e))
     }
 
     // Context Manager Protocol
@@ -105,8 +114,12 @@ impl StrakeConnection {
         slf
     }
 
-    fn __exit__(&mut self, _exc_type: Option<PyObject>, _exc_value: Option<PyObject>, _traceback: Option<PyObject>) {
+    fn __exit__(
+        &mut self,
+        _exc_type: Option<PyObject>,
+        _exc_value: Option<PyObject>,
+        _traceback: Option<PyObject>,
+    ) {
         // No cleanup needed for now, but good practice for future
     }
 }
-

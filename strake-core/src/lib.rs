@@ -1,10 +1,10 @@
-pub mod config;
-pub mod sources;
-pub mod federation;
-pub mod query;
 pub mod auth;
-pub mod telemetry;
-pub mod sql_gen;
-pub mod optimizer;
+pub mod config;
 pub mod error;
+pub mod federation;
 pub mod models;
+pub mod optimizer;
+pub mod query;
+pub mod sources;
+pub mod sql_gen;
+pub mod telemetry;

@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use datafusion::common::{Result, DataFusionError};
+use datafusion::common::config::ConfigOptions;
+use datafusion::common::{DataFusionError, Result};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanVisitor};
-use datafusion::common::config::ConfigOptions;
+use std::sync::Arc;
 
 /// A validator that rejects queries estimated to process too many rows or bytes.
 #[derive(Debug)]
@@ -13,7 +13,10 @@ pub struct CostBasedValidator {
 
 impl CostBasedValidator {
     pub fn new(max_rows: Option<usize>, max_bytes: Option<usize>) -> Self {
-        Self { max_rows, max_bytes }
+        Self {
+            max_rows,
+            max_bytes,
+        }
     }
 }
 
@@ -32,13 +35,13 @@ impl PhysicalOptimizerRule for CostBasedValidator {
         _config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let mut cost_visitor = CostVisitor::default();
-        
+
         // Visit the plan to calculate total cost
         datafusion::physical_plan::accept(plan.as_ref(), &mut cost_visitor)?;
 
         // Validate against thresholds
         if let Some(max_rows) = self.max_rows {
-             if cost_visitor.total_rows > max_rows {
+            if cost_visitor.total_rows > max_rows {
                 return Err(DataFusionError::Plan(format!(
                     "Query rejected: Estimated row count {} exceeds limit of {}",
                     cost_visitor.total_rows, max_rows
@@ -76,7 +79,7 @@ impl ExecutionPlanVisitor for CostVisitor {
         if let Ok(stats) = plan.statistics() {
             // Permissive mode: if stats are missing (None), we treat as 0 for now.
             // Future work: Add strict mode config.
-            
+
             if let Some(rows) = stats.num_rows.get_value() {
                 self.total_rows = self.total_rows.saturating_add(*rows);
             }
@@ -84,10 +87,10 @@ impl ExecutionPlanVisitor for CostVisitor {
                 self.total_bytes = self.total_bytes.saturating_add(*bytes);
             }
         }
-        
+
         // Future Extension Point:
         // if let Some(join) = plan.as_any().downcast_ref::<HashJoinExec>() { ... }
-        
+
         Ok(true)
     }
 }
@@ -95,16 +98,16 @@ impl ExecutionPlanVisitor for CostVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::physical_plan::{DisplayAs, PlanProperties};
-    use datafusion::physical_plan::Statistics;
-    use datafusion::common::stats::Precision;
     use arrow::datatypes::Schema;
+    use datafusion::common::stats::Precision;
+    use datafusion::physical_plan::Statistics;
+    use datafusion::physical_plan::{DisplayAs, PlanProperties};
     use std::any::Any;
-    
+
     // Fix imports based on likely locations in DataFusion v51
     use datafusion::physical_expr::EquivalenceProperties;
+    use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::Partitioning;
-    use datafusion::physical_plan::execution_plan::{EmissionType, Boundedness};
 
     #[derive(Debug)]
     struct MockExec {
@@ -115,34 +118,62 @@ mod tests {
 
     impl MockExec {
         fn new(schema: Arc<Schema>, stats: Statistics) -> Self {
-             let cache = PlanProperties::new(
+            let cache = PlanProperties::new(
                 EquivalenceProperties::new(schema.clone()),
                 Partitioning::UnknownPartitioning(1),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
             );
-            Self { schema, stats, cache }
+            Self {
+                schema,
+                stats,
+                cache,
+            }
         }
     }
 
     impl DisplayAs for MockExec {
-        fn fmt_as(&self, _t: datafusion::physical_plan::DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        fn fmt_as(
+            &self,
+            _t: datafusion::physical_plan::DisplayFormatType,
+            f: &mut std::fmt::Formatter,
+        ) -> std::fmt::Result {
             write!(f, "MockExec")
         }
     }
 
     impl ExecutionPlan for MockExec {
-        fn name(&self) -> &str { "MockExec" }
-        fn as_any(&self) -> &dyn Any { self }
-        fn schema(&self) -> Arc<Schema> { self.schema.clone() }
-        fn properties(&self) -> &PlanProperties { &self.cache }
-        // children returns references in recent DF
-        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> { vec![] }
-        // with_new_children takes Arc<Self>
-        fn with_new_children(self: Arc<Self>, _: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
-            Ok(Arc::new(MockExec::new(self.schema.clone(), self.stats.clone())))
+        fn name(&self) -> &str {
+            "MockExec"
         }
-        fn execute(&self, _: usize, _: Arc<datafusion::execution::TaskContext>) -> Result<datafusion::physical_plan::SendableRecordBatchStream> {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn schema(&self) -> Arc<Schema> {
+            self.schema.clone()
+        }
+        fn properties(&self) -> &PlanProperties {
+            &self.cache
+        }
+        // children returns references in recent DF
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            vec![]
+        }
+        // with_new_children takes Arc<Self>
+        fn with_new_children(
+            self: Arc<Self>,
+            _: Vec<Arc<dyn ExecutionPlan>>,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            Ok(Arc::new(MockExec::new(
+                self.schema.clone(),
+                self.stats.clone(),
+            )))
+        }
+        fn execute(
+            &self,
+            _: usize,
+            _: Arc<datafusion::execution::TaskContext>,
+        ) -> Result<datafusion::physical_plan::SendableRecordBatchStream> {
             unimplemented!()
         }
         fn statistics(&self) -> Result<Statistics> {
@@ -159,14 +190,17 @@ mod tests {
             column_statistics: vec![],
         };
         let plan = Arc::new(MockExec::new(schema, stats));
-        
+
         let validator = CostBasedValidator::new(Some(500_000), None);
         let config = ConfigOptions::default();
-        
+
         let result = validator.optimize(plan, &config);
-        
+
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("exceeds limit of 500000"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds limit of 500000"));
     }
 
     #[test]
@@ -178,12 +212,12 @@ mod tests {
             column_statistics: vec![],
         };
         let plan = Arc::new(MockExec::new(schema, stats));
-        
+
         let validator = CostBasedValidator::new(Some(500_000), None);
         let config = ConfigOptions::default();
-        
+
         let result = validator.optimize(plan, &config);
-        
+
         assert!(result.is_ok());
     }
 }

@@ -9,10 +9,9 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
 use crate::auth::AuthenticatedUser;
-use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::file::properties::WriterProperties;
-
 
 /// Configuration for the query result cache
 #[derive(Debug, Clone)]
@@ -52,7 +51,7 @@ impl CacheKey {
         // Using Display trait provides a stable representation
         // (more stable than Debug which can change across Rust versions)
         let plan_str = format!("{}", plan.display_indent());
-        
+
         let mut hasher = Sha256::new();
         hasher.update(plan_str.as_bytes());
         let plan_hash = format!("{:x}", hasher.finalize());
@@ -102,15 +101,21 @@ pub struct QueryCache {
 impl QueryCache {
     /// Create a new query cache with the given configuration
     pub async fn new(config: CacheConfig) -> Result<Self> {
-        tracing::info!("Initializing QueryCache with config: enabled={}, directory={}, ttl={}", 
-            config.enabled, config.directory.display(), config.ttl_seconds);
-            
+        tracing::info!(
+            "Initializing QueryCache with config: enabled={}, directory={}, ttl={}",
+            config.enabled,
+            config.directory.display(),
+            config.ttl_seconds
+        );
+
         if config.enabled {
             // Ensure cache directory exists (async)
             tokio::fs::create_dir_all(&config.directory)
                 .await
-                .with_context(|| format!("Failed to create cache directory: {:?}", config.directory))?;
-            
+                .with_context(|| {
+                    format!("Failed to create cache directory: {:?}", config.directory)
+                })?;
+
             info!(
                 target: "cache",
                 directory = ?config.directory,
@@ -137,7 +142,7 @@ impl QueryCache {
                     cause = ?cause,
                     "Evicting cache entry"
                 );
-                
+
                 let file_path = entry.file_path.clone();
                 tokio::spawn(async move {
                     if let Err(e) = tokio::fs::remove_file(&file_path).await {
@@ -153,7 +158,10 @@ impl QueryCache {
             .build();
 
         // Hydrate cache from existing files on disk
-        let instance = Self { config: config.clone(), cache };
+        let instance = Self {
+            config: config.clone(),
+            cache,
+        };
         if config.enabled {
             instance.hydrate_from_disk().await?;
         }
@@ -163,15 +171,21 @@ impl QueryCache {
 
     /// Scan cache directory and rebuild metadata from existing files
     async fn hydrate_from_disk(&self) -> Result<()> {
-        let mut read_dir = tokio::fs::read_dir(&self.config.directory).await
-            .with_context(|| format!("Failed to read cache directory: {:?}", self.config.directory))?;
+        let mut read_dir = tokio::fs::read_dir(&self.config.directory)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to read cache directory: {:?}",
+                    self.config.directory
+                )
+            })?;
 
         let mut hydrated_count = 0;
         let mut total_size = 0u64;
 
         while let Some(entry) = read_dir.next_entry().await? {
             let path = entry.path();
-            
+
             // Only process .parquet files (skip .tmp files)
             if path.extension().and_then(|s| s.to_str()) != Some("parquet") {
                 continue;
@@ -180,7 +194,8 @@ impl QueryCache {
             // Get file metadata
             if let Ok(metadata) = entry.metadata().await {
                 let size_bytes = metadata.len();
-                let filename = path.file_name()
+                let filename = path
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("")
                     .to_string();
@@ -249,7 +264,7 @@ impl QueryCache {
         }
 
         let filename = key.to_filename();
-        
+
         // Check moka cache
         let entry = self.cache.get(&filename).await?;
 
@@ -283,9 +298,9 @@ impl QueryCache {
             return Ok(());
         }
 
-         // Calculate size
+        // Calculate size
         let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
-        
+
         // Don't cache empty results
         if row_count == 0 {
             return Ok(());
@@ -330,23 +345,22 @@ impl QueryCache {
     async fn read_parquet(&self, path: &Path) -> Result<Vec<RecordBatch>> {
         // Clone path for move into blocking task
         let path_buf = path.to_path_buf();
-        
+
         // Run blocking Parquet I/O in dedicated thread pool
         tokio::task::spawn_blocking(move || {
             let file = std::fs::File::open(&path_buf)
                 .with_context(|| format!("Failed to open cache file: {:?}", path_buf))?;
-            
+
             let builder = ParquetRecordBatchReaderBuilder::try_new(file)
                 .context("Failed to create Parquet reader builder")?;
-            
-            let reader = builder.build()
-                .context("Failed to build Parquet reader")?;
-            
+
+            let reader = builder.build().context("Failed to build Parquet reader")?;
+
             let mut batches = Vec::new();
             for batch_result in reader {
                 batches.push(batch_result.context("Failed to read record batch")?);
             }
-            
+
             Ok(batches)
         })
         .await
@@ -358,42 +372,42 @@ impl QueryCache {
         if batches.is_empty() {
             return Ok(0);
         }
-        
+
         // Clone data for move into blocking task
         let path_buf = path.to_path_buf();
         let tmp_path = path.with_extension("tmp");
         let batches_owned: Vec<RecordBatch> = batches.to_vec();
-        
+
         // Run blocking Parquet I/O in dedicated thread pool
         let size = tokio::task::spawn_blocking(move || {
             // Write to temporary file first (atomic write pattern)
             let file = std::fs::File::create(&tmp_path)
                 .with_context(|| format!("Failed to create temp cache file: {:?}", tmp_path))?;
-            
+
             let props = WriterProperties::builder().build();
             let mut writer = ArrowWriter::try_new(file, batches_owned[0].schema(), Some(props))
                 .context("Failed to create Parquet writer")?;
-            
+
             for batch in &batches_owned {
                 writer.write(batch).context("Failed to write batch")?;
             }
-            
+
             writer.close().context("Failed to close Parquet writer")?;
-            
+
             // Get file size before rename
-            let metadata = std::fs::metadata(&tmp_path)
-                .context("Failed to get temp file metadata")?;
+            let metadata =
+                std::fs::metadata(&tmp_path).context("Failed to get temp file metadata")?;
             let size = metadata.len();
-            
+
             // Atomic rename (crash-safe)
             std::fs::rename(&tmp_path, &path_buf)
                 .with_context(|| format!("Failed to rename {:?} to {:?}", tmp_path, path_buf))?;
-            
+
             Ok::<u64, anyhow::Error>(size)
         })
         .await
         .context("Parquet write task panicked")??;
-        
+
         Ok(size)
     }
 

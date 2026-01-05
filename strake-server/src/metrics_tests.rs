@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use super::super::{QUERY_COUNT, ACTIVE_QUERIES, metrics_handler};
+    use super::super::{metrics_handler, ACTIVE_QUERIES, QUERY_COUNT};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
 
@@ -19,13 +19,23 @@ mod tests {
 
         let response = metrics_handler().await.into_response();
         assert_eq!(response.status(), StatusCode::OK);
-        
+
         // Extract body
-        let body_bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
         let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
-        
+
         // Check for Prometheus format
-        assert!(body_str.contains("strake_queries_total"), "Body: {}", body_str);
-        assert!(body_str.contains("strake_active_queries"), "Body: {}", body_str);
+        assert!(
+            body_str.contains("strake_queries_total"),
+            "Body: {}",
+            body_str
+        );
+        assert!(
+            body_str.contains("strake_active_queries"),
+            "Body: {}",
+            body_str
+        );
     }
 }

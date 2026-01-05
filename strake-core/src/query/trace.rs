@@ -16,7 +16,7 @@ pub async fn execute_and_report(context: &SessionContext, sql: &str) -> Result<S
     // 1. Get the Execution Plan
     writeln!(report, "\n[1/3] Execution Plan Analysis")?;
     writeln!(report, "{}", "-".repeat(30))?;
-    
+
     let explain_query = format!("EXPLAIN ANALYZE {}", sql);
     let df_explain = context
         .sql(&explain_query)
@@ -51,7 +51,7 @@ pub async fn execute_and_report(context: &SessionContext, sql: &str) -> Result<S
         .collect()
         .await
         .context("Failed to collect display results")?;
-    
+
     let pretty_results = datafusion::arrow::util::pretty::pretty_format_batches(&display_results)
         .context("Failed to format display results")?
         .to_string();

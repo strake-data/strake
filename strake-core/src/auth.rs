@@ -1,5 +1,5 @@
-use serde::{Serialize, Deserialize};
-use datafusion::common::config::{ConfigExtension, ExtensionOptions, ConfigEntry};
+use datafusion::common::config::{ConfigEntry, ConfigExtension, ExtensionOptions};
+use serde::{Deserialize, Serialize};
 use std::any::Any;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]

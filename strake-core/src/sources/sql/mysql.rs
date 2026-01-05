@@ -1,18 +1,18 @@
-use std::collections::HashMap;
-use std::sync::Arc;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use datafusion::datasource::TableProvider;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
-use datafusion::datasource::TableProvider;
 use datafusion_table_providers::mysql::MySQLTableFactory;
 use datafusion_table_providers::sql::db_connection_pool::mysqlpool::MySQLConnectionPool;
 use mysql_async::params;
 use secrecy::SecretString;
+use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::config::{TableConfig, RetrySettings};
-use super::common::{SqlMetadataFetcher, FetchedMetadata, SqlProviderFactory, next_retry_delay};
+use super::common::{next_retry_delay, FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory};
 use super::wrappers::register_tables;
+use crate::config::{RetrySettings, TableConfig};
 
 pub struct MySqlMetadataFetcher {
     pub connection_string: String,
@@ -27,8 +27,13 @@ impl SqlMetadataFetcher for MySqlMetadataFetcher {
 
 #[async_trait]
 impl SqlProviderFactory for MySQLTableFactory {
-    async fn create_table_provider(&self, table_ref: TableReference) -> Result<Arc<dyn TableProvider>> {
-        self.table_provider(table_ref).await.map_err(|e| anyhow::anyhow!(e))
+    async fn create_table_provider(
+        &self,
+        table_ref: TableReference,
+    ) -> Result<Arc<dyn TableProvider>> {
+        self.table_provider(table_ref)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
     }
 }
 
@@ -44,16 +49,38 @@ pub async fn register_mysql(
 ) -> Result<()> {
     let mut attempt = 0;
     loop {
-        match try_register_mysql(context, catalog_name, name, connection_string, pool_size, cb.clone(), explicit_tables).await {
+        match try_register_mysql(
+            context,
+            catalog_name,
+            name,
+            connection_string,
+            pool_size,
+            cb.clone(),
+            explicit_tables,
+        )
+        .await
+        {
             Ok(_) => return Ok(()),
             Err(e) => {
                 attempt += 1;
                 if attempt >= retry.max_attempts {
-                    tracing::error!("Failed to register MySQL source '{}' after {} attempts: {}", name, retry.max_attempts, e);
+                    tracing::error!(
+                        "Failed to register MySQL source '{}' after {} attempts: {}",
+                        name,
+                        retry.max_attempts,
+                        e
+                    );
                     return Err(e);
                 }
                 let delay = next_retry_delay(attempt, retry.base_delay_ms, retry.max_delay_ms);
-                tracing::warn!("Connection failed for source '{}'. Retrying in {:?} (Attempt {}/{}): {}", name, delay, attempt, retry.max_attempts, e);
+                tracing::warn!(
+                    "Connection failed for source '{}'. Retrying in {:?} (Attempt {}/{}): {}",
+                    name,
+                    delay,
+                    attempt,
+                    retry.max_attempts,
+                    e
+                );
                 tokio::time::sleep(delay).await;
             }
         }
@@ -70,8 +97,14 @@ async fn try_register_mysql(
     explicit_tables: &Option<Vec<TableConfig>>,
 ) -> Result<()> {
     let mut params = HashMap::new();
-    params.insert("connection_string".to_string(), SecretString::from(connection_string.to_string()));
-    params.insert("max_pool_size".to_string(), SecretString::from(pool_size.to_string()));
+    params.insert(
+        "connection_string".to_string(),
+        SecretString::from(connection_string.to_string()),
+    );
+    params.insert(
+        "max_pool_size".to_string(),
+        SecretString::from(pool_size.to_string()),
+    );
 
     let pool = MySQLConnectionPool::new(params)
         .await
@@ -80,30 +113,46 @@ async fn try_register_mysql(
     let factory = MySQLTableFactory::new(Arc::new(pool));
 
     let tables_to_register: Vec<(String, String)> = if let Some(config_tables) = explicit_tables {
-        config_tables.iter().map(|t| {
-             let target_schema = t.schema.clone().unwrap_or_else(|| name.to_string());
-             (t.name.clone(), target_schema)
-        }).collect()
+        config_tables
+            .iter()
+            .map(|t| {
+                let target_schema = t.schema.clone().unwrap_or_else(|| name.to_string());
+                (t.name.clone(), target_schema)
+            })
+            .collect()
     } else {
-        introspect_mysql_tables(connection_string).await?
+        introspect_mysql_tables(connection_string)
+            .await?
             .into_iter()
             .map(|t| (t, name.to_string()))
             .collect()
     };
 
     let fetcher: Option<Box<dyn SqlMetadataFetcher>> = Some(Box::new(MySqlMetadataFetcher {
-         connection_string: connection_string.to_string(),
+        connection_string: connection_string.to_string(),
     }));
 
-    register_tables(context, catalog_name, name, fetcher, &factory, cb, tables_to_register).await?;
+    register_tables(
+        context,
+        catalog_name,
+        name,
+        fetcher,
+        &factory,
+        cb,
+        tables_to_register,
+    )
+    .await?;
     Ok(())
 }
 
 pub async fn introspect_mysql_tables(connection_string: &str) -> Result<Vec<String>> {
     use mysql_async::prelude::Queryable;
     let pool = mysql_async::Pool::new(connection_string);
-    let mut conn = pool.get_conn().await.context("Failed to connect to MySQL for introspection")?;
-    
+    let mut conn = pool
+        .get_conn()
+        .await
+        .context("Failed to connect to MySQL for introspection")?;
+
     let rows: Vec<String> = conn
         .query("SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'")
         .await
@@ -115,7 +164,10 @@ pub async fn introspect_mysql_tables(connection_string: &str) -> Result<Vec<Stri
 pub async fn fetch_mysql_comments(connection_string: &str, table: &str) -> Result<FetchedMetadata> {
     use mysql_async::prelude::Queryable;
     let pool = mysql_async::Pool::new(connection_string);
-    let mut conn = pool.get_conn().await.context("Failed to connect to MySQL for metadata")?;
+    let mut conn = pool
+        .get_conn()
+        .await
+        .context("Failed to connect to MySQL for metadata")?;
 
     // Table comment
     let table_desc: Option<String> = conn

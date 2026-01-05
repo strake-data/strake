@@ -1,5 +1,5 @@
-use serde::{Serialize, Deserialize};
 use datafusion::error::DataFusionError;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -37,23 +37,30 @@ impl std::error::Error for StrakeError {}
 impl From<DataFusionError> for StrakeError {
     fn from(err: DataFusionError) -> Self {
         match err {
-            DataFusionError::SchemaError(schema_err, _) => {
-                match *schema_err {
-                    datafusion::common::SchemaError::FieldNotFound { field, valid_fields } => {
-                        let hint = find_closest_match(&field.name, &valid_fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>());
-                        let mut error = StrakeError::new(
-                            format!("Field '{}' not found", field.name),
-                            "SEMANTIC_ERROR".to_string(),
-                        );
-                        if let Some(closest) = hint {
-                            error = error.with_hint(format!("Did you mean '{}'?", closest));
-                        }
-                        error
+            DataFusionError::SchemaError(schema_err, _) => match *schema_err {
+                datafusion::common::SchemaError::FieldNotFound {
+                    field,
+                    valid_fields,
+                } => {
+                    let hint = find_closest_match(
+                        &field.name,
+                        &valid_fields
+                            .iter()
+                            .map(|f| f.name.as_str())
+                            .collect::<Vec<_>>(),
+                    );
+                    let mut error = StrakeError::new(
+                        format!("Field '{}' not found", field.name),
+                        "SEMANTIC_ERROR".to_string(),
+                    );
+                    if let Some(closest) = hint {
+                        error = error.with_hint(format!("Did you mean '{}'?", closest));
                     }
-                    _ => StrakeError::new(schema_err.to_string(), "SCHEMA_ERROR".to_string()),
+                    error
                 }
-            }
-             _ => StrakeError::new(err.to_string(), "INTERNAL_ERROR".to_string()),
+                _ => StrakeError::new(schema_err.to_string(), "SCHEMA_ERROR".to_string()),
+            },
+            _ => StrakeError::new(err.to_string(), "INTERNAL_ERROR".to_string()),
         }
     }
 }
@@ -65,7 +72,8 @@ fn find_closest_match<'a>(target: &str, options: &[&'a str]) -> Option<&'a str> 
 
     for option in options {
         let distance = levenshtein(target, option);
-        if distance < min_distance && distance <= 3 { // Threshold of 3
+        if distance < min_distance && distance <= 3 {
+            // Threshold of 3
             min_distance = distance;
             best_match = Some(option);
         }
@@ -73,7 +81,6 @@ fn find_closest_match<'a>(target: &str, options: &[&'a str]) -> Option<&'a str> 
 
     best_match
 }
-
 
 fn levenshtein(a: &str, b: &str) -> usize {
     let len_a = a.len();
@@ -91,7 +98,11 @@ fn levenshtein(a: &str, b: &str) -> usize {
 
     for i in 1..=len_a {
         for j in 1..=len_b {
-            let cost = if a.chars().nth(i - 1) == b.chars().nth(j - 1) { 0 } else { 1 };
+            let cost = if a.chars().nth(i - 1) == b.chars().nth(j - 1) {
+                0
+            } else {
+                1
+            };
             dp[i][j] = std::cmp::min(
                 std::cmp::min(dp[i - 1][j] + 1, dp[i][j - 1] + 1),
                 dp[i - 1][j - 1] + cost,

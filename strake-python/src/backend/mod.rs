@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use pyo3::prelude::*;
-use arrow::record_batch::RecordBatch;
 use arrow::datatypes::Schema;
+use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
+use pyo3::prelude::*;
+use std::sync::Arc;
 
 pub mod embedded;
 pub mod remote;
@@ -27,7 +27,10 @@ pub enum Backend {
 }
 
 impl Backend {
-    pub async fn execute(&mut self, query: &str) -> anyhow::Result<(Arc<Schema>, Vec<RecordBatch>)> {
+    pub async fn execute(
+        &mut self,
+        query: &str,
+    ) -> anyhow::Result<(Arc<Schema>, Vec<RecordBatch>)> {
         match self {
             Backend::Embedded(b) => b.execute(query).await,
             Backend::Remote(b) => b.execute(query).await,
