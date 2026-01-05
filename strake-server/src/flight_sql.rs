@@ -36,9 +36,6 @@ const SQL_INFO_FLIGHT_SQL_SERVER_READY: u32 = 3;
 const SERVER_VERSION: &str = "1.0.0";
 const DRIVER_VERSION: &str = "17.0.0";
 
-/// Type alias to reduce repetition
-type FlightResult<T> = Result<Response<T>, Status>;
-
 /// FlightSQL service implementation for Strake.
 ///
 /// Implements the Arrow FlightSQL protocol, enabling high-performance
@@ -127,7 +124,7 @@ impl StrakeFlightSqlService {
             .engine
             .execute_query(sql, user)
             .await
-            .map_err(|e| Self::to_status_with_metadata(e))?;
+            .map_err(Self::to_status_with_metadata)?;
 
         let flight_data = arrow_flight::utils::batches_to_flight_data(&schema, batches)
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -639,14 +636,14 @@ impl StrakeFlightSqlService {
                                             table_name,
                                             e
                                         );
-                                        table_schema_builder.append_value(&[]);
+                                        table_schema_builder.append_value([]);
                                     }
                                 }
                             } else {
-                                table_schema_builder.append_value(&[]);
+                                table_schema_builder.append_value([]);
                             }
                         } else {
-                            table_schema_builder.append_value(&[]);
+                            table_schema_builder.append_value([]);
                         }
                     }
                 }

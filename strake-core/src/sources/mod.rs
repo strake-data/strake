@@ -23,17 +23,18 @@ pub trait SourceProvider: Send + Sync {
     ) -> Result<()>;
 }
 
+#[derive(Default)]
 pub struct SourceRegistry {
     providers: std::collections::HashMap<&'static str, Box<dyn SourceProvider>>,
 }
 
 impl SourceRegistry {
     pub fn new() -> Self {
-        Self {
-            providers: std::collections::HashMap::new(),
-        }
+        Self::default()
     }
+}
 
+impl SourceRegistry {
     pub fn register_provider(&mut self, provider: Box<dyn SourceProvider>) {
         self.providers.insert(provider.type_name(), provider);
     }

@@ -59,8 +59,8 @@ pub struct StrakeServer {
     api_router: Router,
 }
 
-impl StrakeServer {
-    pub fn new() -> Self {
+impl Default for StrakeServer {
+    fn default() -> Self {
         Self {
             config_path: "config/sources.yaml".to_string(),
             app_config_path: "config/strake.yaml".to_string(),
@@ -72,6 +72,12 @@ impl StrakeServer {
             extra_optimizer_rules: vec![],
             api_router: Router::new(),
         }
+    }
+}
+
+impl StrakeServer {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn with_config(mut self, config_path: &str) -> Self {
@@ -197,16 +203,16 @@ impl StrakeServer {
         let app_config = AppConfig::from_file(&self.app_config_path)?;
         let config = Config::from_file(&self.config_path)?;
         let engine = Arc::new(
-            FederationEngine::new(
+            FederationEngine::new(strake_core::federation::FederationEngineOptions {
                 config,
-                app_config.server.catalog.clone(),
-                app_config.query_limits.clone(),
-                app_config.resources.clone(),
-                app_config.server.datafusion_config.clone(),
-                app_config.server.global_connection_budget,
-                self.extra_optimizer_rules,
-                self.extra_sources,
-            )
+                catalog_name: app_config.server.catalog.clone(),
+                query_limits: app_config.query_limits.clone(),
+                resource_config: app_config.resources.clone(),
+                datafusion_config: app_config.server.datafusion_config.clone(),
+                global_budget: app_config.server.global_connection_budget,
+                extra_optimizer_rules: self.extra_optimizer_rules,
+                extra_sources: self.extra_sources,
+            })
             .await?,
         );
 

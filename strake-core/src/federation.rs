@@ -38,6 +38,18 @@ pub struct FederationEngine {
     global_cache_config: crate::config::QueryCacheConfig,
 }
 
+pub struct FederationEngineOptions {
+    pub config: Config,
+    pub catalog_name: String,
+    pub query_limits: crate::config::QueryLimits,
+    pub resource_config: ResourceConfig,
+    pub datafusion_config: HashMap<String, String>,
+    pub global_budget: usize,
+    pub extra_optimizer_rules:
+        Vec<Arc<dyn datafusion::optimizer::optimizer::OptimizerRule + Send + Sync>>,
+    pub extra_sources: Vec<Box<dyn SourceProvider>>,
+}
+
 impl FederationEngine {
     pub fn context(&self) -> &SessionContext {
         &self.context
@@ -47,24 +59,13 @@ impl FederationEngine {
         self.active_queries.load(Ordering::Relaxed)
     }
 
-    pub async fn new(
-        config: Config,
-        catalog_name: String,
-        query_limits: crate::config::QueryLimits,
-        resource_config: ResourceConfig,
-        datafusion_config: HashMap<String, String>,
-        global_budget: usize,
-        extra_optimizer_rules: Vec<
-            Arc<dyn datafusion::optimizer::optimizer::OptimizerRule + Send + Sync>,
-        >,
-        extra_sources: Vec<Box<dyn SourceProvider>>,
-    ) -> Result<Self> {
+    pub async fn new(options: FederationEngineOptions) -> Result<Self> {
         let context = Self::build_session_context(
-            &query_limits,
-            &catalog_name,
-            resource_config,
-            datafusion_config,
-            extra_optimizer_rules,
+            &options.query_limits,
+            &options.catalog_name,
+            options.resource_config,
+            options.datafusion_config,
+            options.extra_optimizer_rules,
         )?;
 
         // Register our custom catalog
@@ -73,20 +74,26 @@ impl FederationEngine {
             "public",
             Arc::new(datafusion::catalog::MemorySchemaProvider::new()),
         )?;
-        context.register_catalog(&catalog_name, catalog);
+        context.register_catalog(&options.catalog_name, catalog);
 
         let mut registry = sources::default_registry(crate::config::RetrySettings::default());
-        for provider in extra_sources {
+        for provider in options.extra_sources {
             registry.register_provider(provider);
         }
 
-        Self::register_sources(&context, &catalog_name, &config.sources, &registry).await?;
+        Self::register_sources(
+            &context,
+            &options.catalog_name,
+            &options.config.sources,
+            &registry,
+        )
+        .await?;
 
         let cache_config = InternalCacheConfig {
-            enabled: config.cache.enabled,
-            directory: PathBuf::from(&config.cache.directory),
-            max_size_mb: config.cache.max_size_mb,
-            ttl_seconds: config.cache.ttl_seconds,
+            enabled: options.config.cache.enabled,
+            directory: PathBuf::from(&options.config.cache.directory),
+            max_size_mb: options.config.cache.max_size_mb,
+            ttl_seconds: options.config.cache.ttl_seconds,
         };
         let cache = QueryCache::new(cache_config).await?;
 
@@ -94,15 +101,16 @@ impl FederationEngine {
             context,
             active_queries: Arc::new(AtomicUsize::new(0)),
             _registry: registry,
-            catalog_name,
-            connection_budget: Arc::new(Semaphore::new(global_budget)),
+            catalog_name: options.catalog_name,
+            connection_budget: Arc::new(Semaphore::new(options.global_budget)),
             cache,
-            source_configs: config
+            source_configs: options
+                .config
                 .sources
                 .iter()
                 .map(|s| (s.name.clone(), s.clone()))
                 .collect(),
-            global_cache_config: config.cache.clone(),
+            global_cache_config: options.config.cache.clone(),
         })
     }
 
@@ -220,7 +228,7 @@ impl FederationEngine {
         registry: &SourceRegistry,
     ) -> Result<()> {
         let futures = sources
-            .into_iter()
+            .iter()
             .map(|source| registry.register_source(context, catalog, source));
 
         let results = futures::future::join_all(futures).await;
@@ -423,16 +431,16 @@ mod tests {
             cache: Default::default(),
         };
         let limits = QueryLimits::default();
-        let engine = FederationEngine::new(
+        let engine = FederationEngine::new(FederationEngineOptions {
             config,
-            "strake".to_string(),
-            limits,
-            crate::config::ResourceConfig::default(),
-            std::collections::HashMap::new(),
-            10,
-            vec![],
-            vec![],
-        )
+            catalog_name: "strake".to_string(),
+            query_limits: limits,
+            resource_config: crate::config::ResourceConfig::default(),
+            datafusion_config: std::collections::HashMap::new(),
+            global_budget: 10,
+            extra_optimizer_rules: vec![],
+            extra_sources: vec![],
+        })
         .await?;
 
         assert_eq!(engine.catalog_name, "strake");
@@ -446,16 +454,16 @@ mod tests {
             sources: vec![],
             cache: Default::default(),
         };
-        let engine = FederationEngine::new(
+        let engine = FederationEngine::new(FederationEngineOptions {
             config,
-            "strake".to_string(),
-            QueryLimits::default(),
-            crate::config::ResourceConfig::default(),
-            std::collections::HashMap::new(),
-            10,
-            vec![],
-            vec![],
-        )
+            catalog_name: "strake".to_string(),
+            query_limits: QueryLimits::default(),
+            resource_config: crate::config::ResourceConfig::default(),
+            datafusion_config: std::collections::HashMap::new(),
+            global_budget: 10,
+            extra_optimizer_rules: vec![],
+            extra_sources: vec![],
+        })
         .await?;
 
         let sql = "SELECT 1 as val";
@@ -475,16 +483,16 @@ mod tests {
             sources: vec![],
             cache: Default::default(),
         };
-        let engine = FederationEngine::new(
+        let engine = FederationEngine::new(FederationEngineOptions {
             config,
-            "strake".to_string(),
-            QueryLimits::default(),
-            crate::config::ResourceConfig::default(),
-            std::collections::HashMap::new(),
-            10,
-            vec![],
-            vec![],
-        )
+            catalog_name: "strake".to_string(),
+            query_limits: QueryLimits::default(),
+            resource_config: crate::config::ResourceConfig::default(),
+            datafusion_config: std::collections::HashMap::new(),
+            global_budget: 10,
+            extra_optimizer_rules: vec![],
+            extra_sources: vec![],
+        })
         .await?;
 
         let user = AuthenticatedUser {
@@ -506,16 +514,16 @@ mod tests {
             sources: vec![],
             cache: Default::default(),
         };
-        let engine = FederationEngine::new(
+        let engine = FederationEngine::new(FederationEngineOptions {
             config,
-            "strake".to_string(),
-            QueryLimits::default(),
-            crate::config::ResourceConfig::default(),
-            std::collections::HashMap::new(),
-            10,
-            vec![],
-            vec![],
-        )
+            catalog_name: "strake".to_string(),
+            query_limits: QueryLimits::default(),
+            resource_config: crate::config::ResourceConfig::default(),
+            datafusion_config: std::collections::HashMap::new(),
+            global_budget: 10,
+            extra_optimizer_rules: vec![],
+            extra_sources: vec![],
+        })
         .await?;
 
         let sql = "SELECT 1";

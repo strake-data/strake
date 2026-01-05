@@ -108,14 +108,12 @@ impl SourceProvider for RestSourceProvider {
         let mut client_builder = reqwest::Client::builder();
 
         // Apply global config
-        if let Some(auth) = &rest_config.auth {
-            if let AuthConfig::Bearer { token } = auth {
-                let mut headers = reqwest::header::HeaderMap::new();
-                use reqwest::header::HeaderValue;
-                if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", token)) {
-                    headers.insert("Authorization", val);
-                    client_builder = client_builder.default_headers(headers);
-                }
+        if let Some(AuthConfig::Bearer { token }) = &rest_config.auth {
+            let mut headers = reqwest::header::HeaderMap::new();
+            use reqwest::header::HeaderValue;
+            if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", token)) {
+                headers.insert("Authorization", val);
+                client_builder = client_builder.default_headers(headers);
             }
             // Basic Auth in reqwest ClientBuilder is not direct, it's usually per request.
             // To set defaults we use default_headers.
@@ -570,14 +568,13 @@ async fn fetch_page(
     }
 
     // Serialize to NDJSON (each record on new line) for Arrow JSON Reader
-    let json_vals: Result<Vec<String>, _> =
-        records.iter().map(|r| serde_json::to_string(r)).collect();
+    let json_vals: Result<Vec<String>, _> = records.iter().map(serde_json::to_string).collect();
     let json_str = json_vals?.join("\n");
     let cursor = std::io::Cursor::new(json_str);
-    let mut reader = arrow::json::ReaderBuilder::new(schema.clone()).build(cursor)?;
+    let reader = arrow::json::ReaderBuilder::new(schema.clone()).build(cursor)?;
 
     let mut batches = Vec::new();
-    while let Some(batch) = reader.next() {
+    for batch in reader {
         match batch {
             Ok(b) => batches.push(b),
             Err(e) => {
@@ -598,7 +595,6 @@ async fn fetch_page(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::prelude::SessionContext;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

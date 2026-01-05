@@ -88,12 +88,12 @@ fn levenshtein(a: &str, b: &str) -> usize {
 
     let mut dp = vec![vec![0; len_b + 1]; len_a + 1];
 
-    for i in 0..=len_a {
-        dp[i][0] = i;
+    for (i, row) in dp.iter_mut().enumerate().take(len_a + 1) {
+        row[0] = i;
     }
 
-    for j in 0..=len_b {
-        dp[0][j] = j;
+    for (j, val) in dp[0].iter_mut().enumerate().take(len_b + 1) {
+        *val = j;
     }
 
     for i in 1..=len_a {

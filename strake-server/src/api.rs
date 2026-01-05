@@ -61,14 +61,10 @@ async fn list_tables(
     // Discovering tables requires connecting to the source.
     // FederationEngine might already have some sources registered.
 
-    let mut discovered = Vec::new();
-
-    // logic to get tables from engine...
-    // Simplified:
-    discovered.push(TableDiscovery {
+    let discovered = vec![TableDiscovery {
         name: "users".into(),
         schema: "public".into(),
-    });
+    }];
 
     Json(discovered)
 }
@@ -125,7 +121,7 @@ async fn introspect_tables(
         match engine.context().table_provider(table_ref.clone()).await {
             Ok(provider) => {
                 let schema = provider.schema();
-                for (idx, field) in schema.fields().iter().enumerate() {
+                for field in schema.fields().iter() {
                     columns.push(ColumnConfig {
                         name: field.name().clone(),
                         data_type: field.data_type().to_string(),

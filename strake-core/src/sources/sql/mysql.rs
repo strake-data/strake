@@ -10,9 +10,11 @@ use secrecy::SecretString;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::common::{next_retry_delay, FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory};
+use super::common::{
+    next_retry_delay, FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams,
+};
 use super::wrappers::register_tables;
-use crate::config::{RetrySettings, TableConfig};
+use crate::config::TableConfig;
 
 pub struct MySqlMetadataFetcher {
     pub connection_string: String,
@@ -23,6 +25,10 @@ impl SqlMetadataFetcher for MySqlMetadataFetcher {
     async fn fetch_metadata(&self, _schema: &str, table: &str) -> Result<FetchedMetadata> {
         fetch_mysql_comments(&self.connection_string, table).await
     }
+}
+
+pub struct MySQLTableFactoryWrapper {
+    pub factory: MySQLTableFactory,
 }
 
 #[async_trait]
@@ -37,26 +43,18 @@ impl SqlProviderFactory for MySQLTableFactory {
     }
 }
 
-pub async fn register_mysql(
-    context: &SessionContext,
-    catalog_name: &str,
-    name: &str,
-    connection_string: &str,
-    pool_size: usize,
-    cb: Arc<crate::query::circuit_breaker::AdaptiveCircuitBreaker>,
-    explicit_tables: &Option<Vec<TableConfig>>,
-    retry: RetrySettings,
-) -> Result<()> {
+pub async fn register_mysql(params: SqlSourceParams<'_>) -> Result<()> {
     let mut attempt = 0;
+    let retry = params.retry;
     loop {
         match try_register_mysql(
-            context,
-            catalog_name,
-            name,
-            connection_string,
-            pool_size,
-            cb.clone(),
-            explicit_tables,
+            params.context,
+            params.catalog_name,
+            params.name,
+            params.connection_string,
+            params.pool_size,
+            params.cb.clone(),
+            params.explicit_tables,
         )
         .await
         {
@@ -66,7 +64,7 @@ pub async fn register_mysql(
                 if attempt >= retry.max_attempts {
                     tracing::error!(
                         "Failed to register MySQL source '{}' after {} attempts: {}",
-                        name,
+                        params.name,
                         retry.max_attempts,
                         e
                     );
@@ -75,7 +73,7 @@ pub async fn register_mysql(
                 let delay = next_retry_delay(attempt, retry.base_delay_ms, retry.max_delay_ms);
                 tracing::warn!(
                     "Connection failed for source '{}'. Retrying in {:?} (Attempt {}/{}): {}",
-                    name,
+                    params.name,
                     delay,
                     attempt,
                     retry.max_attempts,
@@ -96,17 +94,16 @@ async fn try_register_mysql(
     cb: Arc<crate::query::circuit_breaker::AdaptiveCircuitBreaker>,
     explicit_tables: &Option<Vec<TableConfig>>,
 ) -> Result<()> {
-    let mut params = HashMap::new();
-    params.insert(
+    let mut pool_params = HashMap::new();
+    pool_params.insert(
         "connection_string".to_string(),
         SecretString::from(connection_string.to_string()),
     );
-    params.insert(
+    pool_params.insert(
         "max_pool_size".to_string(),
         SecretString::from(pool_size.to_string()),
     );
-
-    let pool = MySQLConnectionPool::new(params)
+    let pool = MySQLConnectionPool::new(pool_params)
         .await
         .map_err(|e| anyhow::anyhow!(e))
         .context("Failed to create MySQL connection pool")?;
@@ -115,7 +112,7 @@ async fn try_register_mysql(
     let tables_to_register: Vec<(String, String)> = if let Some(config_tables) = explicit_tables {
         config_tables
             .iter()
-            .map(|t| {
+            .map(|t: &TableConfig| {
                 let target_schema = t.schema.clone().unwrap_or_else(|| name.to_string());
                 (t.name.clone(), target_schema)
             })

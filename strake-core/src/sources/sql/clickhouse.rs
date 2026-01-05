@@ -10,9 +10,11 @@ use datafusion::sql::TableReference;
 use std::sync::Arc;
 use url::Url;
 
-use super::common::{next_retry_delay, FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory};
+use super::common::{
+    next_retry_delay, FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams,
+};
 use super::wrappers::register_tables;
-use crate::config::{RetrySettings, TableConfig};
+use crate::config::TableConfig;
 
 pub struct ClickHouseMetadataFetcher;
 
@@ -97,24 +99,17 @@ impl ClickHouseTableProvider {
     }
 }
 
-pub async fn register_clickhouse(
-    context: &SessionContext,
-    catalog_name: &str,
-    name: &str,
-    connection_string: &str,
-    cb: Arc<crate::query::circuit_breaker::AdaptiveCircuitBreaker>,
-    explicit_tables: &Option<Vec<TableConfig>>,
-    retry: RetrySettings,
-) -> Result<()> {
+pub async fn register_clickhouse(params: SqlSourceParams<'_>) -> Result<()> {
     let mut attempt = 0;
+    let retry = params.retry;
     loop {
         match try_register_clickhouse(
-            context,
-            catalog_name,
-            name,
-            connection_string,
-            cb.clone(),
-            explicit_tables,
+            params.context,
+            params.catalog_name,
+            params.name,
+            params.connection_string,
+            params.cb.clone(),
+            params.explicit_tables,
         )
         .await
         {

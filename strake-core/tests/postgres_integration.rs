@@ -34,16 +34,16 @@ async fn test_postgres_integration() -> Result<()> {
     // Attempt to initialize engine. This might fail if PG is down.
     // We treat connection failure as a "pass" for this integration test locally
     // unless we enforce PG presence.
-    match FederationEngine::new(
+    match FederationEngine::new(strake_core::federation::FederationEngineOptions {
         config,
-        "strake".to_string(),
-        limits,
-        ResourceConfig::default(),
-        std::collections::HashMap::new(),
-        10,
-        vec![],
-        vec![],
-    )
+        catalog_name: "strake".to_string(),
+        query_limits: limits,
+        resource_config: ResourceConfig::default(),
+        datafusion_config: std::collections::HashMap::new(),
+        global_budget: 10,
+        extra_optimizer_rules: vec![],
+        extra_sources: vec![],
+    })
     .await
     {
         Ok(engine) => {

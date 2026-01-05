@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::time::{Duration, Instant};
 use strake_core::{auth::AuthenticatedUser, config::*, federation::FederationEngine};
 
@@ -17,16 +16,16 @@ async fn test_cache_speeds_up_repeated_query() -> anyhow::Result<()> {
         },
     };
 
-    let engine = FederationEngine::new(
+    let engine = FederationEngine::new(strake_core::federation::FederationEngineOptions {
         config,
-        "test".to_string(),
-        strake_core::config::QueryLimits::default(),
-        strake_core::config::ResourceConfig::default(),
-        HashMap::new(),
-        10,
-        vec![],
-        vec![],
-    )
+        catalog_name: "test".to_string(),
+        query_limits: strake_core::config::QueryLimits::default(),
+        resource_config: strake_core::config::ResourceConfig::default(),
+        datafusion_config: HashMap::new(),
+        global_budget: 10,
+        extra_optimizer_rules: vec![],
+        extra_sources: vec![],
+    })
     .await?;
 
     // Create authenticated user for cache key generation
@@ -114,16 +113,16 @@ async fn test_cache_isolation_by_user() -> anyhow::Result<()> {
         },
     };
 
-    let engine = FederationEngine::new(
+    let engine = FederationEngine::new(strake_core::federation::FederationEngineOptions {
         config,
-        "test".to_string(),
-        QueryLimits::default(),
-        ResourceConfig::default(),
-        HashMap::new(),
-        10,
-        vec![],
-        vec![],
-    )
+        catalog_name: "test".to_string(),
+        query_limits: QueryLimits::default(),
+        resource_config: ResourceConfig::default(),
+        datafusion_config: HashMap::new(),
+        global_budget: 10,
+        extra_optimizer_rules: vec![],
+        extra_sources: vec![],
+    })
     .await?;
 
     let user1 = AuthenticatedUser {
@@ -180,16 +179,16 @@ async fn test_cache_disabled() -> anyhow::Result<()> {
         },
     };
 
-    let engine = FederationEngine::new(
+    let engine = FederationEngine::new(strake_core::federation::FederationEngineOptions {
         config,
-        "test".to_string(),
-        QueryLimits::default(),
-        ResourceConfig::default(),
-        HashMap::new(),
-        10,
-        vec![],
-        vec![],
-    )
+        catalog_name: "test".to_string(),
+        query_limits: QueryLimits::default(),
+        resource_config: ResourceConfig::default(),
+        datafusion_config: HashMap::new(),
+        global_budget: 10,
+        extra_optimizer_rules: vec![],
+        extra_sources: vec![],
+    })
     .await?;
 
     let user = AuthenticatedUser {
@@ -201,8 +200,8 @@ async fn test_cache_disabled() -> anyhow::Result<()> {
     let sql = "SELECT * FROM (VALUES (1), (2)) AS t(x)";
 
     // Execute query twice
-    let (_schema, _batches, warnings1) = engine.execute_query(sql, Some(user.clone())).await?;
-    let (_schema, _batches, warnings2) = engine.execute_query(sql, Some(user)).await?;
+    let (_schema, _batches, _warnings1) = engine.execute_query(sql, Some(user.clone())).await?;
+    let (_schema, _batches, _warnings2) = engine.execute_query(sql, Some(user)).await?;
 
     // When cache is disabled, queries still check cache (and miss), but don't write
     // This is acceptable behavior - the important thing is no files are created
@@ -235,16 +234,16 @@ async fn test_cache_performance_improvement() -> anyhow::Result<()> {
         },
     };
 
-    let engine = FederationEngine::new(
+    let engine = FederationEngine::new(strake_core::federation::FederationEngineOptions {
         config,
-        "test".to_string(),
-        QueryLimits::default(),
-        ResourceConfig::default(),
-        HashMap::new(),
-        10,
-        vec![],
-        vec![],
-    )
+        catalog_name: "test".to_string(),
+        query_limits: QueryLimits::default(),
+        resource_config: ResourceConfig::default(),
+        datafusion_config: HashMap::new(),
+        global_budget: 10,
+        extra_optimizer_rules: vec![],
+        extra_sources: vec![],
+    })
     .await?;
 
     let user = AuthenticatedUser {
@@ -333,16 +332,16 @@ async fn test_cache_large_dataset() -> anyhow::Result<()> {
         },
     };
 
-    let engine = FederationEngine::new(
+    let engine = FederationEngine::new(strake_core::federation::FederationEngineOptions {
         config,
-        "test".to_string(),
-        QueryLimits::default(),
-        ResourceConfig::default(),
-        HashMap::new(),
-        10,
-        vec![],
-        vec![],
-    )
+        catalog_name: "test".to_string(),
+        query_limits: QueryLimits::default(),
+        resource_config: ResourceConfig::default(),
+        datafusion_config: HashMap::new(),
+        global_budget: 10,
+        extra_optimizer_rules: vec![],
+        extra_sources: vec![],
+    })
     .await?;
 
     let user = AuthenticatedUser {
@@ -495,16 +494,16 @@ async fn test_metadata_persistence() -> anyhow::Result<()> {
     };
 
     // 1. Start Engine 1
-    let engine1 = FederationEngine::new(
-        config.clone(),
-        "test".to_string(),
-        QueryLimits::default(),
-        ResourceConfig::default(),
-        HashMap::new(),
-        10,
-        vec![],
-        vec![],
-    )
+    let engine1 = FederationEngine::new(strake_core::federation::FederationEngineOptions {
+        config: config.clone(),
+        catalog_name: "test".to_string(),
+        query_limits: QueryLimits::default(),
+        resource_config: ResourceConfig::default(),
+        datafusion_config: HashMap::new(),
+        global_budget: 10,
+        extra_optimizer_rules: vec![],
+        extra_sources: vec![],
+    })
     .await?;
 
     let user = AuthenticatedUser {
@@ -528,16 +527,16 @@ async fn test_metadata_persistence() -> anyhow::Result<()> {
 
     // 2. Start Engine 2 (Simulate Restart) pointing to SAME directory
     // It should scan directory and hydrate cache
-    let engine2 = FederationEngine::new(
+    let engine2 = FederationEngine::new(strake_core::federation::FederationEngineOptions {
         config,
-        "test".to_string(),
-        QueryLimits::default(),
-        ResourceConfig::default(),
-        HashMap::new(),
-        10,
-        vec![],
-        vec![],
-    )
+        catalog_name: "test".to_string(),
+        query_limits: QueryLimits::default(),
+        resource_config: ResourceConfig::default(),
+        datafusion_config: HashMap::new(),
+        global_budget: 10,
+        extra_optimizer_rules: vec![],
+        extra_sources: vec![],
+    })
     .await?;
 
     // Run SAME query on Engine 2
@@ -557,11 +556,10 @@ use arrow::array::Int32Array;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use datafusion::catalog::TableProvider;
 use datafusion::datasource::MemTable;
 use datafusion::prelude::SessionContext;
 use std::sync::Arc;
-use strake_core::sources::{SourceProvider, SourceRegistry};
+use strake_core::sources::SourceProvider;
 
 struct MockProvider;
 
@@ -629,16 +627,16 @@ async fn test_per_datasource_cache_config() -> anyhow::Result<()> {
     };
 
     // Create engine
-    let engine = FederationEngine::new(
+    let engine = FederationEngine::new(strake_core::federation::FederationEngineOptions {
         config,
-        "test".to_string(),
-        QueryLimits::default(),
-        ResourceConfig::default(),
-        HashMap::new(),
-        10,
-        vec![],
-        vec![Box::new(MockProvider)],
-    )
+        catalog_name: "test".to_string(),
+        query_limits: QueryLimits::default(),
+        resource_config: ResourceConfig::default(),
+        datafusion_config: HashMap::new(),
+        global_budget: 10,
+        extra_optimizer_rules: vec![],
+        extra_sources: vec![Box::new(MockProvider)],
+    })
     .await?;
 
     let user = AuthenticatedUser {

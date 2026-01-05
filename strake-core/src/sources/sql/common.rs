@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use datafusion::datasource::TableProvider;
+use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -41,4 +42,26 @@ pub fn next_retry_delay(attempt: u32, base_ms: u64, max_ms: u64) -> Duration {
     let jitter = rand::random::<u64>() % 1000; // 1s jitter max
     let total = delay.saturating_add(jitter);
     Duration::from_millis(total.min(max_ms))
+}
+
+pub struct SqlSourceParams<'a> {
+    pub context: &'a SessionContext,
+    pub catalog_name: &'a str,
+    pub name: &'a str,
+    pub connection_string: &'a str,
+    pub pool_size: usize,
+    pub cb: Arc<crate::query::circuit_breaker::AdaptiveCircuitBreaker>,
+    pub explicit_tables: &'a Option<Vec<crate::config::TableConfig>>,
+    pub retry: crate::config::RetrySettings,
+}
+
+pub struct SqlRegistrationOptions<'a> {
+    pub context: &'a SessionContext,
+    pub catalog_name: &'a str,
+    pub name: &'a str,
+    pub dialect: SqlDialect,
+    pub connection_string: &'a str,
+    pub pool_size: usize,
+    pub explicit_tables: &'a Option<Vec<crate::config::TableConfig>>,
+    pub retry: crate::config::RetrySettings,
 }

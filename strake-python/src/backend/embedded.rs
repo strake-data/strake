@@ -27,16 +27,16 @@ impl EmbeddedBackend {
         let config = Config::from_file(config_path.to_str().unwrap_or("config/sources.yaml"))
             .map_err(|e| anyhow::anyhow!("Failed to load sources.yaml: {}", e))?;
 
-        let engine = FederationEngine::new(
+        let engine = FederationEngine::new(strake_core::federation::FederationEngineOptions {
             config,
-            "strake".to_string(),
-            QueryLimits::default(),
-            ResourceConfig::default(),
-            HashMap::new(),
-            100,
-            vec![],
-            vec![],
-        )
+            catalog_name: "strake".to_string(),
+            query_limits: QueryLimits::default(),
+            resource_config: ResourceConfig::default(),
+            datafusion_config: HashMap::new(),
+            global_budget: 100,
+            extra_optimizer_rules: vec![],
+            extra_sources: vec![],
+        })
         .await?;
 
         Ok(Self {

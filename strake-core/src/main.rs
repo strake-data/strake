@@ -16,16 +16,16 @@ async fn main() -> anyhow::Result<()> {
         cache: Default::default(),
     };
 
-    let engine = FederationEngine::new(
+    let engine = FederationEngine::new(strake_core::federation::FederationEngineOptions {
         config,
-        "strake".to_string(),
-        strake_core::config::QueryLimits::default(),
-        strake_core::config::ResourceConfig::default(),
-        std::collections::HashMap::new(),
-        10,
-        vec![],
-        vec![],
-    )
+        catalog_name: "strake".to_string(),
+        query_limits: strake_core::config::QueryLimits::default(),
+        resource_config: strake_core::config::ResourceConfig::default(),
+        datafusion_config: std::collections::HashMap::new(),
+        global_budget: 10,
+        extra_optimizer_rules: vec![],
+        extra_sources: vec![],
+    })
     .await?;
 
     // Example query

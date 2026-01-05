@@ -84,16 +84,16 @@ async fn run_benchmarks(
     let _limits = strake_core::config::QueryLimits::default();
     let _retry = RetrySettings::default();
 
-    let engine = FederationEngine::new(
+    let engine = FederationEngine::new(strake_core::federation::FederationEngineOptions {
         config,
-        "strake".to_string(),
-        strake_core::config::QueryLimits::default(),
-        strake_core::config::ResourceConfig::default(),
-        std::collections::HashMap::new(),
-        100, // global_budget
-        vec![],
-        vec![],
-    )
+        catalog_name: "strake".to_string(),
+        query_limits: strake_core::config::QueryLimits::default(),
+        resource_config: strake_core::config::ResourceConfig::default(),
+        datafusion_config: std::collections::HashMap::new(),
+        global_budget: 100, // global_budget
+        extra_optimizer_rules: vec![],
+        extra_sources: vec![],
+    })
     .await
     .context("Failed to initialize FederationEngine")?;
 

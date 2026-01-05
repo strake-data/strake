@@ -334,13 +334,15 @@ pub async fn apply(
 
     db::log_apply_event(
         client,
-        domain,
-        new_version,
-        &user_id,
-        &added,
-        &deleted,
-        &config_hash,
-        &raw_yaml,
+        db::ApplyLogEntry {
+            domain,
+            version: new_version,
+            user_id: &user_id,
+            added: &added,
+            deleted: &deleted,
+            config_hash: &config_hash,
+            config_yaml: &raw_yaml,
+        },
     )
     .await?;
 
@@ -378,13 +380,15 @@ pub async fn rollback(client: &Client, domain: &str, to_version: i32) -> Result<
 
     db::log_apply_event(
         client,
-        domain,
-        new_version,
-        &user_id,
-        &added,
-        &deleted,
-        &config_hash,
-        &config_yaml,
+        db::ApplyLogEntry {
+            domain,
+            version: new_version,
+            user_id: &user_id,
+            added: &added,
+            deleted: &deleted,
+            config_hash: &config_hash,
+            config_yaml: &config_yaml,
+        },
     )
     .await?;
 

@@ -9,9 +9,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_postgres::Config;
 
-use super::common::{next_retry_delay, FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory};
+use super::common::{
+    next_retry_delay, FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams,
+};
 use super::wrappers::register_tables;
-use crate::config::{RetrySettings, TableConfig};
+use crate::config::TableConfig;
 
 pub struct PostgresMetadataFetcher {
     pub connection_string: String,
@@ -36,26 +38,18 @@ impl SqlProviderFactory for PostgresTableFactory {
     }
 }
 
-pub async fn register_postgres(
-    context: &SessionContext,
-    catalog_name: &str,
-    name: &str,
-    connection_string: &str,
-    pool_size: usize,
-    cb: Arc<crate::query::circuit_breaker::AdaptiveCircuitBreaker>,
-    explicit_tables: &Option<Vec<TableConfig>>,
-    retry: RetrySettings,
-) -> Result<()> {
+pub async fn register_postgres(params: SqlSourceParams<'_>) -> Result<()> {
     let mut attempt = 0;
+    let retry = params.retry;
     loop {
         match try_register_postgres(
-            context,
-            catalog_name,
-            name,
-            connection_string,
-            pool_size,
-            cb.clone(),
-            explicit_tables,
+            params.context,
+            params.catalog_name,
+            params.name,
+            params.connection_string,
+            params.pool_size,
+            params.cb.clone(),
+            params.explicit_tables,
         )
         .await
         {
@@ -65,7 +59,7 @@ pub async fn register_postgres(
                 if attempt >= retry.max_attempts {
                     tracing::error!(
                         "Failed to register Postgres source '{}' after {} attempts: {}",
-                        name,
+                        params.name,
                         retry.max_attempts,
                         e
                     );
@@ -74,7 +68,7 @@ pub async fn register_postgres(
                 let delay = next_retry_delay(attempt, retry.base_delay_ms, retry.max_delay_ms);
                 tracing::warn!(
                     "Connection failed for source '{}'. Retrying in {:?} (Attempt {}/{}): {}",
-                    name,
+                    params.name,
                     delay,
                     attempt,
                     retry.max_attempts,

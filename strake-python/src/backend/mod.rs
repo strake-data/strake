@@ -1,7 +1,6 @@
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use pyo3::prelude::*;
 use std::sync::Arc;
 
 pub mod embedded;
@@ -23,7 +22,7 @@ pub trait StrakeQueryExecutor: Send + Sync {
 /// The backend implementations available
 pub enum Backend {
     Embedded(EmbeddedBackend),
-    Remote(RemoteBackend),
+    Remote(Box<RemoteBackend>),
 }
 
 impl Backend {

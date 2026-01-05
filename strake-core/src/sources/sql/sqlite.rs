@@ -9,9 +9,11 @@ use datafusion_table_providers::sqlite::SqliteTableFactory;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::common::{next_retry_delay, FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory};
+use super::common::{
+    next_retry_delay, FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams,
+};
 use super::wrappers::register_tables;
-use crate::config::{RetrySettings, TableConfig};
+use crate::config::TableConfig;
 
 pub struct SqliteMetadataFetcher {
     #[allow(dead_code)]
@@ -38,24 +40,17 @@ impl SqlProviderFactory for SqliteTableFactory {
     }
 }
 
-pub async fn register_sqlite(
-    context: &SessionContext,
-    catalog_name: &str,
-    name: &str,
-    connection_string: &str,
-    cb: Arc<crate::query::circuit_breaker::AdaptiveCircuitBreaker>,
-    explicit_tables: &Option<Vec<TableConfig>>,
-    retry: RetrySettings,
-) -> Result<()> {
+pub async fn register_sqlite(params: SqlSourceParams<'_>) -> Result<()> {
     let mut attempt = 0;
+    let retry = params.retry;
     loop {
         match try_register_sqlite(
-            context,
-            catalog_name,
-            name,
-            connection_string,
-            cb.clone(),
-            explicit_tables,
+            params.context,
+            params.catalog_name,
+            params.name,
+            params.connection_string,
+            params.cb.clone(),
+            params.explicit_tables,
         )
         .await
         {
@@ -65,7 +60,7 @@ pub async fn register_sqlite(
                 if attempt >= retry.max_attempts {
                     tracing::error!(
                         "Failed to register SQLite source '{}' after {} attempts: {}",
-                        name,
+                        params.name,
                         retry.max_attempts,
                         e
                     );
@@ -74,7 +69,7 @@ pub async fn register_sqlite(
                 let delay = next_retry_delay(attempt, retry.base_delay_ms, retry.max_delay_ms);
                 tracing::warn!(
                     "Connection failed for source '{}'. Retrying in {:?} (Attempt {}/{}): {}",
-                    name,
+                    params.name,
                     delay,
                     attempt,
                     retry.max_attempts,

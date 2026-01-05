@@ -44,11 +44,7 @@ impl Authenticator for ApiKeyAuthenticator {
             None => return Err(Status::unauthenticated("Missing authorization header")),
         };
 
-        let token_str = if token.starts_with("Bearer ") {
-            &token[7..]
-        } else {
-            token
-        };
+        let token_str = token.strip_prefix("Bearer ").unwrap_or(token);
 
         // 1. Check Cache
         if let Some(user) = self.cache.get(token_str).await {
@@ -174,7 +170,7 @@ where
                 }
                 Err(status) => {
                     let (parts, body) = status.into_http().into_parts();
-                    Ok(Response::from_parts(parts, Body::from(body)))
+                    Ok(Response::from_parts(parts, body))
                 }
             }
         })

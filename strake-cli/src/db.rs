@@ -26,24 +26,6 @@ pub async fn init_db(client: &Client) -> Result<()> {
         .await
         .context("Failed to execute initial schema")?;
 
-    let schema_v2 = include_str!("../migrations/002_api_keys.sql");
-    client
-        .batch_execute(schema_v2)
-        .await
-        .context("Failed to execute api_keys schema")?;
-
-    let schema_v3 = include_str!("../migrations/003_domains_and_history.sql");
-    client
-        .batch_execute(schema_v3)
-        .await
-        .context("Failed to execute domains schema")?;
-
-    let schema_v4 = include_str!("../migrations/004_rollback_support.sql");
-    client
-        .batch_execute(schema_v4)
-        .await
-        .context("Failed to execute rollback support schema")?;
-
     println!("Database initialized (Migration v4 successful).");
     Ok(())
 }
@@ -193,10 +175,9 @@ pub async fn import_sources(
                 deleted, domain
             );
         }
-    } else {
-        if config.sources.is_empty() {
-            if !force {
-                return Err(anyhow::anyhow!(
+    } else if config.sources.is_empty() {
+        if !force {
+            return Err(anyhow::anyhow!(
                     "\n\
                     \x1b[31;1m[CRITICAL WARNING] You are about to DELETE ALL SOURCES from domain '{}'!\x1b[0m\n\
                     \n\
@@ -206,28 +187,27 @@ pub async fn import_sources(
                     \x1b[1mstrake-cli apply --force\x1b[0m\n\
                     ", domain
                 ));
-            }
+        }
 
-            let to_delete = client
-                .query(
-                    "SELECT name FROM sources WHERE domain_name = $1",
-                    &[&domain],
-                )
-                .await?;
-            for row in to_delete {
-                deleted_sources.push(row.get(0));
-            }
+        let to_delete = client
+            .query(
+                "SELECT name FROM sources WHERE domain_name = $1",
+                &[&domain],
+            )
+            .await?;
+        for row in to_delete {
+            deleted_sources.push(row.get(0));
+        }
 
-            let deleted = client
-                .execute("DELETE FROM sources WHERE domain_name = $1", &[&domain])
-                .await
-                .context("Failed to prune all sources in domain")?;
-            if deleted > 0 {
-                println!(
-                    "Pruned all {} sources from domain {} (config was empty).",
-                    deleted, domain
-                );
-            }
+        let deleted = client
+            .execute("DELETE FROM sources WHERE domain_name = $1", &[&domain])
+            .await
+            .context("Failed to prune all sources in domain")?;
+        if deleted > 0 {
+            println!(
+                "Pruned all {} sources from domain {} (config was empty).",
+                deleted, domain
+            );
         }
     }
 
@@ -283,20 +263,21 @@ pub async fn increment_domain_version(
     Ok(expected_version + 1)
 }
 
-pub async fn log_apply_event(
-    client: &Client,
-    domain: &str,
-    version: i32,
-    user_id: &str,
-    added: &[String],
-    deleted: &[String],
-    config_hash: &str,
-    config_yaml: &str,
-) -> Result<()> {
+pub struct ApplyLogEntry<'a> {
+    pub domain: &'a str,
+    pub version: i32,
+    pub user_id: &'a str,
+    pub added: &'a [String],
+    pub deleted: &'a [String],
+    pub config_hash: &'a str,
+    pub config_yaml: &'a str,
+}
+
+pub async fn log_apply_event(client: &Client, entry: ApplyLogEntry<'_>) -> Result<()> {
     client.execute(
         "INSERT INTO apply_history (domain_name, version, user_id, sources_added, sources_deleted, config_hash, config_yaml)
          VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        &[&domain, &version, &user_id, &json!(added), &json!(deleted), &config_hash, &config_yaml],
+        &[&entry.domain, &entry.version, &entry.user_id, &json!(entry.added), &json!(entry.deleted), &entry.config_hash, &entry.config_yaml],
     ).await.context("Failed to log apply history")?;
     Ok(())
 }

@@ -1,9 +1,6 @@
-use arrow::datatypes::Schema;
 use arrow::pyarrow::ToPyArrow;
-use arrow::record_batch::RecordBatch;
 use pyo3::prelude::*;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::backend::{Backend, EmbeddedBackend, RemoteBackend};
 use crate::errors::{to_py_err, to_py_value_err};
@@ -30,7 +27,7 @@ impl StrakeConnection {
                     .block_on(async { RemoteBackend::new(dsn_or_config, api_key).await })
                     .map_err(|e| to_py_err("Remote connection failed", e))?;
 
-                Backend::Remote(client)
+                Backend::Remote(Box::new(client))
             } else {
                 // Embedded mode
                 let engine = runtime
@@ -48,7 +45,7 @@ impl StrakeConnection {
     fn sql(
         &mut self,
         query: String,
-        params: Option<HashMap<String, PyObject>>,
+        params: Option<HashMap<String, Py<PyAny>>>,
         py: Python,
     ) -> PyResult<Py<PyAny>> {
         // TODO: validation of params or interpolation logic
@@ -116,9 +113,9 @@ impl StrakeConnection {
 
     fn __exit__(
         &mut self,
-        _exc_type: Option<PyObject>,
-        _exc_value: Option<PyObject>,
-        _traceback: Option<PyObject>,
+        _exc_type: Option<Py<PyAny>>,
+        _exc_value: Option<Py<PyAny>>,
+        _traceback: Option<Py<PyAny>>,
     ) {
         // No cleanup needed for now, but good practice for future
     }

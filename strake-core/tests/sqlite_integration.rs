@@ -34,16 +34,16 @@ async fn test_sqlite_integration() -> Result<()> {
         cache: Default::default(),
     };
 
-    let engine = FederationEngine::new(
+    let engine = FederationEngine::new(strake_core::federation::FederationEngineOptions {
         config,
-        "strake".to_string(),
-        strake_core::config::QueryLimits::default(),
-        ResourceConfig::default(),
-        HashMap::new(),
-        10,
-        vec![],
-        vec![],
-    )
+        catalog_name: "strake".to_string(),
+        query_limits: strake_core::config::QueryLimits::default(),
+        resource_config: ResourceConfig::default(),
+        datafusion_config: HashMap::new(),
+        global_budget: 10,
+        extra_optimizer_rules: vec![],
+        extra_sources: vec![],
+    })
     .await?;
 
     let sql = "SELECT name FROM my_sqlite.users ORDER BY name";
@@ -112,16 +112,16 @@ async fn test_sqlite_joins() -> Result<()> {
         cache: Default::default(),
     };
 
-    let engine = FederationEngine::new(
+    let engine = FederationEngine::new(strake_core::federation::FederationEngineOptions {
         config,
-        "strake".to_string(),
-        strake_core::config::QueryLimits::default(),
-        ResourceConfig::default(),
-        HashMap::new(),
-        10,
-        vec![],
-        vec![],
-    )
+        catalog_name: "strake".to_string(),
+        query_limits: strake_core::config::QueryLimits::default(),
+        resource_config: ResourceConfig::default(),
+        datafusion_config: HashMap::new(),
+        global_budget: 10,
+        extra_optimizer_rules: vec![],
+        extra_sources: vec![],
+    })
     .await?;
 
     let sql = "SELECT u.name, SUM(o.amount) as total 
@@ -206,16 +206,16 @@ async fn test_sqlite_cross_db_federation() -> Result<()> {
         cache: Default::default(),
     };
 
-    let engine = FederationEngine::new(
+    let engine = FederationEngine::new(strake_core::federation::FederationEngineOptions {
         config,
-        "strake".to_string(),
-        strake_core::config::QueryLimits::default(),
-        ResourceConfig::default(),
-        HashMap::new(),
-        10,
-        vec![],
-        vec![],
-    )
+        catalog_name: "strake".to_string(),
+        query_limits: strake_core::config::QueryLimits::default(),
+        resource_config: ResourceConfig::default(),
+        datafusion_config: HashMap::new(),
+        global_budget: 10,
+        extra_optimizer_rules: vec![],
+        extra_sources: vec![],
+    })
     .await?;
 
     let sql = "SELECT u.name, d.age FROM s1.users u JOIN s2.user_details d ON u.id = d.user_id";

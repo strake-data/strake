@@ -386,10 +386,10 @@ impl ExecutionPlan for GrpcExec {
                 schema.clone()
             };
 
-            let mut reader = arrow::json::ReaderBuilder::new(final_schema).build(cursor)?;
+            let reader = arrow::json::ReaderBuilder::new(final_schema).build(cursor)?;
 
             let mut batches = Vec::new();
-            while let Some(res) = reader.next() {
+            for res in reader {
                 batches.push(res?);
             }
 
@@ -535,9 +535,9 @@ mod tests {
         assert_eq!(cols.len(), 2);
         assert_eq!(cols[0].name, "id");
         assert_eq!(cols[0].data_type, "Int64");
-        assert_eq!(cols[0].nullable, false);
+        assert!(!cols[0].nullable);
         assert_eq!(cols[1].name, "name");
-        assert_eq!(cols[1].nullable, false); // Default is false? No, struct bool default is false.
+        assert!(!cols[1].nullable); // Default is false? No, struct bool default is false.
     }
 
     #[test]

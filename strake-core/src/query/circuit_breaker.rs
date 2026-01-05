@@ -91,11 +91,11 @@ impl AdaptiveCircuitBreaker {
     pub async fn record_failure(&self) {
         self.record_attempt(false).await;
         let mut state_guard = self.state.write().await;
-        if state_guard.0 == CircuitState::Closed || state_guard.0 == CircuitState::HalfOpen {
-            if self.should_trip().await {
-                state_guard.0 = CircuitState::Open;
-                state_guard.1 = Instant::now();
-            }
+        if (state_guard.0 == CircuitState::Closed || state_guard.0 == CircuitState::HalfOpen)
+            && self.should_trip().await
+        {
+            state_guard.0 = CircuitState::Open;
+            state_guard.1 = Instant::now();
         }
     }
 

@@ -54,83 +54,39 @@ impl SourceProvider for SqlSourceProvider {
             .context("Failed to parse SQL source configuration")?;
 
         let effective_retry = sql_config.retry.unwrap_or(self.global_retry);
-        register_sql_source(
+        register_sql_source(common::SqlRegistrationOptions {
             context,
             catalog_name,
-            &config.name,
-            &sql_config.dialect,
-            &sql_config.connection,
-            sql_config.pool_size,
-            &sql_config.tables,
-            effective_retry,
-        )
+            name: &config.name,
+            dialect: sql_config.dialect,
+            connection_string: &sql_config.connection,
+            pool_size: sql_config.pool_size,
+            explicit_tables: &sql_config.tables,
+            retry: effective_retry,
+        })
         .await
     }
 }
 
-pub async fn register_sql_source(
-    context: &SessionContext,
-    catalog_name: &str,
-    name: &str,
-    dialect: &SqlDialect,
-    connection_string: &str,
-    pool_size: usize,
-    tables: &Option<Vec<TableConfig>>,
-    retry: RetrySettings,
-) -> Result<()> {
+pub async fn register_sql_source(options: common::SqlRegistrationOptions<'_>) -> Result<()> {
     use crate::query::circuit_breaker::{AdaptiveCircuitBreaker, CircuitBreakerConfig};
     let cb = Arc::new(AdaptiveCircuitBreaker::new(CircuitBreakerConfig::default()));
 
-    match dialect {
-        SqlDialect::Postgres => {
-            register_postgres(
-                context,
-                catalog_name,
-                name,
-                connection_string,
-                pool_size,
-                cb,
-                tables,
-                retry,
-            )
-            .await
-        }
-        SqlDialect::MySql => {
-            register_mysql(
-                context,
-                catalog_name,
-                name,
-                connection_string,
-                pool_size,
-                cb,
-                tables,
-                retry,
-            )
-            .await
-        }
-        SqlDialect::Sqlite => {
-            register_sqlite(
-                context,
-                catalog_name,
-                name,
-                connection_string,
-                cb,
-                tables,
-                retry,
-            )
-            .await
-        }
-        SqlDialect::Clickhouse => {
-            register_clickhouse(
-                context,
-                catalog_name,
-                name,
-                connection_string,
-                cb,
-                tables,
-                retry,
-            )
-            .await
-        }
+    let params = common::SqlSourceParams {
+        context: options.context,
+        catalog_name: options.catalog_name,
+        name: options.name,
+        connection_string: options.connection_string,
+        pool_size: options.pool_size,
+        cb,
+        explicit_tables: options.explicit_tables,
+        retry: options.retry,
+    };
+
+    match options.dialect {
+        SqlDialect::Postgres => register_postgres(params).await,
+        SqlDialect::MySql => register_mysql(params).await,
+        SqlDialect::Sqlite => register_sqlite(params).await,
+        SqlDialect::Clickhouse => register_clickhouse(params).await,
     }
 }
