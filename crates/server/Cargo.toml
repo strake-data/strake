@@ -12,7 +12,7 @@ name = "strake-server"
 path = "src/bin/main.rs"
 
 [dependencies]
-strake-core = { path = "../strake-core" }
+strake-core = { path = "../core" }
 arrow-flight = { workspace = true }
 tonic = { workspace = true }
 tokio = { workspace = true }

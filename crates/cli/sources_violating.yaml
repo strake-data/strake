@@ -1,0 +1,17 @@
+domain: "verification"
+sources:
+  - name: "test_db"
+    type: "postgres"
+    url: "postgres://postgres:postgres@localhost:5432/postgres"
+    tables:
+      - name: "users"
+        schema: "public"
+        columns:
+          - name: "id"
+            type: "INTEGER"
+          - name: "name"
+            type: "TEXT"
+          - name: "email"
+            type: "TEXT"
+          - name: "extra_col"
+            type: "TEXT" # This violates the strict contract

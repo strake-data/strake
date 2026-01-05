@@ -1,5 +1,5 @@
 [workspace]
-members = ["strake-core", "strake-server", "strake-python", "strake-cli", "strake-enterprise", "strake-bench"]
+members = ["crates/*", "python", "strake-enterprise"]
 resolver = "2"
 
 [workspace.dependencies]

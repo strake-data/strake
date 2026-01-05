@@ -54,6 +54,7 @@ server.log
 # Example Data
 data/
 strake-core/data/
-
+scripts/
+config/
 # Docs
 site/

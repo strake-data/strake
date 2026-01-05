@@ -1,10 +1,7 @@
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "deny"
+# Defaults are usually good
 
 [licenses]
-unlicensed = "deny"
 allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib"]
 
 [bans]

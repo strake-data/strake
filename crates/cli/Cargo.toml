@@ -17,6 +17,6 @@ serde_json = "1.0.148"
 md5 = "0.7"
 chrono = { version = "0.4", features = ["serde"] }
 reqwest = { version = "0.12", features = ["json"] }
-strake-core = { path = "../strake-core" }
+strake-core = { path = "../core" }
 owo-colors = "4.1.0"
 indicatif = "0.17.11"
