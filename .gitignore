@@ -55,3 +55,5 @@ server.log
 data/
 strake-core/data/
 
+# Docs
+site/

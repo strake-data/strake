@@ -21,6 +21,7 @@ secrecy = { workspace = true }
 thiserror = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 sqlparser = "0.60.0"
 rand = "0.9.2"
 parking_lot = "0.12.5"

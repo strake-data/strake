@@ -11,7 +11,7 @@ use tonic::{
     codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder},
     Status,
 };
-// use std::path::Path;
+use tower::ServiceExt;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct GrpcSourceConfig {
@@ -309,8 +309,12 @@ impl ExecutionPlan for GrpcExec {
                 datafusion::error::DataFusionError::Execution(format!("Invalid URL: {}", e))
             })?;
 
-            let channel = endpoint.connect().await.map_err(|e| {
+            let mut channel = endpoint.connect().await.map_err(|e| {
                 datafusion::error::DataFusionError::Execution(format!("Failed to connect: {}", e))
+            })?;
+
+            channel.ready().await.map_err(|e| {
+                datafusion::error::DataFusionError::Execution(format!("Service not ready: {}", e))
             })?;
 
             let mut client = tonic::client::Grpc::new(channel);
@@ -358,18 +362,17 @@ impl ExecutionPlan for GrpcExec {
 
             // Treat as single record or list?
             // If response is a list-like wrapper needed...
-            let records = vec![json_val]; // Wrap single response object
+            let records = [json_val]; // Wrap single response object
 
             // Infer/use schema
             // We use `schema` (the Arrow one).
 
             // Convert to batch (Reuse logic from REST or similar)
-            let json_str = serde_json::to_string(&records)
-                .map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))?;
-            let _cursor = std::io::Cursor::new(json_str);
-
-            let json_str = serde_json::to_string(&records)
-                .map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))?;
+            let json_vals: Result<Vec<String>, _> =
+                records.iter().map(serde_json::to_string).collect();
+            let json_str = json_vals
+                .map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))?
+                .join("\n");
             let cursor = std::io::Cursor::new(json_str);
 
             let final_schema = if schema.fields().is_empty() {

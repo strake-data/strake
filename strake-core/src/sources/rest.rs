@@ -523,8 +523,17 @@ async fn fetch_page(
     if let Some(PaginationConfig::Header { header_name }) = &config.pagination {
         if let Some(val) = resp.headers().get(header_name) {
             if let Ok(val_str) = val.to_str() {
-                if val_str.starts_with("http") {
-                    next_url = Some(val_str.to_string());
+                // Handle standard Link header format: <url>; rel="next"
+                let next_url_candidate = if val_str.starts_with('<') {
+                    val_str.split('>').next().map(|s| s.trim_start_matches('<'))
+                } else {
+                    Some(val_str)
+                };
+
+                if let Some(candidate) = next_url_candidate {
+                    if candidate.starts_with("http") {
+                        next_url = Some(candidate.to_string());
+                    }
                 }
             }
         }

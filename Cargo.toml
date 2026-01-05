@@ -28,6 +28,7 @@ thiserror = "1.0"
 tonic = "0.14"
 futures = "0.3"
 async-trait = "0.1"
+tower = "0.5"
 
 # Cache serialization
 sha2 = "0.10"

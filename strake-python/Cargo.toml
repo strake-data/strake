@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 strake-core = { path = "../strake-core" }
-pyo3 = { workspace = true, features = ["extension-module"] }
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }
 arrow = { workspace = true, features = ["pyarrow", "prettyprint"] }
 arrow-flight = { workspace = true, features = ["flight-sql-experimental"] }
 tokio = { workspace = true }
