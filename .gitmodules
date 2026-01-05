@@ -1,0 +1,3 @@
+[submodule "strake-enterprise"]
+	path = strake-enterprise
+	url = https://github.com/strake-data/strake-enterprise
