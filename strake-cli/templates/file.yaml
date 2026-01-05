@@ -1,0 +1,7 @@
+sources:
+  - type: csv
+    name: local_files
+    path: "data/*.csv"
+    has_header: true
+    tables:
+      - name: measurements

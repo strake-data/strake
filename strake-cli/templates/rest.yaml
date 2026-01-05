@@ -1,0 +1,9 @@
+sources:
+  - type: rest
+    name: github_api
+    base_url: "https://api.github.com"
+    method: "GET"
+    headers:
+      Authorization: "Bearer ${GITHUB_TOKEN}"
+    pagination:
+      type: link_header

@@ -1,0 +1,14 @@
+sources:
+  - type: sql
+    name: pg_source
+    dialect: postgres
+    connection: "postgres://user:pass@localhost:5432/db"
+    tables:
+      - name: users
+        schema: public
+        columns:
+          - name: id
+            type: integer
+            primary_key: true
+          - name: email
+            type: varchar

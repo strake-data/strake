@@ -1,0 +1,45 @@
+[package]
+name = "strake-server"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "strake_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "strake-server"
+path = "src/bin/main.rs"
+
+[dependencies]
+strake-core = { path = "../strake-core" }
+arrow-flight = { workspace = true }
+tonic = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["json"] }
+futures = "0.3"
+anyhow = { workspace = true }
+prost = { workspace = true }
+arrow = { workspace = true }
+datafusion = { workspace = true }
+tracing-appender = "0.2.4"
+axum = { workspace = true }
+serde_json = "1.0.148"
+sysinfo = "0.37.2"
+argon2 = "0.5"
+async-trait = "0.1"
+tower = { version = "0.5", features = ["full"] }
+http-body-util = "0.1"
+bytes = "1"
+tokio-postgres = { workspace = true }
+deadpool-postgres = "0.14"
+uuid = { version = "1", features = ["v4", "serde"] }
+moka = { version = "0.12.12", features = ["future"] }
+serde = { workspace = true, features = ["derive"] }
+prometheus = { workspace = true }
+once_cell = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror.workspace = true
+regex = "1.10"
+

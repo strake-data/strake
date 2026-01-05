@@ -1,0 +1,46 @@
+# Strake Data Contracts
+# Defines schema expectations and semantic constraints for tables.
+# Used by:
+# 1. strake-cli: To validate sources.yaml at ingestion time.
+# 2. strake-enterprise: To enforce strict schemas and data rules at runtime.
+
+contracts:
+  # Example: Strict contract for the 'orders' table
+  - table: "public.orders"
+    strict: true # If true, querying columns NOT listed below will fail (Closed Schema)
+    columns:
+      - name: o_orderkey
+        type: integer
+      - name: o_totalprice
+        type: decimal
+        constraints:
+          - type: "gt" 
+            value: 0
+      - name: o_orderdate
+        type: date
+      - name: o_custkey
+        type: integer
+      - name: o_orderstatus
+        type: char
+      - name: o_orderpriority
+        type: char
+      - name: o_clerk
+        type: varchar
+      - name: o_shippriority
+        type: integer
+
+
+  # Example: Open contract (allows extra columns) but enforces rules on specific ones
+  - table: "public.lineitem"
+    strict: false
+    columns:
+      - name: l_quantity
+        type: float
+        constraints:
+          - type: between
+            value: { "min": 0, "max": 100 }
+      - name: l_returnflag
+        type: string
+        constraints:
+          - type: in
+            value: ["R", "A", "N"]

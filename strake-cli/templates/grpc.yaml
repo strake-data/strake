@@ -1,0 +1,7 @@
+sources:
+  - type: grpc
+    name: my_grpc_service
+    url: "http://localhost:50051"
+    service: "my.package.Service"
+    method: "GetData"
+    descriptor_set: "proto/service.fd"

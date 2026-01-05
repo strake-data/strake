@@ -1,0 +1,23 @@
+[package]
+name = "strake-python"
+version = "0.1.2"
+edition = "2021"
+
+[lib]
+name = "strakepy"
+crate-type = ["cdylib"]
+
+[dependencies]
+strake-core = { path = "../strake-core" }
+pyo3 = { workspace = true, features = ["extension-module"] }
+arrow = { workspace = true, features = ["pyarrow", "prettyprint"] }
+arrow-flight = { workspace = true, features = ["flight-sql-experimental"] }
+tokio = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }
+prost = { workspace = true }
+tonic = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
+async-trait.workspace = true

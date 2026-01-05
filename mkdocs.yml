@@ -1,0 +1,8 @@
+site_name: Strake Documentation
+theme:
+  name: material
+
+nav:
+  - Home: index.md
+  - Testing:
+    - Integration Tests: integration_tests.md

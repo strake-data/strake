@@ -1,0 +1,28 @@
+roles:
+  - name: analyst
+    description: "Standard data analyst with regional restrictions"
+    policies:
+      - resource: "strake.public.orders"
+        action: "SELECT"
+        rls_filter: "o_custkey < 1000" # Simple filter for demonstration
+        masking:
+          o_orderpriority: "MASK"
+      - resource: "strake.public.lineitem"
+        action: "SELECT"
+        rls_filter: "l_quantity < 10"
+        masking:
+          l_returnflag: "MASK" # Simon: using existing column for masking.
+
+  - name: admin
+    description: "Full access admin"
+    policies:
+      - resource: "*"
+        action: "*"
+        rls_filter: null
+        masking: {}
+
+users:
+  - id: "user_123"
+    roles: ["analyst"]
+  - id: "admin_user"
+    roles: ["admin", "analyst"]

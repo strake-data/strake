@@ -1,0 +1,11 @@
+sources:
+  - name: example_local_postgres
+    type: JDBC
+    url: jdbc:postgresql://localhost:5432/postgres
+    tables:
+      - name: example_table
+        schema: public
+        columns:
+          - name: id
+            type: integer
+            primary_key: true

@@ -1,0 +1,46 @@
+# Example: Validating a REST Source (GitHub API)
+# Check out the README.md for more info: docs/sources/rest.md
+
+sources:
+- name: github
+  type: rest
+  config:
+    base_url: "https://api.github.com"
+    headers:
+      User-Agent: "strake-data" # GitHub requires a user agent
+      Accept: "application/vnd.github.v3+json"
+    pagination:
+      type: header
+      header_name: "link" # GitHub uses the "Link" header for pagination
+
+  # Map specific API endpoints to Tables
+  tables:
+    - name: repos
+      path: "/orgs/rust-lang/repos" # https://api.github.com/orgs/rust-lang/repos
+      columns:
+        - name: id
+          data_type: int
+          not_null: true
+        - name: name
+          data_type: string
+        - name: full_name
+          data_type: string
+        - name: description
+          data_type: string
+        - name: stargazers_count
+          data_type: int
+        - name: language
+          data_type: string
+
+    - name: issues
+      path: "/repos/rust-lang/rust/issues"
+      columns:
+        - name: id
+          data_type: int
+        - name: number
+          data_type: int
+        - name: title
+          data_type: string
+        - name: state
+          data_type: string
+        # Nested fields will need advanced JSON mapping or view definitions in future

@@ -1,0 +1,19 @@
+[package]
+name = "strake-bench"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+strake-core = { path = "../strake-core" }
+datafusion = { workspace = true }
+tokio = { workspace = true }
+clap = { version = "4.4", features = ["derive"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = "1.0"
+rand = "0.9.2"
+chrono = "0.4"
+async-trait = { workspace = true }
+futures = { workspace = true }
