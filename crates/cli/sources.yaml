@@ -1,0 +1,59 @@
+sources:
+  - name: ds_pg_test
+    type: JDBC
+    url: jdbc:postgresql://rust-postgres_devcontainer-db-1:5432/postgres
+    username: 
+    password: 
+    tables:
+      - name: locations_test
+        schema: public
+        partition_column: country_code
+        columns:
+          - name: location_id
+            type: integer
+            primary_key: true
+          - name: street_address
+            type: varchar
+            length: 80
+          - name: city
+            type: varchar
+            length: 30
+            not_null: true
+          - name: country_code
+            type: char
+            length: 2
+            unique: true
+
+  - name: local_json_logs
+    type: JSON
+    url: file:///workspaces/rust-postgres/strake/strake-core/data/data.json
+    tables:
+      - name: user_logs
+        schema: public
+        columns:
+          - name: user_id
+            type: varchar
+            length: 36
+            primary_key: true
+          - name: first_name
+            type: varchar
+            length: 100
+          - name: last_name
+            type: varchar
+            length: 100
+          - name: email
+            type: varchar
+            length: 255
+          - name: job_title
+            type: varchar
+            length: 100
+          - name: ipv4_address
+            type: varchar
+            length: 15
+          - name: session_duration_sec
+            type: integer
+          - name: access_country_code
+            type: char
+            length: 2
+          - name: last_payment_amount
+            type: double

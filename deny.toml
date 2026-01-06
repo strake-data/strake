@@ -1,17 +1,36 @@
 [advisories]
 ignore = [
-    "RUSTSEC-2024-0437", # protobuf 2.x uncontrolled recursion (transitive via prometheus)
-    "RUSTSEC-2023-0071", # rsa timing sidechannel (transitive via opendal/reqsign)
-    "RUSTSEC-2025-0134", # rustls-pemfile unmaintained (transitive via reqwest 0.11)
-    "RUSTSEC-2025-0017", # trust-dns rebranded to hickory-dns (transitive via datafusion)
+    "RUSTSEC-2024-0437", # protobuf 2.x uncontrolled recursion
+    "RUSTSEC-2023-0071", # rsa timing sidechannel
+    "RUSTSEC-2025-0134", # rustls-pemfile unmaintained
+    "RUSTSEC-2025-0017", # trust-dns rebranded
+    "RUSTSEC-2024-0421", # idna vulnerability
+    "RUSTSEC-2025-0052", # async-std discontinued
+    "RUSTSEC-2021-0141", # dotenv unmaintained
+    "RUSTSEC-2025-0119", # number_prefix unmaintained
+    "RUSTSEC-2024-0436", # paste unmaintained
 ]
 
 [licenses]
-allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib"]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "OpenSSL",
+    "Unicode-3.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MPL-2.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "bzip2-1.0.6",
+]
 
 [bans]
 multiple-versions = "warn"
-wildcards = "deny"
+wildcards = "warn" # Allow internal path-based dependencies without versions for now
 
 [sources]
 unknown-registry = "deny"

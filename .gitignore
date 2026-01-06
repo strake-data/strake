@@ -58,6 +58,17 @@ scripts/
 config/
 finance.yaml
 
+# Internal Documentation
+PROJECT_STATE.md
+ROADMAP.md
+STRATEGY.md
+clirooadmap.md
+guidelines.md
+guidelinespy.md
+report.md
+deny_report.txt
+deny_report_v2.txt
+
 # Tests & Internal Scripts
 /tests/
 /python/tests/
