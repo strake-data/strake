@@ -25,7 +25,8 @@ RUN rustup target add x86_64-unknown-linux-musl
 WORKDIR /build
 
 # Copy workspace configuration
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml ./
+COPY Cargo.lock ./
 COPY rustfmt.toml clippy.toml deny.toml ./
 
 # Copy all crates
