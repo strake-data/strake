@@ -28,19 +28,21 @@ jobs:
           submodules: 'recursive'
           token: ${{ steps.generate-token.outputs.token }}
           fetch-depth: 0
+          persist-credentials: true
 
       - name: Configure Git Credentials
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git remote set-url origin https://x-access-token:${{ steps.generate-token.outputs.token }}@github.com/${{ github.repository }}.git
 
       - uses: actions/setup-python@v5
         with:
-          python-version: 3.x
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
-          pip install mkdocs-material 
+          pip install mkdocs-material mkdocs-redirects mkdocs-minify-plugin
 
       - name: Deploy to GitHub Pages
         run: |

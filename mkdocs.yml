@@ -1,8 +1,40 @@
 site_name: Strake Documentation
+site_url: https://strake-data.github.io/strake/
+repo_url: https://github.com/strake-data/strake
+repo_name: strake-data/strake
+
 theme:
   name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
 
 nav:
   - Home: index.md
+  - Guide:
+    - Quickstart: quickstart.md
+    - Installation: install.md
+    - Concepts: concepts.md
+  - Architecture: architecture.md
+  - Examples: examples.md
+  - API: api.md
   - Testing:
     - Integration Tests: integration_tests.md
+  - CI Setup: CI_SETUP.md
