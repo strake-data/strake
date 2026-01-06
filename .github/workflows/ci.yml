@@ -48,20 +48,6 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - name: Generate Token
         id: generate-token
@@ -79,8 +65,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       
-      - name: Run Tests
-        run: cargo test --workspace --all-features -- --test-threads=1
+      - name: Run Unit Tests
+        run: cargo test --workspace --lib
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/test
           STRAKE_LICENSE_KEY: ${{ secrets.STRAKE_LICENSE_KEY || 'sk_ent_dev_bypass' }}

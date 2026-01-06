@@ -1,5 +1,10 @@
 [advisories]
-# Defaults are usually good
+ignore = [
+    "RUSTSEC-2024-0437", # protobuf 2.x uncontrolled recursion (transitive via prometheus)
+    "RUSTSEC-2023-0071", # rsa timing sidechannel (transitive via opendal/reqsign)
+    "RUSTSEC-2025-0134", # rustls-pemfile unmaintained (transitive via reqwest 0.11)
+    "RUSTSEC-2025-0017", # trust-dns rebranded to hickory-dns (transitive via datafusion)
+]
 
 [licenses]
 allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib"]

@@ -56,5 +56,20 @@ data/
 strake-core/data/
 scripts/
 config/
+finance.yaml
+
+# Tests & Internal Scripts
+/tests/
+/python/tests/
+runstrake.py
+mock_server.py
+pytest.ini
+*.out
+test_config.rs
+test_out.txt
+*.pub
+strake_deploy_key
+
+
 # Docs
 site/
