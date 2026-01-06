@@ -40,13 +40,13 @@ object_store = { version = "0.12.4", features = ["aws"] }
 opendal = { version = "0.55.0", features = ["services-s3", "services-azblob", "services-gcs", "services-http", "services-ftp"] }
 object_store_opendal = "0.55.0"
 
-[target.'cfg(unix)'.dependencies]
-opendal = { version = "0.55.0", features = ["services-sftp"] }
-
 # Query result caching
 sha2 = { workspace = true }
 parquet = "57.1.0"  # For cache serialization
 moka = { version = "0.12", features = ["future"] }  # Concurrent LRU cache
+
+[target.'cfg(unix)'.dependencies]
+opendal = { version = "0.55.0", features = ["services-sftp"] }
 
 
 [dev-dependencies]

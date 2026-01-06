@@ -138,8 +138,14 @@ async fn create_pg_pool(
         .context("Failed to parse postgres connection string")?;
 
     for host in config.get_hosts() {
-        if let Host::Tcp(h) = host {
-            params.insert("host".to_string(), SecretString::from(h.clone()));
+        match host {
+            Host::Tcp(h) => {
+                params.insert("host".to_string(), SecretString::from(h.clone()));
+            }
+            #[cfg(unix)]
+            Host::Unix(_) => {
+                // Unix sockets not handled in this map
+            }
         }
     }
 
