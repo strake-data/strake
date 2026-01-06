@@ -5,7 +5,7 @@ license = "Apache-2.0"
 edition = "2021"
 
 [lib]
-name = "strakepy"
+name = "strake"
 crate-type = ["cdylib"]
 
 [dependencies]
