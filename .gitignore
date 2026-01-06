@@ -74,3 +74,4 @@ strake_deploy_key
 # Docs
 site/
 .env
+/keys
