@@ -1,0 +1,52 @@
+# Build artifacts
+target/
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+.gitmodules
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Logs and data
+logs/
+data/
+*.log
+
+# Documentation
+docs/
+site/
+*.md
+!README.md
+
+# CI/CD
+.github/
+
+# Test files
+tests/
+scripts/
+
+# Config examples (we want embedded configs in the binary)
+config/*.yaml
+!config/embedded/
+
+# Keys and secrets
+certs/
+keys/
+*.pem
+*.key
+.env
