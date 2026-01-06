@@ -5,18 +5,15 @@ repo_name: strake-data/strake
 
 theme:
   name: material
+  logo: assets/logo.png
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: indigo
-      accent: indigo
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: indigo
-      accent: indigo
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
@@ -25,6 +22,17 @@ theme:
     - navigation.sections
     - navigation.expand
     - content.code.copy
+  font:
+    text: Inter
+    code: Roboto Mono
+
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - https://unpkg.com/mermaid@11/dist/mermaid.min.js
+  - javascripts/mermaid.js
+
 
 nav:
   - Home: index.md
@@ -32,9 +40,34 @@ nav:
     - Quickstart: quickstart.md
     - Installation: install.md
     - Concepts: concepts.md
+  - Connectors: connectors.md
   - Architecture: architecture.md
+  - Enterprise: enterprise.md
   - Examples: examples.md
-  - API: api.md
-  - Testing:
-    - Integration Tests: integration_tests.md
-  - CI Setup: CI_SETUP.md
+  - Python API: python-api.md
+  - CLI Reference: cli-reference.md
+
+markdown_extensions:
+  - admonition
+  - def_list
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.tilde

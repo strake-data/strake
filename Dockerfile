@@ -10,7 +10,7 @@ ARG RUST_VERSION=1.88
 ARG DEBIAN_VERSION=bookworm
 
 # ===== Builder Stage =====
-FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-${DEBIAN_VERSION} AS builder
+FROM rust:${RUST_VERSION}-${DEBIAN_VERSION} AS builder
 
 ARG TARGETARCH
 RUN echo "Building for arch: $TARGETARCH"
@@ -27,6 +27,8 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     musl-tools \
+    cmake \
+    clang \
     && rm -rf /var/lib/apt/lists/*
 
 # Add musl target for static linking

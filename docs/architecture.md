@@ -8,19 +8,22 @@ Strake is built as a set of modular Rust crates, orchestrated to provide a seaml
 
 ```mermaid
 graph TD
-    Client[Client (Python/JDBC)] -->|Flight SQL| Server[Strake Server]
-    Server -->|Auth/Plan| Engine[Strake Core / Federation Engine]
+    PythonE[Python Embedded Mode] --> Core[Strake Server]
+    PythonC[Python Client Mode] --> |Arrow Flight| Server[Strake Server]
+
+    Client[SQL Client] -->|ArrowFlightSQL| Server[Strake Server]
+    Server --> Engine[Federation Engine]
     
-    subgraph "Strake Core"
+    subgraph Core
         Engine --> Registry[Source Registry]
-        Registry --> PG[Postgres Source]
+        Registry --> PG[RDBMS Source]
         Registry --> S3[S3 Source]
         Registry --> API[REST Source]
     end
     
-    PG -->|SQL| DB[(Postgres DB)]
-    S3 -->|HTTP Range| Obj[(S3 Bucket)]
-    API -->|HTTP| Web[Web Service]
+    PG --> DB[Postgres DB]
+    S3 --> Obj[S3 Bucket]
+    API --> Web[Web Service]
 ```
 
 ## Key Components

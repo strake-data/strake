@@ -1,0 +1,191 @@
+/* Base Primary overrides for Material */
+:root,
+[data-md-color-primary] {
+    --md-primary-fg-color: #F8FAFC !important;
+    --md-primary-fg-color--light: #F1F5F9 !important;
+    --md-primary-fg-color--dark: #E2E8F0 !important;
+    --md-accent-fg-color: #1E3A8A !important;
+}
+
+/* Increase Logo Size */
+.md-header__button.md-logo img {
+    height: 2.5rem !important;
+    /* Larger logo */
+    width: auto;
+}
+
+.md-header__button.md-logo {
+    padding: 0.2rem 0;
+}
+
+/* Header styling */
+.md-header {
+    background-color: #F8FAFC !important;
+    color: #1F2937 !important;
+    border-bottom: 1px solid #E2E8F0;
+}
+
+[data-md-color-scheme="default"] .md-header,
+[data-md-color-primary] .md-header {
+    background-color: #F8FAFC !important;
+}
+
+.md-header__topic,
+.md-header__button {
+    color: #1F2937 !important;
+}
+
+.md-header__topic .md-ellipsis {
+    color: #1E3A8A !important;
+}
+
+/* Fix header icons contrast */
+.md-header__button svg {
+    fill: #1F2937 !important;
+}
+
+.md-header__topic {
+    color: #1F2937 !important;
+}
+
+/* Ensure tabs (links) are always visible and styled */
+.md-tabs {
+    background-color: #F8FAFC !important;
+    border-bottom: 1px solid #E2E8F0;
+}
+
+.md-tabs__link {
+    color: #4B5563 !important;
+    font-weight: 500 !important;
+    opacity: 1 !important;
+}
+
+.md-tabs__link--active {
+    color: #1E3A8A !important;
+    font-weight: 700 !important;
+}
+
+/* Match landing page typography */
+/* Wordmark styling */
+.md-header__topic {
+    font-weight: 700 !important;
+    font-size: 1.1rem !important;
+    letter-spacing: -0.025em;
+    text-transform: uppercase;
+}
+
+[data-md-color-scheme="default"] {
+    --md-default-fg-color: #1F2937;
+    --md-default-bg-color: #FFFFFF;
+}
+
+/* Make search and other elements more like the landing page */
+.md-search__form {
+    background-color: #FFFFFF !important;
+    border: 1px solid #E2E8F0 !important;
+    border-radius: 20px !important;
+}
+
+.md-search__input {
+    color: #1F2937 !important;
+}
+
+.md-search__icon svg {
+    fill: #64748B !important;
+}
+
+
+/* Make links more visible */
+.md-typeset a {
+    color: #1E3A8A !important;
+    text-decoration: underline;
+}
+
+.md-typeset a:hover {
+    color: #3B82F6 !important;
+}
+
+/* Fix sidebar navigation links */
+.md-nav__link {
+    color: #4B5563 !important;
+}
+
+.md-nav__link:hover,
+.md-nav__link--active {
+    color: #1E3A8A !important;
+}
+
+.md-nav__item--nested>.md-nav__link {
+    color: #1F2937 !important;
+    font-weight: 600;
+}
+
+/* API Reference Styling */
+.api-signature {
+    background: #f8fafc;
+    border-left: 4px solid #1e3a8a;
+    padding: 1rem;
+    margin: 1.5rem 0;
+    border-radius: 0 4px 4px 0;
+    font-family: var(--md-code-font-family);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.api-signature code {
+    background: transparent !important;
+    padding: 0 !important;
+    color: #1e3a8a !important;
+    font-weight: 600;
+}
+
+.api-signature .type {
+    color: #64748b;
+    font-size: 0.85rem;
+}
+
+/* Definition List Improvements (for Parameters) */
+.md-typeset dl {
+    margin-bottom: 2rem;
+}
+
+.md-typeset dt {
+    font-weight: 700;
+    color: #1e3a8a;
+    margin-top: 1rem;
+}
+
+.md-typeset dd {
+    margin-left: 1.5rem;
+    color: #4b5563;
+    font-size: 0.95rem;
+}
+
+.md-typeset dt code {
+    background: #eff6ff !important;
+    color: #2563eb !important;
+    padding: 0.1rem 0.4rem !important;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+    font-weight: 800;
+    letter-spacing: -0.025em;
+    color: #1E3A8A;
+}
+
+/* Custom scrollbar to match modern feel */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #CBD5E1;
+    border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #94A3B8;
+}

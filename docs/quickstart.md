@@ -1,55 +1,65 @@
 # Quickstart
 
-This guide will get you up and running with Strake in under 5 minutes. We will configure a simple Postgres source and run a query using the Python client.
+This guide will get you up and running with Strake in under 5 minutes. We will configure a project, add a Postgres source, and run a query using the Python client.
 
-## 1. Initialize Configuration
+## 1. Setup Project with `uv`
+
+The recommended way to use Strake is with [uv](https://github.com/astral-sh/uv).
+
+```bash
+# Create a new project directory
+mkdir strake-demo && cd strake-demo
+
+# Initialize with uv
+uv init
+
+# Add the Strake Python client
+uv add strake
+```
+
+## 2. Initialize Strake Configuration
 
 Strake uses a declarative configuration file (`sources.yaml`) to define your data mesh.
 
-Create a directory for your config:
-```bash
-mkdir -p strake-demo/config
-cd strake-demo
-```
+Initialize a new configuration using the CLI:
 
-Initialize a new configuration:
 ```bash
+# If you don't have the CLI, install it first:
+# curl -sSfL https://strakedata.com/install.sh | sh
+
 strake-cli init
 ```
 
-This creates a `sources.yaml`. Let's edit it to add a public PostgreSQL demo source (or use your own).
+By default, this creates a `sources.yaml`. Let's ensure it has a PostgreSQL source:
 
 ```yaml
-# config/sources.yaml
+# sources.yaml
 sources:
   - name: demo_pg
     type: sql
     dialect: postgres
-    # Using a standard local postgres for demonstration
+    # Example connection string
     connection: "postgres://postgres:postgres@localhost:5432/postgres"
 ```
 
-> [!TIP]
-> You can also use environment variables in your config like `${POSTGRES_PASSWORD}` for security.
+## 3. Query Data (Embedded Mode)
 
-## 2. Start the Server within Python (Embedded Mode)
-
-You don't need to run a separate server process to get started. The Python client can run the engine embedded.
+You don't need a standalone server to get started. The Python client can run the Strake engine directly.
 
 Create a file `main.py`:
 
 ```python
-import strake_client
+import strake
 import pandas as pd
 
-# Point to your configuration file
-# In embedded mode, we pass the config path directly
-conn = strake_client.StrakeConnection("./config/sources.yaml")
+# 1. Connect (Embedded Mode)
+# We pass the path to our config directly
+conn = strake.StrakeConnection("./sources.yaml")
 
-print("🔌 Connected to Strake Embedded Engine")
+print("Connected to Strake Embedded Engine")
 
-# Run a query!
-# Note the namespace: strake.<source_name>.<schema>.<table>
+# 2. Run a query
+# Tables are accessible via: strake.<source_name>.<schema>.<table>
 query = """
     SELECT * 
     FROM strake.demo_pg.public.users 
@@ -57,21 +67,26 @@ query = """
 """
 
 print(f"Running: {query}")
-df = conn.sql(query)
+table = conn.sql(query)
 
-print("\n📊 Results:")
+# 3. Analyze results as a DataFrame
+df = table.to_pandas()
+print("\nResults:")
 print(df)
 ```
 
-## 3. Run It
+## 4. Run the Script
+
+Use `uv` to run your script with all dependencies managed automatically:
 
 ```bash
-python3 main.py
+uv run main.py
 ```
 
-## 4. Next Steps
+## 5. Next Steps
 
-Now that you have a basic query running:
-*   Add an **S3 Source** to join against Parquet files.
-*   Check out the [Concepts](./concepts.md) page to understand how federation works.
-*   View the [API Reference](./api.md) for more advanced usage.
+Now that you have your first query running:
+
+* Add an **S3 Source** to join S3 Parquet files against your Postgres DB.
+* Explore the [Connectors](connectors.md) page for a full list of supported sources.
+* Check out the [Python API](python-api.md) for more advanced usage.

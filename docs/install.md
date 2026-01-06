@@ -14,12 +14,57 @@ Strake consists of two main components:
 
 ## 1. Installing the Python Client
 
-Strake provides a high-performance Python client based on PyO3.
+Strake provides a high-performance Python client written in Rust.
 
 ### From PyPI (Recommended)
-*Coming soon! Strake is currently in active development.*
+    ```bash
+    ## uv
+    uv init strake-data
+    uv pip add strake
+    ```
 
-### Building from Source
+    ```bash
+    ## pip
+    pip install strake
+    ```
+
+## 2. Universal Install Script (Linux/macOS)
+
+The fastest way to install Strake binaries is via the universal install script:
+
+```bash
+# Install CLI only (default)
+curl -sSfL https://strakedata.com/install.sh | sh
+
+# Install all binaries (CLI, Server, Enterprise)
+curl -sSfL https://strakedata.com/install.sh | sh -s -- --all
+
+# Install specific components
+curl -sSfL https://strakedata.com/install.sh | sh -s -- --cli --server
+
+# Install a specific version
+curl -sSfL https://strakedata.com/install.sh | sh -s -- --cli --version v0.1.0
+```
+
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `--all`, `-a` | Install all binaries (cli, server, enterprise) |
+| `--cli` | Install `strake-cli` only |
+| `--server` | Install `strake-server` only |
+| `--enterprise` | Install `strake-enterprise` only |
+| `--version`, `-v` | Install a specific version (e.g., `v0.1.0`) |
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `STRAKE_INSTALL_DIR` | `~/.local/bin` | Installation directory |
+
+> **Note:** Make sure `~/.local/bin` is in your `PATH`. The script will remind you if it's not.
+
+## 2. Building from Source
 To build the Python bindings locally:
 
 1.  Navigate to the `strake-python` directory:
@@ -39,7 +84,7 @@ To build the Python bindings locally:
 
 ---
 
-## 2. Running the Server
+## 3. Running the Server
 
 You can run Strake as a standalone server exposing an Apache Arrow Flight SQL interface.
 
@@ -53,28 +98,3 @@ cargo run --package strake-server --release
 
 The server will start on `0.0.0.0:50051`.
 
-### Enterprise Edition
-The Enterprise Edition includes OIDC SSO, RLS, and advanced governance.
-
-```bash
-# Set your license key (or use the dev bypass for testing)
-export STRAKE_LICENSE_KEY="sk_ent_dev_bypass"
-
-# Run the enterprise server
-cargo run --package strake-enterprise --release
-```
-
----
-
-## 3. Installing the CLI
-
-The `strake-cli` helps manage configuration and validating GitOps workflows.
-
-```bash
-cargo install --path strake-cli
-```
-
-Verify installation:
-```bash
-strake-cli --version
-```

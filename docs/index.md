@@ -17,15 +17,16 @@ Strake solves this by **bringing the compute to the data**:
 
 ## Key Features
 
-*   **⚡ High Performance**: Sub-second latency for federated joins using Apache Arrow.
-*   **🔌 Pluggable Sources**: Postgres, S3, Local Files, REST, gRPC, and more.
-*   **🛡️ Enterprise Governance**: Row-Level Security (RLS), Column Masking, and OIDC Authentication (Enterprise Edition).
-*   **🐍 Python Native**: Zero-copy integration with Pandas and Polars via PyO3.
-*   **🔭 Observability**: Built-in OpenTelemetry tracing and Prometheus metrics.
+*   **High Performance**: Sub-second latency for federated joins using Apache Arrow.
+*   **Pluggable Sources**: Postgres, S3, Local Files, REST, gRPC, and more.
+*   **Enterprise Governance**: Row-Level Security (RLS), Column Masking, and OIDC Authentication (Enterprise Edition).
+*   **Python Native**: Zero-copy integration with Pandas and Polars via PyO3.
+*   **Observability**: Built-in OpenTelemetry tracing and Prometheus metrics.
+*   **Enterprise Features**: OIDC, Row-Level Security, and Data Contracts (see [Enterprise Edition](./enterprise.md)).
 
 ## Next Steps
 
 *   [**Installation**](./install.md): Get Strake running on your machine.
 *   [**Quickstart**](./quickstart.md): Run your first federated query in 5 minutes.
 *   [**Core Concepts**](./concepts.md): Understand how Strake optimizes your queries.
-*   [**Python API**](./api.md): Detailed reference for the Python client.
+*   [**Python API**](./python-api.md): Detailed reference for the Python client.
