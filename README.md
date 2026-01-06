@@ -2,7 +2,7 @@
 
 Strake is a high-performance federated SQL engine built on Apache Arrow DataFusion. It enables users to query across disparate data sources—including PostgreSQL, Parquet, and JSON—using a single SQL interface without the need for data movement or ETL.
 
-> 📚 **Full Documentation**: Check out the [complete documentation](strake/docs/index.md) for installation, architecture, and API references.
+> 📚 **Full Documentation**: Check out the [complete documentation](docs/index.md) for installation, architecture, and API references.
 
 ## Overview
 
@@ -19,7 +19,6 @@ Strake acts as an "Intelligent Pipe," sitting between your data sources and your
 * **License-Keyed Concurrency Control**: Enterprise enforcement of query concurrency slots via Tokio semaphores and Tower middleware. Verified with zero-limit denial security.
 * **Pluggable Source Registry**: Modularly query **Postgres, MySQL, SQLite** and:
   - **Enterprise**: Snowflake, BigQuery, Dremio (via Flight SQL), and **Excel** (Verified).
-  - **Modular SQL**: Refactored `src/sources/sql/` architecture for dialect isolation and scalability.
   - **Flexible Config**: Providers are decoupled from the core, allowing for custom connector development.
   - **Files**: Parquet, CSV, JSON (with verified glob-based multi-file support).
 * **Secure Identity & Governance**: 
@@ -64,26 +63,16 @@ Manage your configuration using the **Strake CLI**.
    strake-cli apply sources.yaml --force
    ```
    *Note: `--force` is required if applying an empty config to prevent accidental data loss.*
+### 2. Python Usage
 
-### 2. Prepare Test Data
-
-Strake-Wire includes a utility script to generate 10,000 rows of joinable synthetic data in PostgreSQL:
-
-```bash
-python3 strake/scripts/setup_pg.py
-```
-This script ensures `hash_16` values in Postgres match those in `data.json`, enabling successful federated joins.
-
-### 3. Python Usage
-
-Strake-Wire provides a seamless interface for data scientists and engineers:
+Strake provides a seamless interface for data scientists and engineers:
 
 ```python
-import strake_client
+import strakepy
 
 # Initialize the connection (Flight SQL Client)
-dsn = "grpc://localhost:50051"
-conn = strake_client.StrakeConnection(dsn)
+dsn = "grpc://localhost:50053"
+conn = strakepy.StrakeConnection(dsn)
 
 # Execute a federated join across Postgres and JSON
 query = """
@@ -104,18 +93,6 @@ print(df)
 conn.trace(query)
 ```
 
-### 4. Running Tests
-
-Strake includes a comprehensive test suite covering all sources and enterprise features:
-
-```bash
-# Run all tests (requires strake-server running)
-pytest
-
-# Run specific source tests
-pytest tests/sources/test_files.py
-pytest tests/features/test_federation.py
-```
 
 ### 3. Running the Server
 
@@ -154,24 +131,8 @@ cargo run --package strake-enterprise
 
 ## Project Structure
 
-* strake-core: The central engine responsible for configuration, source registration, and query validation.
-* strake-server: The Arrow Flight SQL server implementation.
-* strake-python: PyO3-based Python bindings for high-performance data access.
-
-### Performance & Scaling
-
-Strake is built to handle industrial-scale data federation without the "ETL Tax." By leveraging DataFusion's pushdown capabilities and highly optimized Rust execution, we achieve performance that rivals specialized in-process engines.
-
-#### TPC-H Industrial Benchmarks (SF=2.0)
-We validated Strake's performance using the TPC-H industry benchmark at a **Scale Factor of 2.0 (~15 Million Rows / 2GB)** on an AMD Ryzen 5 3600 (WSL2 / 15Gi RAM).
-
-| Query | Focus | Strake (s) | DuckDB (s) | Result |
-| :--- | :--- | :--- | :--- | :--- |
-| **Q1** | Aggregation | 0.27s | 0.57s | **Strake 2x Faster** |
-| **Q6** | Scan & Filter | 0.19s | 0.06s | **Sub-Second Latency** |
-
-#### Why it matters:
-- **Massive Aggregation Speed**: Strake out-performs DuckDB on heavy aggregations (Q1), leveraging DataFusion's superior multi-core parallel execution.
-- **Zero-ETL Federation**: Most engines require you to move data into a central lakehouse first. Strake joins disparate sources *in-situ* with sub-second latency.
-- **Competitive with Embedded Engines**: Strake provides the governance and security of a Flight SQL server while maintaining the raw speed of a local library.
+* [strake-core](crates/core): The central engine responsible for configuration, source registration, and query validation.
+* [strake-server](crates/server): The Arrow Flight SQL server implementation.
+* [strake-cli](crates/cli): GitOps CLI for managing data mesh configurations.
+* [strake-python](python): PyO3-based Python bindings for high-performance data access.
 
