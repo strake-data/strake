@@ -4,6 +4,7 @@ resolver = "2"
 
 [workspace.dependencies]
 # Pin exact versions to avoid dependency hell
+openssl = { version = "0.10", features = ["vendored"] }
 arrow = "57"
 datafusion = "51"
 datafusion-python = "50"

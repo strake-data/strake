@@ -12,6 +12,7 @@ datafusion-federation = { workspace = true }
 datafusion-table-providers = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+openssl = { workspace = true }
 tokio-postgres = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

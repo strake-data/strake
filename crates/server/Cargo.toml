@@ -17,6 +17,7 @@ strake-core = { path = "../core" }
 arrow-flight = { workspace = true }
 tonic = { workspace = true }
 tokio = { workspace = true }
+openssl = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
 futures = "0.3"
