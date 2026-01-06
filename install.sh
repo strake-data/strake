@@ -1,10 +1,10 @@
-#!/bin/bash
+#!/bin/sh
 # Strake Universal Installer
 # Usage: curl -sSfL https://strakedata.com/install.sh | sh
 #    or: curl -sSfL https://strakedata.com/install.sh | sh -s -- --all
 #    or: curl -sSfL https://strakedata.com/install.sh | sh -s -- --cli --server
 
-set -euo pipefail
+set -eu
 
 REPO="strake-data/strake"
 INSTALL_DIR="${STRAKE_INSTALL_DIR:-$HOME/.local/bin}"
@@ -16,9 +16,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+log_info() { echo "${GREEN}[INFO]${NC} $1"; }
+log_warn() { echo "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo "${RED}[ERROR]${NC} $1"; exit 1; }
 
 # Binaries to install
 INSTALL_CLI=false
@@ -27,7 +27,7 @@ INSTALL_ENTERPRISE=false
 VERSION=""
 
 # Parse arguments
-while [[ $# -gt 0 ]]; do
+while [ $# -gt 0 ]; do
     case $1 in
         --all|-a)
             INSTALL_CLI=true
@@ -94,13 +94,14 @@ EOF
 done
 
 # If nothing specified, default to CLI only
-if [[ "$INSTALL_CLI" == "false" && "$INSTALL_SERVER" == "false" && "$INSTALL_ENTERPRISE" == "false" ]]; then
+if [ "$INSTALL_CLI" = "false" ] && [ "$INSTALL_SERVER" = "false" ] && [ "$INSTALL_ENTERPRISE" = "false" ]; then
     INSTALL_CLI=true
 fi
 
 # Detect OS and architecture
 detect_platform() {
-    local os arch
+    os=""
+    arch=""
 
     case "$(uname -s)" in
         Linux*)  os="unknown-linux" ;;
@@ -116,7 +117,7 @@ detect_platform() {
     esac
 
     # Linux: prefer musl for better portability
-    if [[ "$os" == "unknown-linux" ]]; then
+    if [ "$os" = "unknown-linux" ]; then
         if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -q musl; then
             os="unknown-linux-musl"
         else
@@ -129,12 +130,11 @@ detect_platform() {
 
 # Get the latest release version from GitHub
 get_latest_version() {
-    local version
     version=$(curl -sSf "https://api.github.com/repos/${REPO}/releases/latest" | 
         grep '"tag_name":' | 
         sed -E 's/.*"([^"]+)".*/\1/')
     
-    if [[ -z "$version" ]]; then
+    if [ -z "$version" ]; then
         log_error "Failed to determine latest version"
     fi
     
@@ -143,28 +143,29 @@ get_latest_version() {
 
 # Download and install a binary
 install_binary() {
-    local binary_name="$1"
-    local platform="$2"
-    local version="$3"
-    local download_url="https://github.com/${REPO}/releases/download/${version}/${binary_name}-${platform}"
-    local temp_file
+    binary_name="$1"
+    platform="$2"
+    version="$3"
+    download_url="https://github.com/${REPO}/releases/download/${version}/${binary_name}-${platform}"
     
     # Windows uses .exe extension
-    if [[ "$platform" == *"windows"* ]]; then
-        download_url="${download_url}.exe"
-    fi
+    case "$platform" in
+        *windows*) download_url="${download_url}.exe" ;;
+    esac
 
     temp_file=$(mktemp)
-    trap 'rm -f "$temp_file"' EXIT
+    # trap 'rm -f "$temp_file"' EXIT # trapped EXIT is not strictly POSIX on all sh, handled manually
 
     log_info "Downloading ${binary_name} ${version} for ${platform}..."
     
     if ! curl -sSfL "$download_url" -o "$temp_file"; then
+        rm -f "$temp_file"
         log_error "Failed to download from ${download_url}"
     fi
 
     # Verify it's a valid binary (basic check)
-    if [[ ! -s "$temp_file" ]]; then
+    if [ ! -s "$temp_file" ]; then
+        rm -f "$temp_file"
         log_error "Downloaded file is empty"
     fi
 
@@ -172,35 +173,40 @@ install_binary() {
     mkdir -p "$INSTALL_DIR"
 
     # Install the binary
-    local install_path="${INSTALL_DIR}/${binary_name}"
-    if [[ "$platform" == *"windows"* ]]; then
-        install_path="${install_path}.exe"
-    fi
+    install_path="${INSTALL_DIR}/${binary_name}"
+    case "$platform" in
+         *windows*) install_path="${install_path}.exe" ;;
+    esac
 
     mv "$temp_file" "$install_path"
     chmod +x "$install_path"
+    rm -f "$temp_file"
 
     log_info "✓ Installed ${binary_name} to ${install_path}"
 }
 
 # Check if install directory is in PATH
 check_path() {
-    if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-        echo ""
-        log_warn "${INSTALL_DIR} is not in your PATH"
-        echo ""
-        echo "Add it to your shell configuration:"
-        echo ""
-        echo "  ${BLUE}# For bash (~/.bashrc)${NC}"
-        echo "  export PATH=\"\$PATH:${INSTALL_DIR}\""
-        echo ""
-        echo "  ${BLUE}# For zsh (~/.zshrc)${NC}"
-        echo "  export PATH=\"\$PATH:${INSTALL_DIR}\""
-        echo ""
-        echo "  ${BLUE}# For fish (~/.config/fish/config.fish)${NC}"
-        echo "  set -gx PATH \$PATH ${INSTALL_DIR}"
-        echo ""
-    fi
+    # Check if INSTALL_DIR is in PATH
+    case ":$PATH:" in
+        *":$INSTALL_DIR:"*) ;;
+        *)
+            echo ""
+            log_warn "${INSTALL_DIR} is not in your PATH"
+            echo ""
+            echo "Add it to your shell configuration:"
+            echo ""
+            echo "  ${BLUE}# For bash (~/.bashrc)${NC}"
+            echo "  export PATH=\"\$PATH:${INSTALL_DIR}\""
+            echo ""
+            echo "  ${BLUE}# For zsh (~/.zshrc)${NC}"
+            echo "  export PATH=\"\$PATH:${INSTALL_DIR}\""
+            echo ""
+            echo "  ${BLUE}# For fish (~/.config/fish/config.fish)${NC}"
+            echo "  set -gx PATH \$PATH ${INSTALL_DIR}"
+            echo ""
+            ;;
+    esac
 }
 
 main() {
@@ -217,26 +223,25 @@ EOF
     log_info "Strake Universal Installer"
     echo ""
 
-    local platform
     platform=$(detect_platform)
     log_info "Detected platform: ${platform}"
 
-    if [[ -z "$VERSION" ]]; then
+    if [ -z "$VERSION" ]; then
         VERSION=$(get_latest_version)
     fi
     log_info "Version: ${VERSION}"
     echo ""
 
     # Install selected binaries
-    if [[ "$INSTALL_CLI" == "true" ]]; then
+    if [ "$INSTALL_CLI" = "true" ]; then
         install_binary "strake-cli" "$platform" "$VERSION"
     fi
     
-    if [[ "$INSTALL_SERVER" == "true" ]]; then
+    if [ "$INSTALL_SERVER" = "true" ]; then
         install_binary "strake-server" "$platform" "$VERSION"
     fi
     
-    if [[ "$INSTALL_ENTERPRISE" == "true" ]]; then
+    if [ "$INSTALL_ENTERPRISE" = "true" ]; then
         install_binary "strake-enterprise" "$platform" "$VERSION"
     fi
 
@@ -247,15 +252,15 @@ EOF
     echo ""
     echo "Next steps:"
     
-    if [[ "$INSTALL_CLI" == "true" ]]; then
+    if [ "$INSTALL_CLI" = "true" ]; then
         echo "  • Run ${BLUE}strake-cli --help${NC} to get started with the CLI"
     fi
     
-    if [[ "$INSTALL_SERVER" == "true" ]]; then
+    if [ "$INSTALL_SERVER" = "true" ]; then
         echo "  • Run ${BLUE}strake-server --help${NC} to start the query server"
     fi
     
-    if [[ "$INSTALL_ENTERPRISE" == "true" ]]; then
+    if [ "$INSTALL_ENTERPRISE" = "true" ]; then
         echo "  • Run ${BLUE}strake-enterprise --help${NC} to start the enterprise server"
     fi
     
