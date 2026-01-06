@@ -15,8 +15,12 @@ pub struct StrakeConnection {
 #[pymethods]
 impl StrakeConnection {
     #[new]
-    #[pyo3(signature = (dsn_or_config, api_key = None))]
-    fn new(dsn_or_config: String, api_key: Option<String>) -> PyResult<Self> {
+    #[pyo3(signature = (dsn_or_config, sources_config = None, api_key = None))]
+    fn new(
+        dsn_or_config: String,
+        sources_config: Option<String>,
+        api_key: Option<String>,
+    ) -> PyResult<Self> {
         let runtime =
             tokio::runtime::Runtime::new().map_err(|e| to_py_err("Failed to create runtime", e))?;
 
@@ -31,7 +35,7 @@ impl StrakeConnection {
             } else {
                 // Embedded mode
                 let engine = runtime
-                    .block_on(async { EmbeddedBackend::new(&dsn_or_config).await })
+                    .block_on(async { EmbeddedBackend::new(&dsn_or_config, sources_config).await })
                     .map_err(|e| to_py_value_err("Engine initialization failed", e))?;
 
                 Backend::Embedded(engine)

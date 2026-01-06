@@ -14,18 +14,26 @@ pub struct EmbeddedBackend {
 }
 
 impl EmbeddedBackend {
-    pub async fn new(config_path_str: &str) -> anyhow::Result<Self> {
+    pub async fn new(
+        config_path_str: &str,
+        sources_config: Option<String>,
+    ) -> anyhow::Result<Self> {
         // Load AppConfig (for side effects? original code loaded it but didn't use it except to map error)
         let _app_config = AppConfig::from_file(config_path_str)
             .map_err(|e| anyhow::anyhow!("Failed to load app config: {}", e))?;
 
-        let config_path = Path::new(config_path_str)
-            .parent()
-            .unwrap_or(Path::new(""))
-            .join("sources.yaml");
+        // Use provided sources path OR fall back to same directory as strake.yaml
+        let config_path_final = if let Some(p) = sources_config {
+            Path::new(&p).to_path_buf()
+        } else {
+            Path::new(config_path_str)
+                .parent()
+                .unwrap_or(Path::new(""))
+                .join("sources.yaml")
+        };
 
-        let config = Config::from_file(config_path.to_str().unwrap_or("config/sources.yaml"))
-            .map_err(|e| anyhow::anyhow!("Failed to load sources.yaml: {}", e))?;
+        let config = Config::from_file(config_path_final.to_str().unwrap_or("config/sources.yaml"))
+            .map_err(|e| anyhow::anyhow!("Failed to load sources config: {}", e))?;
 
         let engine = FederationEngine::new(strake_core::federation::FederationEngineOptions {
             config,
