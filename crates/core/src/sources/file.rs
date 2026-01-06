@@ -140,17 +140,23 @@ async fn register_object_store(
                 "ftp"
             }
             "sftp" => {
-                map.insert(
-                    "endpoint".to_string(),
-                    format!("ssh://{}:{}", bucket, url.port().unwrap_or(22)),
-                );
-                if !url.username().is_empty() {
-                    map.insert("user".to_string(), url.username().to_string());
+                #[cfg(not(unix))]
+                return Err(anyhow::anyhow!("SFTP is only supported on Unix systems"));
+
+                #[cfg(unix)]
+                {
+                    map.insert(
+                        "endpoint".to_string(),
+                        format!("ssh://{}:{}", bucket, url.port().unwrap_or(22)),
+                    );
+                    if !url.username().is_empty() {
+                        map.insert("user".to_string(), url.username().to_string());
+                    }
+                    if let Some(password) = url.password() {
+                        map.insert("password".to_string(), password.to_string());
+                    }
+                    "sftp"
                 }
-                if let Some(password) = url.password() {
-                    map.insert("password".to_string(), password.to_string());
-                }
-                "sftp"
             }
             _ => return Ok(()),
         };
