@@ -4,6 +4,31 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
 
+// Default constants
+pub const DEFAULT_PORT: u16 = 50051;
+pub const DEFAULT_HEALTH_PORT: u16 = 8080;
+pub const DEFAULT_API_PORT: u16 = 8080;
+pub const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:50051";
+pub const DEFAULT_HEALTH_ADDR: &str = "0.0.0.0:8080";
+pub const DEFAULT_API_URL: &str = "http://localhost:8080/api/v1";
+pub const DEFAULT_CATALOG: &str = "strake";
+pub const DEFAULT_SERVER_NAME: &str = "Strake Server";
+pub const DEFAULT_GLOBAL_CONNECTION_BUDGET: usize = 100;
+
+pub const DEFAULT_LIMIT: usize = 1000;
+pub const DEFAULT_MAX_ATTEMPTS: u32 = 5;
+pub const DEFAULT_BASE_DELAY_MS: u64 = 1000;
+pub const DEFAULT_MAX_DELAY_MS: u64 = 60000;
+
+pub const DEFAULT_API_KEY: &str = "dev-key";
+pub const DEFAULT_CACHE_TTL: u64 = 300;
+pub const DEFAULT_CACHE_CAPACITY: u64 = 10000;
+
+pub const DEFAULT_CACHE_ENABLED: bool = false;
+pub const DEFAULT_CACHE_DIR: &str = "/tmp/strake-cache";
+pub const DEFAULT_CACHE_MAX_SIZE_MB: u64 = 10240; // 10GB
+pub const DEFAULT_CACHE_TTL_SECONDS: u64 = 3600; // 1 hour
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub sources: Vec<SourceConfig>,
@@ -64,17 +89,17 @@ pub struct RetrySettings {
 }
 
 fn default_limit() -> Option<usize> {
-    Some(1000)
+    Some(DEFAULT_LIMIT)
 }
 
 fn default_max_attempts() -> u32 {
-    5
+    DEFAULT_MAX_ATTEMPTS
 }
 fn default_base_delay_ms() -> u64 {
-    1000
+    DEFAULT_BASE_DELAY_MS
 }
 fn default_max_delay_ms() -> u64 {
-    60000
+    DEFAULT_MAX_DELAY_MS
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -122,11 +147,11 @@ pub struct ServerSettings {
 }
 
 fn default_listen_addr() -> String {
-    "0.0.0.0:50051".to_string()
+    DEFAULT_LISTEN_ADDR.to_string()
 }
 
 fn default_health_addr() -> String {
-    "0.0.0.0:8080".to_string()
+    DEFAULT_HEALTH_ADDR.to_string()
 }
 
 #[allow(dead_code)]
@@ -135,19 +160,19 @@ fn default_pool_size() -> usize {
 }
 
 fn default_global_budget() -> usize {
-    100
+    DEFAULT_GLOBAL_CONNECTION_BUDGET
 }
 
 fn default_catalog() -> String {
-    "strake".to_string()
+    DEFAULT_CATALOG.to_string()
 }
 
 fn default_api_url() -> String {
-    "http://localhost:8080/api/v1".to_string()
+    DEFAULT_API_URL.to_string()
 }
 
 fn default_server_name() -> String {
-    "Strake Server".to_string()
+    DEFAULT_SERVER_NAME.to_string()
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -177,15 +202,15 @@ pub struct AuthSettings {
 }
 
 fn default_api_key() -> String {
-    "dev-key".to_string()
+    DEFAULT_API_KEY.to_string()
 }
 
 fn default_cache_ttl() -> u64 {
-    300
+    DEFAULT_CACHE_TTL
 }
 
 fn default_cache_capacity() -> u64 {
-    10000
+    DEFAULT_CACHE_CAPACITY
 }
 
 // Query result cache configuration
@@ -213,27 +238,32 @@ impl Default for QueryCacheConfig {
 }
 
 fn default_cache_enabled() -> bool {
-    false
+    DEFAULT_CACHE_ENABLED
 }
 
 fn default_cache_directory() -> String {
-    "/tmp/strake-cache".to_string()
+    DEFAULT_CACHE_DIR.to_string()
 }
 
 fn default_cache_max_size_mb() -> u64 {
-    10240 // 10GB
+    DEFAULT_CACHE_MAX_SIZE_MB
 }
 
 fn default_cache_ttl_seconds() -> u64 {
-    3600 // 1 hour
+    DEFAULT_CACHE_TTL_SECONDS
 }
 
 impl AppConfig {
     pub fn from_file(path: &str) -> Result<Self> {
-        let content =
-            fs::read_to_string(path).context(format!("Failed to read config file at {}", path))?;
-        let mut config: AppConfig = serde_yaml::from_str(&content)
-            .context(format!("Failed to parse app config file at {}", path))?;
+        let mut config: AppConfig = if std::path::Path::new(path).exists() {
+            let content = fs::read_to_string(path)
+                .context(format!("Failed to read config file at {}", path))?;
+            serde_yaml::from_str(&content)
+                .context(format!("Failed to parse app config file at {}", path))?
+        } else {
+            // Allow starting without config file if defaults/env vars are enough
+            AppConfig::default()
+        };
 
         // Environment variable overrides for server settings
         if let Ok(addr) = std::env::var("STRAKE_SERVER__LISTEN_ADDR") {
@@ -244,6 +274,32 @@ impl AppConfig {
         }
         if let Ok(url) = std::env::var("STRAKE_API_URL") {
             config.server.api_url = url;
+        }
+        if let Ok(catalog) = std::env::var("STRAKE_SERVER__CATALOG") {
+            config.server.catalog = catalog;
+        }
+        if let Ok(budget) = std::env::var("STRAKE_SERVER__GLOBAL_CONNECTION_BUDGET") {
+            if let Ok(val) = budget.parse() {
+                config.server.global_connection_budget = val;
+            }
+        }
+        if let Ok(enabled) = std::env::var("STRAKE_AUTH__ENABLED") {
+            if let Ok(val) = enabled.parse() {
+                config.server.auth.enabled = val;
+            }
+        }
+        if let Ok(key) = std::env::var("STRAKE_AUTH__API_KEY") {
+            config.server.auth.api_key = key;
+        }
+        if let Ok(attempts) = std::env::var("STRAKE_RETRY__MAX_ATTEMPTS") {
+            if let Ok(val) = attempts.parse() {
+                config.retry.max_attempts = val;
+            }
+        }
+        if let Ok(rows) = std::env::var("STRAKE_QUERY_LIMITS__MAX_OUTPUT_ROWS") {
+            if let Ok(val) = rows.parse() {
+                config.query_limits.max_output_rows = Some(val);
+            }
         }
 
         Ok(config)
@@ -282,5 +338,34 @@ retry:
         let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.server.listen_addr, "0.0.0.0:50053");
         assert_eq!(config.server.catalog, "strake");
+    }
+
+    #[test]
+    fn test_env_var_overrides() {
+        // Set env vars
+        std::env::set_var("STRAKE_SERVER__LISTEN_ADDR", "1.2.3.4:9999");
+        std::env::set_var("STRAKE_SERVER__CATALOG", "test_catalog");
+        std::env::set_var("STRAKE_SERVER__GLOBAL_CONNECTION_BUDGET", "500");
+        std::env::set_var("STRAKE_AUTH__ENABLED", "true");
+        std::env::set_var("STRAKE_AUTH__API_KEY", "env-key");
+        std::env::set_var("STRAKE_RETRY__MAX_ATTEMPTS", "10");
+
+        // Load config (non-existent file, should use defaults + overrides)
+        let config = AppConfig::from_file("non_existent_config.yaml").unwrap();
+
+        assert_eq!(config.server.listen_addr, "1.2.3.4:9999");
+        assert_eq!(config.server.catalog, "test_catalog");
+        assert_eq!(config.server.global_connection_budget, 500);
+        assert!(config.server.auth.enabled);
+        assert_eq!(config.server.auth.api_key, "env-key");
+        assert_eq!(config.retry.max_attempts, 10);
+
+        // Cleanup
+        std::env::remove_var("STRAKE_SERVER__LISTEN_ADDR");
+        std::env::remove_var("STRAKE_SERVER__CATALOG");
+        std::env::remove_var("STRAKE_SERVER__GLOBAL_CONNECTION_BUDGET");
+        std::env::remove_var("STRAKE_AUTH__ENABLED");
+        std::env::remove_var("STRAKE_AUTH__API_KEY");
+        std::env::remove_var("STRAKE_RETRY__MAX_ATTEMPTS");
     }
 }

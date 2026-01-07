@@ -19,7 +19,7 @@ Strake provides a high-performance Python client written in Rust.
 ### From PyPI (Recommended)
     ```bash
     ## uv
-    uv init strake-data
+    uv init strake-demo
     uv pip add strake
     ```
 
@@ -97,4 +97,20 @@ cargo run --package strake-server --release
 ```
 
 The server will start on `0.0.0.0:50051`.
+
+### Server Configuration
+
+The Strake Server can be configured via environment variables or a `.env` file. These settings override values in `config/strake.yaml`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `STRAKE_SERVER__LISTEN_ADDR` | `0.0.0.0:50051` | The address and port for the gRPC server |
+| `STRAKE_SERVER__HEALTH_ADDR` | `0.0.0.0:8080` | The address and port for the health check and API |
+| `STRAKE_SERVER__CATALOG` | `strake` | The default catalog name |
+| `STRAKE_SERVER__GLOBAL_CONNECTION_BUDGET` | `100` | Max concurrent connection budget for the server |
+| `STRAKE_API_URL` | `http://localhost:8080/api/v1` | Public URL for the Strake API |
+| `STRAKE_AUTH__ENABLED` | `false` | Enable/Disable authentication checks |
+| `STRAKE_AUTH__API_KEY` | `dev-key` | Static API key for auth (if enabled) |
+| `STRAKE_RETRY__MAX_ATTEMPTS` | `5` | Max retries for establishing upstream connections |
+| `STRAKE_QUERY_LIMITS__MAX_OUTPUT_ROWS` | `None` | Hard limit on rows returned by a query |
 

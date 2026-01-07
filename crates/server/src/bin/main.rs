@@ -8,6 +8,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenv::dotenv().ok();
     let args = <Args as clap::Parser>::parse();
 
     // Load AppConfig to get server address

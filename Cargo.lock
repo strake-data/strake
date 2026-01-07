@@ -6108,6 +6108,7 @@ dependencies = [
  "clap",
  "datafusion",
  "deadpool-postgres",
+ "dotenv",
  "futures",
  "http-body-util",
  "moka",
