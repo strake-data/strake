@@ -1,16 +1,20 @@
-/* Base Primary overrides for Material */
-:root,
-[data-md-color-primary] {
-    --md-primary-fg-color: #F8FAFC !important;
-    --md-primary-fg-color--light: #F1F5F9 !important;
-    --md-primary-fg-color--dark: #E2E8F0 !important;
-    --md-accent-fg-color: #1E3A8A !important;
+/* ============================================
+   LIGHT MODE STYLES (default scheme)
+   ============================================ */
+
+/* Base Primary overrides for Material - Light Mode */
+[data-md-color-scheme="default"] {
+    --md-primary-fg-color: #F8FAFC;
+    --md-primary-fg-color--light: #F1F5F9;
+    --md-primary-fg-color--dark: #E2E8F0;
+    --md-accent-fg-color: #1E3A8A;
+    --md-default-fg-color: #1F2937;
+    --md-default-bg-color: #FFFFFF;
 }
 
 /* Increase Logo Size */
 .md-header__button.md-logo img {
-    height: 2.5rem !important;
-    /* Larger logo */
+    height: 2.5rem;
     width: auto;
 }
 
@@ -18,110 +22,93 @@
     padding: 0.2rem 0;
 }
 
-/* Header styling */
-.md-header {
-    background-color: #F8FAFC !important;
-    color: #1F2937 !important;
+/* Header styling - Light Mode */
+[data-md-color-scheme="default"] .md-header {
+    background-color: #F8FAFC;
+    color: #1F2937;
     border-bottom: 1px solid #E2E8F0;
 }
 
-[data-md-color-scheme="default"] .md-header,
-[data-md-color-primary] .md-header {
-    background-color: #F8FAFC !important;
+[data-md-color-scheme="default"] .md-header__topic,
+[data-md-color-scheme="default"] .md-header__button {
+    color: #1F2937;
 }
 
-.md-header__topic,
-.md-header__button {
-    color: #1F2937 !important;
+[data-md-color-scheme="default"] .md-header__topic .md-ellipsis {
+    color: #1E3A8A;
 }
 
-.md-header__topic .md-ellipsis {
-    color: #1E3A8A !important;
+[data-md-color-scheme="default"] .md-header__button svg {
+    fill: #1F2937;
 }
 
-/* Fix header icons contrast */
-.md-header__button svg {
-    fill: #1F2937 !important;
-}
-
-.md-header__topic {
-    color: #1F2937 !important;
-}
-
-/* Ensure tabs (links) are always visible and styled */
-.md-tabs {
-    background-color: #F8FAFC !important;
+/* Tabs - Light Mode */
+[data-md-color-scheme="default"] .md-tabs {
+    background-color: #F8FAFC;
     border-bottom: 1px solid #E2E8F0;
 }
 
-.md-tabs__link {
-    color: #4B5563 !important;
-    font-weight: 500 !important;
-    opacity: 1 !important;
+[data-md-color-scheme="default"] .md-tabs__link {
+    color: #4B5563;
+    font-weight: 500;
+    opacity: 1;
 }
 
-.md-tabs__link--active {
-    color: #1E3A8A !important;
-    font-weight: 700 !important;
+[data-md-color-scheme="default"] .md-tabs__link--active {
+    color: #1E3A8A;
+    font-weight: 700;
 }
 
-/* Match landing page typography */
 /* Wordmark styling */
 .md-header__topic {
-    font-weight: 700 !important;
-    font-size: 1.1rem !important;
+    font-weight: 700;
+    font-size: 1.1rem;
     letter-spacing: -0.025em;
     text-transform: uppercase;
 }
 
-[data-md-color-scheme="default"] {
-    --md-default-fg-color: #1F2937;
-    --md-default-bg-color: #FFFFFF;
+/* Search - Light Mode */
+[data-md-color-scheme="default"] .md-search__form {
+    background-color: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 20px;
 }
 
-/* Make search and other elements more like the landing page */
-.md-search__form {
-    background-color: #FFFFFF !important;
-    border: 1px solid #E2E8F0 !important;
-    border-radius: 20px !important;
+[data-md-color-scheme="default"] .md-search__input {
+    color: #1F2937;
 }
 
-.md-search__input {
-    color: #1F2937 !important;
+[data-md-color-scheme="default"] .md-search__icon svg {
+    fill: #64748B;
 }
 
-.md-search__icon svg {
-    fill: #64748B !important;
-}
-
-
-/* Make links more visible */
-.md-typeset a {
-    color: #1E3A8A !important;
+/* Links - Light Mode */
+[data-md-color-scheme="default"] .md-typeset a {
+    color: #1E3A8A;
     text-decoration: underline;
 }
 
-.md-typeset a:hover {
-    color: #3B82F6 !important;
+[data-md-color-scheme="default"] .md-typeset a:hover {
+    color: #3B82F6;
 }
 
-/* Fix sidebar navigation links */
-.md-nav__link {
-    color: #4B5563 !important;
+/* Sidebar navigation - Light Mode */
+[data-md-color-scheme="default"] .md-nav__link {
+    color: #4B5563;
 }
 
-.md-nav__link:hover,
-.md-nav__link--active {
-    color: #1E3A8A !important;
+[data-md-color-scheme="default"] .md-nav__link:hover,
+[data-md-color-scheme="default"] .md-nav__link--active {
+    color: #1E3A8A;
 }
 
-.md-nav__item--nested>.md-nav__link {
-    color: #1F2937 !important;
+[data-md-color-scheme="default"] .md-nav__item--nested>.md-nav__link {
+    color: #1F2937;
     font-weight: 600;
 }
 
-/* API Reference Styling */
-.api-signature {
+/* API Reference Styling - Light Mode */
+[data-md-color-scheme="default"] .api-signature {
     background: #f8fafc;
     border-left: 4px solid #1e3a8a;
     padding: 1rem;
@@ -133,59 +120,319 @@
     align-items: center;
 }
 
-.api-signature code {
-    background: transparent !important;
-    padding: 0 !important;
-    color: #1e3a8a !important;
+[data-md-color-scheme="default"] .api-signature code {
+    background: transparent;
+    padding: 0;
+    color: #1e3a8a;
     font-weight: 600;
 }
 
-.api-signature .type {
+[data-md-color-scheme="default"] .api-signature .type {
     color: #64748b;
     font-size: 0.85rem;
 }
 
-/* Definition List Improvements (for Parameters) */
-.md-typeset dl {
+/* Definition List - Light Mode */
+[data-md-color-scheme="default"] .md-typeset dl {
     margin-bottom: 2rem;
 }
 
-.md-typeset dt {
+[data-md-color-scheme="default"] .md-typeset dt {
     font-weight: 700;
     color: #1e3a8a;
     margin-top: 1rem;
 }
 
-.md-typeset dd {
+[data-md-color-scheme="default"] .md-typeset dd {
     margin-left: 1.5rem;
     color: #4b5563;
     font-size: 0.95rem;
 }
 
-.md-typeset dt code {
-    background: #eff6ff !important;
-    color: #2563eb !important;
-    padding: 0.1rem 0.4rem !important;
+[data-md-color-scheme="default"] .md-typeset dt code {
+    background: #eff6ff;
+    color: #2563eb;
+    padding: 0.1rem 0.4rem;
 }
 
-.md-typeset h1,
-.md-typeset h2,
-.md-typeset h3 {
+/* Headings - Light Mode */
+[data-md-color-scheme="default"] .md-typeset h1,
+[data-md-color-scheme="default"] .md-typeset h2,
+[data-md-color-scheme="default"] .md-typeset h3 {
     font-weight: 800;
     letter-spacing: -0.025em;
     color: #1E3A8A;
 }
 
-/* Custom scrollbar to match modern feel */
+/* ============================================
+   DARK MODE STYLES (slate scheme)
+   ============================================ */
+
+[data-md-color-scheme="slate"] {
+    --md-primary-fg-color: #0F172A;
+    --md-primary-fg-color--light: #1E293B;
+    --md-primary-fg-color--dark: #020617;
+    --md-accent-fg-color: #60A5FA;
+    --md-default-fg-color: #E2E8F0;
+    --md-default-fg-color--light: #94A3B8;
+    --md-default-bg-color: #0F172A;
+    --md-code-bg-color: #1E293B;
+    --md-code-fg-color: #E2E8F0;
+}
+
+/* Header - Dark Mode */
+[data-md-color-scheme="slate"] .md-header {
+    background-color: #0F172A;
+    color: #E2E8F0;
+    border-bottom: 1px solid #334155;
+}
+
+[data-md-color-scheme="slate"] .md-header__topic,
+[data-md-color-scheme="slate"] .md-header__button {
+    color: #E2E8F0;
+}
+
+[data-md-color-scheme="slate"] .md-header__topic .md-ellipsis {
+    color: #60A5FA;
+}
+
+[data-md-color-scheme="slate"] .md-header__button svg {
+    fill: #E2E8F0;
+}
+
+/* Tabs - Dark Mode */
+[data-md-color-scheme="slate"] .md-tabs {
+    background-color: #0F172A;
+    border-bottom: 1px solid #334155;
+}
+
+[data-md-color-scheme="slate"] .md-tabs__link {
+    color: #94A3B8;
+    font-weight: 500;
+    opacity: 1;
+}
+
+[data-md-color-scheme="slate"] .md-tabs__link--active {
+    color: #60A5FA;
+    font-weight: 700;
+}
+
+/* Search - Dark Mode */
+[data-md-color-scheme="slate"] .md-search__form {
+    background-color: #1E293B;
+    border: 1px solid #334155;
+    border-radius: 20px;
+}
+
+[data-md-color-scheme="slate"] .md-search__input {
+    color: #E2E8F0;
+}
+
+[data-md-color-scheme="slate"] .md-search__input::placeholder {
+    color: #64748B;
+}
+
+[data-md-color-scheme="slate"] .md-search__icon svg {
+    fill: #64748B;
+}
+
+/* Content area - Dark Mode */
+[data-md-color-scheme="slate"] .md-content {
+    background-color: #0F172A;
+}
+
+[data-md-color-scheme="slate"] .md-main {
+    background-color: #0F172A;
+}
+
+/* Sidebar - Dark Mode */
+[data-md-color-scheme="slate"] .md-sidebar {
+    background-color: #0F172A;
+}
+
+[data-md-color-scheme="slate"] .md-nav__link {
+    color: #94A3B8;
+}
+
+[data-md-color-scheme="slate"] .md-nav__link:hover,
+[data-md-color-scheme="slate"] .md-nav__link--active {
+    color: #60A5FA;
+}
+
+[data-md-color-scheme="slate"] .md-nav__item--nested>.md-nav__link {
+    color: #E2E8F0;
+    font-weight: 600;
+}
+
+/* Links - Dark Mode */
+[data-md-color-scheme="slate"] .md-typeset a {
+    color: #60A5FA;
+    text-decoration: underline;
+}
+
+[data-md-color-scheme="slate"] .md-typeset a:hover {
+    color: #93C5FD;
+}
+
+/* Headings - Dark Mode */
+[data-md-color-scheme="slate"] .md-typeset h1,
+[data-md-color-scheme="slate"] .md-typeset h2,
+[data-md-color-scheme="slate"] .md-typeset h3 {
+    font-weight: 800;
+    letter-spacing: -0.025em;
+    color: #60A5FA;
+}
+
+/* Typography - Dark Mode */
+[data-md-color-scheme="slate"] .md-typeset {
+    color: #E2E8F0;
+}
+
+[data-md-color-scheme="slate"] .md-typeset h4,
+[data-md-color-scheme="slate"] .md-typeset h5,
+[data-md-color-scheme="slate"] .md-typeset h6 {
+    color: #CBD5E1;
+}
+
+/* Code blocks - Dark Mode */
+[data-md-color-scheme="slate"] .md-typeset code {
+    background-color: #1E293B;
+    color: #E2E8F0;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre {
+    background-color: #1E293B;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code {
+    background-color: transparent;
+}
+
+/* Tables - Dark Mode */
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) {
+    background-color: #1E293B;
+    border: 1px solid #334155;
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) th {
+    background-color: #334155;
+    color: #E2E8F0;
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) td {
+    border-color: #334155;
+}
+
+/* API Reference - Dark Mode */
+[data-md-color-scheme="slate"] .api-signature {
+    background: #1E293B;
+    border-left: 4px solid #60A5FA;
+    padding: 1rem;
+    margin: 1.5rem 0;
+    border-radius: 0 4px 4px 0;
+    font-family: var(--md-code-font-family);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+[data-md-color-scheme="slate"] .api-signature code {
+    background: transparent;
+    padding: 0;
+    color: #60A5FA;
+    font-weight: 600;
+}
+
+[data-md-color-scheme="slate"] .api-signature .type {
+    color: #94A3B8;
+    font-size: 0.85rem;
+}
+
+/* Definition List - Dark Mode */
+[data-md-color-scheme="slate"] .md-typeset dl {
+    margin-bottom: 2rem;
+}
+
+[data-md-color-scheme="slate"] .md-typeset dt {
+    font-weight: 700;
+    color: #60A5FA;
+    margin-top: 1rem;
+}
+
+[data-md-color-scheme="slate"] .md-typeset dd {
+    margin-left: 1.5rem;
+    color: #94A3B8;
+    font-size: 0.95rem;
+}
+
+[data-md-color-scheme="slate"] .md-typeset dt code {
+    background: #1E3A5F;
+    color: #93C5FD;
+    padding: 0.1rem 0.4rem;
+}
+
+/* Admonitions - Dark Mode */
+[data-md-color-scheme="slate"] .md-typeset .admonition,
+[data-md-color-scheme="slate"] .md-typeset details {
+    background-color: #1E293B;
+    border-color: #334155;
+}
+
+[data-md-color-scheme="slate"] .md-typeset .admonition-title,
+[data-md-color-scheme="slate"] .md-typeset summary {
+    background-color: rgba(96, 165, 250, 0.1);
+}
+
+/* Footer - Dark Mode */
+[data-md-color-scheme="slate"] .md-footer {
+    background-color: #0F172A;
+    border-top: 1px solid #334155;
+}
+
+[data-md-color-scheme="slate"] .md-footer-meta {
+    background-color: #020617;
+}
+
+/* Table of Contents - Dark Mode */
+[data-md-color-scheme="slate"] .md-nav--secondary .md-nav__link {
+    color: #94A3B8;
+}
+
+[data-md-color-scheme="slate"] .md-nav--secondary .md-nav__link--active {
+    color: #60A5FA;
+}
+
+/* Scrollbar - Dark Mode */
+[data-md-color-scheme="slate"] ::-webkit-scrollbar-thumb {
+    background: #334155;
+}
+
+[data-md-color-scheme="slate"] ::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+}
+
+[data-md-color-scheme="slate"] ::-webkit-scrollbar-track {
+    background: #1E293B;
+}
+
+/* ============================================
+   SHARED STYLES (both modes)
+   ============================================ */
+
+/* Custom scrollbar base */
 ::-webkit-scrollbar {
     width: 8px;
 }
 
 ::-webkit-scrollbar-thumb {
-    background: #CBD5E1;
     border-radius: 10px;
 }
 
-::-webkit-scrollbar-thumb:hover {
+/* Light mode scrollbar defaults */
+[data-md-color-scheme="default"] ::-webkit-scrollbar-thumb {
+    background: #CBD5E1;
+}
+
+[data-md-color-scheme="default"] ::-webkit-scrollbar-thumb:hover {
     background: #94A3B8;
 }
