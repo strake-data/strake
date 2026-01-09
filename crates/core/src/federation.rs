@@ -204,14 +204,7 @@ impl FederationEngine {
             limits.max_scan_bytes,
         ));
 
-        // TODO:
-        // We need to add it to physical optimizers, not logical (which is what optimizer_rules is for).
-        // Initializing session state with physical optimizers requires a slightly different builder pattern
-        // or we can just append it if we have access.
-        // DataFusion SessionState builder `with_physical_optimizer_rules` replaces default rules if we are not careful.
-        // But we want to APPEND.
-
-        // Strategy: Build state first, getting default rules, then append ours.
+        // Build state with logical optimizer rules first
         let state = SessionStateBuilder::new_from_existing(state.clone())
             .with_optimizer_rules(optimizer_rules)
             .build();
