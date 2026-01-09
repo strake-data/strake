@@ -118,6 +118,10 @@ impl FederationEngine {
         self.source_configs.get(name).cloned()
     }
 
+    pub fn list_sources(&self) -> Vec<SourceConfig> {
+        self.source_configs.values().cloned().collect()
+    }
+
     fn build_session_context(
         limits: &crate::config::QueryLimits,
         catalog_name: &str,
@@ -200,6 +204,7 @@ impl FederationEngine {
             limits.max_scan_bytes,
         ));
 
+        // TODO:
         // We need to add it to physical optimizers, not logical (which is what optimizer_rules is for).
         // Initializing session state with physical optimizers requires a slightly different builder pattern
         // or we can just append it if we have access.

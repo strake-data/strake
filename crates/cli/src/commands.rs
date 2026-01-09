@@ -256,7 +256,7 @@ async fn validate_contracts(sources_yaml: &str, contracts_path: &str) -> Result<
     let api_url = get_api_url();
 
     let response = client
-        .post(format!("{}/validate", api_url))
+        .post(format!("{}/validate-contracts", api_url))
         .json(&strake_core::models::ValidationRequest {
             sources_yaml: sources_yaml.to_string(),
             contracts_yaml,

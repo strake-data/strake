@@ -102,7 +102,7 @@ fn default_max_delay_ms() -> u64 {
     DEFAULT_MAX_DELAY_MS
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct AppConfig {
     #[serde(default)]
     pub server: ServerSettings,
@@ -114,6 +114,63 @@ pub struct AppConfig {
     pub resources: ResourceConfig,
     #[serde(default)]
     pub cache: QueryCacheConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_mcp_port")]
+    pub port: u16,
+    #[serde(default = "default_sidecar_max_retries")]
+    pub max_retries: u32,
+    #[serde(default = "default_sidecar_retry_delay_ms")]
+    pub retry_delay_ms: u64,
+    #[serde(default = "default_sidecar_startup_delay_ms")]
+    pub startup_delay_ms: u64,
+    #[serde(default = "default_sidecar_shutdown_timeout_ms")]
+    pub shutdown_timeout_ms: u64,
+    #[serde(default)]
+    pub python_bin: Option<String>,
+    #[serde(default)]
+    pub health_check_url: Option<String>,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: default_mcp_port(),
+            max_retries: default_sidecar_max_retries(),
+            retry_delay_ms: default_sidecar_retry_delay_ms(),
+            startup_delay_ms: default_sidecar_startup_delay_ms(),
+            shutdown_timeout_ms: default_sidecar_shutdown_timeout_ms(),
+            python_bin: None,
+            health_check_url: None,
+        }
+    }
+}
+
+fn default_mcp_port() -> u16 {
+    8001
+}
+
+fn default_sidecar_max_retries() -> u32 {
+    5
+}
+
+fn default_sidecar_retry_delay_ms() -> u64 {
+    1000
+}
+
+fn default_sidecar_startup_delay_ms() -> u64 {
+    500
+}
+
+fn default_sidecar_shutdown_timeout_ms() -> u64 {
+    5000
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -122,7 +179,7 @@ pub struct ResourceConfig {
     pub spill_dir: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct ServerSettings {
     #[serde(default = "default_listen_addr")]
     pub listen_addr: String,
@@ -175,7 +232,7 @@ fn default_server_name() -> String {
     DEFAULT_SERVER_NAME.to_string()
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct TlsSettings {
     pub enabled: bool,
     #[serde(default)]
@@ -184,13 +241,13 @@ pub struct TlsSettings {
     pub key: String,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct OidcConfig {
     pub issuer_url: String,
     pub audience: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct AuthSettings {
     pub enabled: bool,
     #[serde(default = "default_api_key")]
@@ -300,6 +357,42 @@ impl AppConfig {
             if let Ok(val) = rows.parse() {
                 config.query_limits.max_output_rows = Some(val);
             }
+        }
+        if let Ok(enabled) = std::env::var("STRAKE_MCP__ENABLED") {
+            if let Ok(val) = enabled.parse() {
+                config.mcp.enabled = val;
+            }
+        }
+        if let Ok(port) = std::env::var("STRAKE_MCP__PORT") {
+            if let Ok(val) = port.parse() {
+                config.mcp.port = val;
+            }
+        }
+        if let Ok(val) = std::env::var("STRAKE_MCP__MAX_RETRIES") {
+            if let Ok(v) = val.parse() {
+                config.mcp.max_retries = v;
+            }
+        }
+        if let Ok(val) = std::env::var("STRAKE_MCP__RETRY_DELAY_MS") {
+            if let Ok(v) = val.parse() {
+                config.mcp.retry_delay_ms = v;
+            }
+        }
+        if let Ok(val) = std::env::var("STRAKE_MCP__STARTUP_DELAY_MS") {
+            if let Ok(v) = val.parse() {
+                config.mcp.startup_delay_ms = v;
+            }
+        }
+        if let Ok(val) = std::env::var("STRAKE_MCP__SHUTDOWN_TIMEOUT_MS") {
+            if let Ok(v) = val.parse() {
+                config.mcp.shutdown_timeout_ms = v;
+            }
+        }
+        if let Ok(val) = std::env::var("STRAKE_MCP__PYTHON_BIN") {
+            config.mcp.python_bin = Some(val);
+        }
+        if let Ok(val) = std::env::var("STRAKE_MCP__HEALTH_CHECK_URL") {
+            config.mcp.health_check_url = Some(val);
         }
 
         Ok(config)

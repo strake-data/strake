@@ -95,3 +95,15 @@ pub struct TableDiscovery {
     pub name: String,
     pub schema: String,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QueryRequest {
+    pub sql: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QueryResponse {
+    pub status: String,
+    pub data: Option<serde_json::Value>,
+    pub message: Option<String>,
+}

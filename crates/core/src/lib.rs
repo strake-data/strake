@@ -5,6 +5,7 @@ pub mod federation;
 pub mod models;
 pub mod optimizer;
 pub mod query;
+pub mod sidecar;
 pub mod sources;
 pub mod sql_gen;
 pub mod telemetry;

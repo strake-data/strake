@@ -7,7 +7,7 @@ pub mod errors;
 use connection::StrakeConnection;
 
 #[pymodule]
-fn strake(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _strake(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<StrakeConnection>()?;
     Ok(())
 }

@@ -39,6 +39,7 @@ prost = { workspace = true }
 object_store = { version = "0.12.4", features = ["aws"] }
 opendal = { version = "0.55.0", features = ["services-s3", "services-azblob", "services-gcs", "services-http", "services-ftp"] }
 object_store_opendal = "0.55.0"
+nix = { workspace = true, features = ["signal", "process"] }
 
 # Query result caching
 sha2 = { workspace = true }

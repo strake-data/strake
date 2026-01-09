@@ -227,9 +227,9 @@ impl StrakeServer {
         }
 
         // Nest the custom API router plus our own router
-        // Use introspection router as base and merge enterprise routes
-        let intro_router = api::create_introspection_router(engine.clone());
-        let final_v1 = intro_router.merge(self.api_router);
+        // Use consolidated API router as base and merge enterprise/custom routes
+        let base_api_router = api::create_api_router(engine.clone());
+        let final_v1 = base_api_router.merge(self.api_router);
         let final_app = health_app.nest("/api/v1", final_v1);
 
         let health_addr: SocketAddr = app_config.server.health_addr.parse()?;

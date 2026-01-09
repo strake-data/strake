@@ -5,12 +5,23 @@ use axum::{
 };
 use std::sync::Arc;
 use strake_core::federation::FederationEngine;
-use strake_core::models::{SourcesConfig, TableDiscovery, ValidationRequest, ValidationResponse};
+use strake_core::models::{
+    QueryRequest, QueryResponse, SourcesConfig, TableDiscovery, ValidationRequest,
+    ValidationResponse,
+};
 
 pub fn create_api_router(engine: Arc<FederationEngine>) -> Router {
     Router::new()
         .merge(create_validation_router(engine.clone()))
         .merge(create_introspection_router(engine.clone()))
+        .merge(create_query_router(engine.clone()))
+}
+
+pub fn create_query_router(engine: Arc<FederationEngine>) -> Router {
+    Router::new()
+        .route("/sources", get(list_sources))
+        .route("/query", post(execute_query))
+        .with_state(engine)
 }
 
 pub fn create_validation_router(engine: Arc<FederationEngine>) -> Router {
@@ -54,17 +65,21 @@ async fn validate_config(
 }
 
 async fn list_tables(
-    State(_engine): State<Arc<FederationEngine>>,
-    Path((_domain, _source_name)): Path<(String, String)>,
+    State(engine): State<Arc<FederationEngine>>,
+    Path((_domain, source_name)): Path<(String, String)>,
 ) -> Json<Vec<TableDiscovery>> {
-    // For now, return a placeholder or real discovery from engine if possible
-    // Discovering tables requires connecting to the source.
-    // FederationEngine might already have some sources registered.
+    let mut discovered = Vec::new();
 
-    let discovered = vec![TableDiscovery {
-        name: "users".into(),
-        schema: "public".into(),
-    }];
+    if let Some(catalog) = engine.context().catalog(&engine.catalog_name) {
+        if let Some(schema) = catalog.schema(&source_name) {
+            for table_name in schema.table_names() {
+                discovered.push(TableDiscovery {
+                    name: table_name,
+                    schema: source_name.clone(),
+                });
+            }
+        }
+    }
 
     Json(discovered)
 }
@@ -156,4 +171,81 @@ async fn introspect_tables(
 
     config.sources.push(source);
     Json(config)
+}
+
+async fn list_sources(State(engine): State<Arc<FederationEngine>>) -> Json<SourcesConfig> {
+    let sources = engine.list_sources();
+
+    // Map internal config::SourceConfig to models::SourceConfig
+    let api_sources = sources
+        .into_iter()
+        .map(|s| {
+            strake_core::models::SourceConfig {
+                name: s.name,
+                source_type: s.r#type,
+                url: s
+                    .config
+                    .get("connection")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                username: None,
+                password: None,
+                tables: vec![], // Details fetched via introspection
+            }
+        })
+        .collect();
+
+    Json(SourcesConfig {
+        domain: Some(engine.catalog_name.clone()),
+        sources: api_sources,
+    })
+}
+
+async fn execute_query(
+    State(engine): State<Arc<FederationEngine>>,
+    Json(payload): Json<QueryRequest>,
+) -> Json<QueryResponse> {
+    tracing::info!("Executing query: {}", payload.sql);
+
+    match engine.execute_query(&payload.sql, None).await {
+        Ok((_schema, batches, _warnings)) => {
+            // Convert RecordBatches to JSON using ArrayWriter
+            let mut buf = Vec::new();
+            {
+                let mut writer = arrow_json::ArrayWriter::new(&mut buf);
+                if let Err(e) = writer.write_batches(&batches.iter().collect::<Vec<_>>()) {
+                    return Json(QueryResponse {
+                        status: "error".to_string(),
+                        data: None,
+                        message: Some(format!("JSON serialization error: {}", e)),
+                    });
+                }
+                if let Err(e) = writer.finish() {
+                    return Json(QueryResponse {
+                        status: "error".to_string(),
+                        data: None,
+                        message: Some(format!("JSON writer finish error: {}", e)),
+                    });
+                }
+            }
+
+            match serde_json::from_slice::<serde_json::Value>(&buf) {
+                Ok(data) => Json(QueryResponse {
+                    status: "success".to_string(),
+                    data: Some(data),
+                    message: None,
+                }),
+                Err(e) => Json(QueryResponse {
+                    status: "error".to_string(),
+                    data: None,
+                    message: Some(format!("JSON parse error: {}", e)),
+                }),
+            }
+        }
+        Err(e) => Json(QueryResponse {
+            status: "error".to_string(),
+            data: None,
+            message: Some(e.to_string()),
+        }),
+    }
 }
