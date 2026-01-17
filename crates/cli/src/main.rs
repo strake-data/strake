@@ -1,3 +1,21 @@
+//! Strake CLI: GitOps-driven federated SQL management.
+//!
+//! The CLI is the primary interface for managing Strake state, designed for GitOps workflows.
+//! It revolves around applying a declarative `sources.yaml` configuration to the metadata store.
+//!
+//! # Core Commands
+//!
+//! - `init`: Create a fresh configuration workspace.
+//! - `apply`: Reconcile the local `sources.yaml` with the database state.
+//! - `diff`: Preview changes before applying.
+//! - `validate`: Check configuration validity (schema and network connectivity).
+//!
+//! # Exploration
+//!
+//! - `introspect`: Discover tables in upstream sources.
+//! - `search`: Find specific tables across all sources.
+//! - `add`: Quickly add a discovered table to `sources.yaml`.
+
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use owo_colors::OwoColorize;

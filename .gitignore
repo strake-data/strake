@@ -1,7 +1,7 @@
 # Rust
 /target/
 **/*.rs.bk
-
+/crates/mcp
 
 # Python
 __pycache__/
@@ -75,3 +75,5 @@ strake_deploy_key
 site/
 .env
 /keys
+#/productmanagement
+*.md

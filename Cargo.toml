@@ -9,7 +9,7 @@ arrow = "57"
 datafusion = "51"
 datafusion-python = "50"
 datafusion-federation = "0.4"
-datafusion-table-providers = { version = "0.9", features = ["postgres", "mysql", "sqlite", "flight"] }
+datafusion-table-providers = { version = "0.9", features = ["postgres", "mysql", "sqlite", "flight", "clickhouse"] }
 arrow-flight = { version = "57", features = ["flight-sql-experimental"] }
 arrow-json = "57"
 axum = "0.8.8"

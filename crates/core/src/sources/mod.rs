@@ -1,3 +1,25 @@
+//! Data source abstractions and implementations.
+//!
+//! Strake uses a pluggable source architecture where each data source implements
+//! the `SourceProvider` trait. This module manages the registration and lifecycle
+//! of these sources.
+//!
+//! # Supported Sources
+//!
+//! | Source Type | Implementation | Description |
+//! |-------------|----------------|-------------|
+//! | `sql`       | `SqlSourceProvider` | Generic JDBC-style SQL sources (Postgres, MySQL, etc.) |
+//! | `flight_sql`| `FlightSqlSourceProvider` | High-performance Arrow Flight SQL sources |
+//! | `file`      | `FileSourceProvider` | Local or remote files (Parquet, CSV, JSON) |
+//! | `rest`      | `RestSourceProvider` | REST APIs with JSON responses |
+//! | `grpc`      | `GrpcSourceProvider` | gRPC services |
+//!
+//! # Adding a New Source
+//!
+//! 1. Create a struct implementing `SourceProvider`.
+//! 2. Implement `register` to add the source to the DataFusion `SessionContext`.
+//! 3. Register the provider in `default_registry` in this module.
+
 use crate::config::SourceConfig;
 use anyhow::Result;
 use async_trait::async_trait;
