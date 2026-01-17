@@ -16,8 +16,10 @@ pub use common::SqlDialect;
 use mysql::register_mysql;
 use postgres::register_postgres;
 use sqlite::register_sqlite;
-mod clickhouse;
+pub mod clickhouse;
+pub mod duckdb;
 use clickhouse::register_clickhouse;
+// use duckdb::register_duckdb;
 
 pub struct SqlSourceProvider {
     pub global_retry: RetrySettings,

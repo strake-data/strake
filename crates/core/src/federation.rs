@@ -1,3 +1,31 @@
+//! Core query orchestration engine.
+//!
+//! The `FederationEngine` is the central entry point for executing distributed queries.
+//! It manages:
+//!
+//! 1. **Session State**: DataFusion `SessionContext` with custom configuration.
+//! 2. **Query Planning**: Parsing SQL, logical planning, and optimization.
+//! 3. **Resource Management**: Concurrency limits (`Semaphore`) and memory pools.
+//! 4. **Caching**: Integration with the `QueryCache` for result reuse.
+//!
+//! # Query Lifecycle
+//!
+//! 1. `execute_query(sql)` called.
+//! 2. **Authentication**: User context applied to session.
+//! 3. **Planning**: SQL -> Logical Plan.
+//! 4. **Optimization**:
+//!    - `FederationOptimizerRule` routes subqueries to sources.
+//!    - `DefensiveLimitRule` ensures fetch limits.
+//! 5. **Caching Check**: Compute cache key, heck if cached.
+//! 6. **Execution**: Run physical plan if cache miss.
+//! 7. **Validation**: `CostBasedValidator` checks result size.
+//!
+//! # Example
+//!
+//! ```rust
+//! // See `FederationEngine::new` for initialization
+//! ```
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -122,6 +150,13 @@ impl FederationEngine {
         self.source_configs.values().cloned().collect()
     }
 
+    /// Builds a configured DataFusion SessionContext with Strake's optimizer pipeline.
+    ///
+    /// The optimizer pipeline order matters:
+    /// 1. User-provided rules (for custom rewrites)
+    /// 2. FederationOptimizerRule (routes subqueries to appropriate sources)
+    /// 3. DefensiveLimitRule (safety net for unbounded queries)
+    /// 4. CostBasedValidator (rejects plans exceeding resource limits)
     fn build_session_context(
         limits: &crate::config::QueryLimits,
         catalog_name: &str,
@@ -133,9 +168,9 @@ impl FederationEngine {
     ) -> Result<SessionContext> {
         let mut session_config = datafusion::prelude::SessionConfig::new()
             .with_default_catalog_and_schema(catalog_name, "public")
-            .with_information_schema(true); // Always strictly correct
+            .with_information_schema(true);
 
-        // Apply Safety Defaults (Pushdown, Pruning)
+        // Enable predicate pushdown to minimize data transferred from remote sources
         session_config
             .options_mut()
             .execution
@@ -143,12 +178,11 @@ impl FederationEngine {
             .pushdown_filters = true;
         session_config.options_mut().execution.parquet.pruning = true;
 
-        // Single-node concurrency tuning (default to 4 if not set)
+        // DataFusion defaults to 0 (auto-detect), but we want deterministic behavior
         if session_config.options().execution.target_partitions == 0 {
             session_config.options_mut().execution.target_partitions = 4;
         }
 
-        // Apply Generic Config Passthrough
         for (key, value) in datafusion_config {
             session_config
                 .options_mut()
@@ -156,19 +190,17 @@ impl FederationEngine {
                 .context(format!("Failed to set config option: {}", key))?;
         }
 
-        // Configure RuntimeEnv (Memory & Disk)
         let mut rt_builder = RuntimeEnvBuilder::new();
 
-        // 1. Memory Limit
         if let Some(limit_mb) = resource_config.memory_limit_mb {
             let limit_bytes = limit_mb * 1024 * 1024;
-            // Use FairSpillPool to allow spilling when limit is reached
+            // FairSpillPool spills to disk when memory is exhausted, preventing OOM
             rt_builder = rt_builder.with_memory_pool(Arc::new(FairSpillPool::new(limit_bytes)));
         } else {
-            // Default: Greedy pool (no limit/spill unless OS OOMs)
+            // No limit: relies on OS memory pressure handling
             rt_builder = rt_builder.with_memory_pool(Arc::new(GreedyMemoryPool::new(usize::MAX)));
         }
-        // 2. Disk Spill/Temp Dir
+
         if let Some(spill_path) = resource_config.spill_dir {
             use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
             let mode = DiskManagerMode::Directories(vec![spill_path.into()]);
@@ -185,29 +217,27 @@ impl FederationEngine {
         let context = SessionContext::new_with_config_rt(session_config, Arc::new(runtime_env));
         let state = context.state();
 
+        // Build optimizer pipeline: inherit defaults, append custom rules in order
         let mut optimizer_rules = state.optimizer().rules.clone();
-
         for rule in extra_optimizer_rules {
             optimizer_rules.push(rule);
         }
         optimizer_rules.push(Arc::new(FederationOptimizerRule::new()));
 
-        // Add Defensive Limit Rule if configured
         if let Some(limit) = limits.default_limit {
             optimizer_rules.push(Arc::new(DefensiveLimitRule::new(limit)));
         }
 
-        // Register CostBasedValidator as the final physical optimizer rule
-        // This runs after all optimizations, checking the final plan stats
+        let state = SessionStateBuilder::new_from_existing(state.clone())
+            .with_optimizer_rules(optimizer_rules)
+            .build();
+
+        // CostBasedValidator runs last in physical optimization to reject expensive plans
+        // after all optimizations have been applied
         let cost_validator = Arc::new(CostBasedValidator::new(
             limits.max_output_rows,
             limits.max_scan_bytes,
         ));
-
-        // Build state with logical optimizer rules first
-        let state = SessionStateBuilder::new_from_existing(state.clone())
-            .with_optimizer_rules(optimizer_rules)
-            .build();
 
         let mut physical_optimizers = state.physical_optimizers().to_vec();
         physical_optimizers.push(cost_validator);

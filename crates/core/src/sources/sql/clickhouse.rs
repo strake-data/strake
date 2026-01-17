@@ -1,12 +1,12 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::datasource::{MemTable, TableProvider, TableType};
-use datafusion::logical_expr::Expr;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::datasource::TableProvider;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
+use datafusion_table_providers::clickhouse::ClickHouseTableFactory;
+use datafusion_table_providers::sql::db_connection_pool::clickhousepool::ClickHouseConnectionPool;
+use secrecy::SecretString;
+use std::collections::HashMap;
 use std::sync::Arc;
 use url::Url;
 
@@ -21,12 +21,9 @@ pub struct ClickHouseMetadataFetcher;
 #[async_trait]
 impl SqlMetadataFetcher for ClickHouseMetadataFetcher {
     async fn fetch_metadata(&self, _schema: &str, _table: &str) -> Result<FetchedMetadata> {
+        // ClickHouse doesn't have a standard comments system like Postgres
         Ok(FetchedMetadata::default())
     }
-}
-
-pub struct ClickHouseTableFactory {
-    pub connection_string: String,
 }
 
 #[async_trait]
@@ -35,67 +32,9 @@ impl SqlProviderFactory for ClickHouseTableFactory {
         &self,
         table_ref: TableReference,
     ) -> Result<Arc<dyn TableProvider>> {
-        let table_name = table_ref.table().to_string();
-        let schema = infer_clickhouse_schema(&self.connection_string, &table_name).await?;
-        Ok(Arc::new(ClickHouseTableProvider {
-            connection_string: self.connection_string.clone(),
-            table_name,
-            schema: Arc::new(schema),
-        }))
-    }
-}
-
-#[derive(Debug)]
-pub struct ClickHouseTableProvider {
-    pub connection_string: String,
-    pub table_name: String,
-    pub schema: SchemaRef,
-}
-
-#[async_trait]
-impl TableProvider for ClickHouseTableProvider {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-
-    fn table_type(&self) -> TableType {
-        TableType::Base
-    }
-
-    async fn scan(
-        &self,
-        state: &dyn datafusion::catalog::Session,
-        projection: Option<&Vec<usize>>,
-        filters: &[Expr],
-        limit: Option<usize>,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        let batches = self
-            .execute_query(projection)
+        self.table_provider(table_ref, None)
             .await
-            .map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))?;
-
-        let mem_table = MemTable::try_new(self.schema(), vec![batches])?;
-        mem_table.scan(state, projection, filters, limit).await
-    }
-}
-
-impl ClickHouseTableProvider {
-    async fn execute_query(&self, projection: Option<&Vec<usize>>) -> Result<Vec<RecordBatch>> {
-        let columns = if let Some(p) = projection {
-            p.iter()
-                .map(|i| self.schema.field(*i).name().clone())
-                .collect::<Vec<_>>()
-                .join(", ")
-        } else {
-            "*".to_string()
-        };
-
-        let sql = format!("SELECT {} FROM {} FORMAT Arrow", columns, self.table_name);
-        query_clickhouse_arrow(&self.connection_string, &sql).await
+            .map_err(|e| anyhow::anyhow!(e))
     }
 }
 
@@ -117,9 +56,23 @@ pub async fn register_clickhouse(params: SqlSourceParams<'_>) -> Result<()> {
             Err(e) => {
                 attempt += 1;
                 if attempt >= retry.max_attempts {
+                    tracing::error!(
+                        "Failed to register ClickHouse source '{}' after {} attempts: {}",
+                        params.name,
+                        retry.max_attempts,
+                        e
+                    );
                     return Err(e);
                 }
                 let delay = next_retry_delay(attempt, retry.base_delay_ms, retry.max_delay_ms);
+                tracing::warn!(
+                    "Connection failed for ClickHouse source '{}'. Retrying in {:?} (Attempt {}/{}): {}",
+                    params.name,
+                    delay,
+                    attempt,
+                    retry.max_attempts,
+                    e
+                );
                 tokio::time::sleep(delay).await;
             }
         }
@@ -134,9 +87,8 @@ async fn try_register_clickhouse(
     cb: Arc<crate::query::circuit_breaker::AdaptiveCircuitBreaker>,
     explicit_tables: &Option<Vec<TableConfig>>,
 ) -> Result<()> {
-    let factory = ClickHouseTableFactory {
-        connection_string: connection_string.to_string(),
-    };
+    let pool = create_clickhouse_pool(connection_string).await?;
+    let factory = ClickHouseTableFactory::new(pool);
 
     let tables_to_register: Vec<(String, String)> = if let Some(config_tables) = explicit_tables {
         config_tables
@@ -169,7 +121,51 @@ async fn try_register_clickhouse(
     Ok(())
 }
 
+async fn create_clickhouse_pool(connection_string: &str) -> Result<Arc<ClickHouseConnectionPool>> {
+    let url = Url::parse(connection_string).context("Invalid ClickHouse connection URL")?;
+
+    let mut params = HashMap::new();
+
+    // Build URL without path for the connection
+    let base_url = format!(
+        "{}://{}:{}",
+        url.scheme(),
+        url.host_str().unwrap_or("localhost"),
+        url.port().unwrap_or(8123)
+    );
+    params.insert("url".to_string(), SecretString::from(base_url));
+
+    // Extract database from path
+    let db = url.path().trim_start_matches('/');
+    if !db.is_empty() {
+        params.insert("database".to_string(), SecretString::from(db.to_string()));
+    }
+
+    // Extract credentials from URL
+    if !url.username().is_empty() {
+        params.insert(
+            "user".to_string(),
+            SecretString::from(url.username().to_string()),
+        );
+    }
+    if let Some(password) = url.password() {
+        params.insert(
+            "password".to_string(),
+            SecretString::from(password.to_string()),
+        );
+    }
+
+    let pool = ClickHouseConnectionPool::new(params)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
+        .context("Failed to create ClickHouse connection pool")?;
+
+    Ok(Arc::new(pool))
+}
+
 async fn introspect_clickhouse_tables(connection_string: &str) -> Result<Vec<String>> {
+    // We need to query system.tables to get the list of tables
+    // For now, use the HTTP API for introspection (simpler than setting up full connection)
     let url = Url::parse(connection_string)?;
     let db = url.path().trim_start_matches('/');
     let db_filter = if db.is_empty() { "default" } else { db };
@@ -178,6 +174,7 @@ async fn introspect_clickhouse_tables(connection_string: &str) -> Result<Vec<Str
         "SELECT name FROM system.tables WHERE database = '{}'",
         db_filter
     );
+
     let client = reqwest::Client::new();
     let resp = client
         .post(connection_string)
@@ -191,49 +188,9 @@ async fn introspect_clickhouse_tables(connection_string: &str) -> Result<Vec<Str
     Ok(resp.lines().map(|s| s.to_string()).collect())
 }
 
-async fn infer_clickhouse_schema(
-    connection_string: &str,
-    table_name: &str,
-) -> Result<datafusion::arrow::datatypes::Schema> {
-    let sql = format!("SELECT * FROM {} WHERE 0 FORMAT Arrow", table_name);
-    let batches = query_clickhouse_arrow(connection_string, &sql).await?;
-    if batches.is_empty() {
-        anyhow::bail!(
-            "Failed to infer schema for table {}: no data returned",
-            table_name
-        );
-    }
-    Ok((*batches[0].schema()).clone())
-}
-
-async fn query_clickhouse_arrow(connection_string: &str, sql: &str) -> Result<Vec<RecordBatch>> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(connection_string)
-        .body(sql.to_string())
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
-
-    if resp.is_empty() {
-        return Ok(vec![]);
-    }
-
-    let cursor = std::io::Cursor::new(resp);
-    let reader = datafusion::arrow::ipc::reader::StreamReader::try_new(cursor, None)?;
-    let mut batches = Vec::new();
-    for batch in reader {
-        batches.push(batch?);
-    }
-    Ok(batches)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::ipc::writer::StreamWriter;
     use wiremock::matchers::{body_string, method};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -251,43 +208,6 @@ mod tests {
 
         let tables = introspect_clickhouse_tables(&server.uri()).await?;
         assert_eq!(tables, vec!["table1", "table2"]);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_query_clickhouse_arrow() -> Result<()> {
-        let server = MockServer::start().await;
-
-        // Create a mock Arrow batch
-        let schema = Arc::new(datafusion::arrow::datatypes::Schema::new(vec![
-            datafusion::arrow::datatypes::Field::new(
-                "id",
-                datafusion::arrow::datatypes::DataType::Int32,
-                false,
-            ),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(datafusion::arrow::array::Int32Array::from(vec![
-                1, 2, 3,
-            ]))],
-        )?;
-
-        let mut buffer = Vec::new();
-        {
-            let mut writer = StreamWriter::try_new(&mut buffer, &schema)?;
-            writer.write(&batch)?;
-            writer.finish()?;
-        }
-
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(buffer))
-            .mount(&server)
-            .await;
-
-        let batches = query_clickhouse_arrow(&server.uri(), "SELECT * FROM test").await?;
-        assert_eq!(batches.len(), 1);
-        assert_eq!(batches[0].num_rows(), 3);
         Ok(())
     }
 }
