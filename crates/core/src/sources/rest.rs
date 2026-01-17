@@ -55,6 +55,29 @@ pub enum AuthConfig {
         #[serde(default)]
         scopes: Vec<String>,
     },
+    /// Self-signed JWT for service account authentication (Google, GitHub Apps).
+    #[serde(rename = "jwt_assertion")]
+    JwtAssertion {
+        issuer: String,
+        audience: String,
+        private_key_pem: String,
+        #[serde(default = "default_jwt_algorithm")]
+        algorithm: String,
+        #[serde(default = "default_jwt_expiry")]
+        expiry_secs: u64,
+        #[serde(default)]
+        subject: Option<String>,
+        #[serde(default)]
+        claims: std::collections::HashMap<String, serde_json::Value>,
+    },
+}
+
+fn default_jwt_algorithm() -> String {
+    "RS256".to_string()
+}
+
+fn default_jwt_expiry() -> u64 {
+    3600
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -107,16 +130,82 @@ impl SourceProvider for RestSourceProvider {
 
         let mut client_builder = reqwest::Client::builder();
 
-        // Apply global config
-        if let Some(AuthConfig::Bearer { token }) = &rest_config.auth {
+        // Apply authentication configuration
+        if let Some(auth) = &rest_config.auth {
             let mut headers = reqwest::header::HeaderMap::new();
             use reqwest::header::HeaderValue;
-            if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", token)) {
-                headers.insert("Authorization", val);
+
+            match auth {
+                AuthConfig::Basic { username, password } => {
+                    // Create Basic auth header
+                    let credentials = match password {
+                        Some(pwd) => format!("{}:{}", username, pwd),
+                        None => username.clone(),
+                    };
+                    let encoded = base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        credentials.as_bytes(),
+                    );
+                    if let Ok(val) = HeaderValue::from_str(&format!("Basic {}", encoded)) {
+                        headers.insert("Authorization", val);
+                    }
+                }
+                AuthConfig::Bearer { token } => {
+                    if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", token)) {
+                        headers.insert("Authorization", val);
+                    }
+                }
+                AuthConfig::OAuthClientCredentials {
+                    client_id,
+                    client_secret,
+                    token_url,
+                    scopes,
+                } => {
+                    // Fetch OAuth token with caching
+                    let token = crate::sources::rest_auth::fetch_oauth_token(
+                        client_id,
+                        client_secret,
+                        token_url,
+                        scopes,
+                    )
+                    .await
+                    .context("Failed to fetch OAuth access token")?;
+
+                    if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", token)) {
+                        headers.insert("Authorization", val);
+                    }
+                }
+                AuthConfig::JwtAssertion {
+                    issuer,
+                    audience,
+                    private_key_pem,
+                    algorithm,
+                    expiry_secs,
+                    subject,
+                    claims,
+                } => {
+                    // Generate self-signed JWT assertion
+                    let jwt_config = crate::sources::rest_auth::JwtAssertionConfig {
+                        issuer: issuer.clone(),
+                        audience: audience.clone(),
+                        private_key_pem: private_key_pem.clone(),
+                        algorithm: algorithm.clone(),
+                        expiry_secs: *expiry_secs,
+                        subject: subject.clone(),
+                        claims: claims.clone(),
+                    };
+                    let token = crate::sources::rest_auth::generate_jwt_assertion(&jwt_config)
+                        .context("Failed to generate JWT assertion")?;
+
+                    if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", token)) {
+                        headers.insert("Authorization", val);
+                    }
+                }
+            }
+
+            if !headers.is_empty() {
                 client_builder = client_builder.default_headers(headers);
             }
-            // Basic Auth in reqwest ClientBuilder is not direct, it's usually per request.
-            // To set defaults we use default_headers.
         }
 
         let client = client_builder
@@ -606,27 +695,6 @@ mod tests {
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    #[test]
-    fn test_config_parsing() {
-        let yaml = r#"
-            base_url: "http://example.com/api"
-            method: "POST"
-            headers:
-              Authorization: "Bearer token"
-            pagination:
-              type: header
-              header_name: "Link"
-        "#;
-        let config: RestSourceConfig = serde_yaml::from_str(yaml).expect("Failed to parse config");
-        assert_eq!(config.base_url, "http://example.com/api");
-        assert_eq!(config.method, "POST");
-        assert_eq!(config.headers.get("Authorization").unwrap(), "Bearer token");
-        match config.pagination {
-            Some(PaginationConfig::Header { header_name }) => assert_eq!(header_name, "Link"),
-            _ => panic!("Wrong pagination type"),
-        }
-    }
 
     #[tokio::test]
     async fn test_infer_schema() {

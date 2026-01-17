@@ -7,19 +7,23 @@ use crate::config::{RetrySettings, SourceConfig, TableConfig};
 use crate::sources::SourceProvider;
 
 pub mod common;
+#[cfg(feature = "mysql-connector")]
 pub mod mysql;
 pub mod postgres;
+#[cfg(feature = "sqlite-connector")]
 pub mod sqlite;
 pub mod wrappers;
 
 pub use common::SqlDialect;
+#[cfg(feature = "mysql-connector")]
 use mysql::register_mysql;
 use postgres::register_postgres;
+#[cfg(feature = "sqlite-connector")]
 use sqlite::register_sqlite;
 pub mod clickhouse;
+#[cfg(feature = "duckdb-connector")]
 pub mod duckdb;
 use clickhouse::register_clickhouse;
-// use duckdb::register_duckdb;
 
 pub struct SqlSourceProvider {
     pub global_retry: RetrySettings,
@@ -87,8 +91,18 @@ pub async fn register_sql_source(options: common::SqlRegistrationOptions<'_>) ->
 
     match options.dialect {
         SqlDialect::Postgres => register_postgres(params).await,
+        #[cfg(feature = "mysql-connector")]
         SqlDialect::MySql => register_mysql(params).await,
+        #[cfg(not(feature = "mysql-connector"))]
+        SqlDialect::MySql => {
+            anyhow::bail!("MySQL connector not enabled. Compile with --features mysql-connector")
+        }
+        #[cfg(feature = "sqlite-connector")]
         SqlDialect::Sqlite => register_sqlite(params).await,
+        #[cfg(not(feature = "sqlite-connector"))]
+        SqlDialect::Sqlite => {
+            anyhow::bail!("SQLite connector not enabled. Compile with --features sqlite-connector")
+        }
         SqlDialect::Clickhouse => register_clickhouse(params).await,
     }
 }

@@ -4,6 +4,15 @@ version = "0.1.0"
 license = "MIT OR Apache-2.0"
 edition = "2021"
 
+[features]
+default = ["duckdb-connector", "sqlite-connector", "mysql-connector"]
+# Heavy connectors - can be disabled for faster compile times
+duckdb-connector = ["dep:duckdb"]
+sqlite-connector = ["dep:rusqlite"]
+mysql-connector = ["dep:mysql_async"]
+# Full connector suite
+all-connectors = ["duckdb-connector", "sqlite-connector", "mysql-connector"]
+
 [dependencies]
 arrow = { workspace = true }
 datafusion = { workspace = true }
@@ -29,9 +38,9 @@ sqlparser = "0.60.0"
 rand = "0.9.2"
 parking_lot = "0.12.5"
 serde_json = "1.0"
-mysql_async = "0.36"
-rusqlite = { version = "0.37", features = ["bundled"] }
-duckdb = { version = "1.1", features = ["bundled"] }
+mysql_async = { version = "0.36", optional = true }
+rusqlite = { version = "0.37", features = ["bundled"], optional = true }
+duckdb = { version = "1.1", features = ["bundled"], optional = true }
 reqwest = { version = "0.11", features = ["json", "blocking"] }
 url = "2.5"
 encoding_rs = "0.8"
@@ -42,6 +51,8 @@ object_store = { version = "0.12.4", features = ["aws"] }
 opendal = { version = "0.55.0", features = ["services-s3", "services-azblob", "services-gcs", "services-http", "services-ftp"] }
 object_store_opendal = "0.55.0"
 nix = { workspace = true, features = ["signal", "process"] }
+base64 = "0.22"
+jsonwebtoken = "9"
 
 # Query result caching
 sha2 = { workspace = true }
@@ -58,3 +69,4 @@ proptest = "1.0"
 wiremock = "0.6.5"
 parquet = "57.1.0"
 tempfile = "3.24.0"
+

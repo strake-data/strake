@@ -29,6 +29,7 @@ pub mod file;
 pub mod flight;
 pub mod grpc;
 pub mod rest;
+pub mod rest_auth;
 pub mod sql;
 
 #[async_trait]
