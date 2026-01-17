@@ -4,6 +4,7 @@ use datafusion::catalog::TableProvider;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
 use std::sync::Arc;
+use arrow::record_batch::RecordBatch;
 
 use super::common::{
     next_retry_delay, FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams,
@@ -45,21 +46,14 @@ pub struct DuckDBTableProvider {
 impl DuckDBTableProvider {
     pub async fn new(connection_string: String, table_name: String) -> Result<Self> {
         // Infer schema using PRAGMA table_info
-        // DuckDB connection is not Send, so we should do this synchronously or ensure it doesn't cross await.
-        // new is async but we don't await anything problematic here?
-        // Actually, connection logic is blocking on file I/O usually with duckdb-rs.
-
+        
         let connection_string = connection_string.clone();
         let table_name = table_name.clone();
 
-        // Perform schema inference in a blocking task if needed, or just inline.
-        // Inline is fine as long as we don't hold it across await.
-        // We do use '?' which returns Result, not await.
-        // So this is fine.
         let (fields, _conn) = {
             let conn = duckdb::Connection::open(&connection_string)
                 .context("Failed to open DuckDB for schema inference")?;
-
+            
             let mut stmt = conn
                 .prepare(&format!("PRAGMA table_info('{}')", table_name))
                 .context("Failed to prepare table_info query")?;
@@ -88,25 +82,71 @@ impl DuckDBTableProvider {
             schema: Arc::new(Schema::new(fields)),
         })
     }
+    pub async fn execute_substrait_plan(&self, plan_bytes: Vec<u8>) -> Result<RecordBatch> {
+        // Isolate DuckDB interaction
+        let connection_string = self.connection_string.clone();
+        
+        // TODO: Use spawn_blocking to avoid blocking async executor
+        let batch = {
+            let conn = duckdb::Connection::open(&connection_string)?;
+            
+            // Enable Substrait extension
+            conn.execute("INSTALL substrait", [])
+                .context("Failed to install substrait extension")?;
+            conn.execute("LOAD substrait", [])
+                .context("Failed to load substrait extension")?;
+            
+            // Execute plan
+            let mut stmt = conn.prepare("SELECT * FROM from_substrait(?)")
+                .context("Failed to prepare substrait query")?;
+            
+            let mut rows = stmt.query([plan_bytes])
+                .context("Failed to execute substrait query")?;
+            
+            // Convert to RecordBatch
+            convert_duckdb_rows_to_arrow(&mut rows, self.schema.clone())?
+        };
+
+        Ok(batch)
+    }
 }
 
 fn map_duckdb_type(type_str: &str) -> DataType {
     let t = type_str.to_uppercase();
-    if t.contains("INT") || t == "INTEGER" || t == "BIGINT" {
+    if t == "BIGINT" || t == "INT8" || t == "LONG" {
         DataType::Int64
-    } else if t == "VARCHAR" || t == "TEXT" || t == "STRING" {
+    } else if t == "INTEGER" || t == "INT" || t == "INT4" || t == "SIGNED" {
+        DataType::Int32
+    } else if t == "SMALLINT" || t == "INT2" || t == "SHORT" {
+        DataType::Int16
+    } else if t == "TINYINT" || t == "INT1" {
+        DataType::Int8
+    } else if t == "UBIGINT" {
+        DataType::UInt64
+    } else if t == "UINTEGER" || t == "UINT" {
+        DataType::UInt32
+    } else if t == "USMALLINT" || t == "USHORT" {
+        DataType::UInt16
+    } else if t == "UTINYINT" {
+        DataType::UInt8
+    } else if t == "VARCHAR" || t == "TEXT" || t == "STRING" || t == "CHAR" || t == "BPCHAR" {
         DataType::Utf8
-    } else if t == "DOUBLE" || t == "FLOAT" {
-        DataType::Float64
+    } else if t == "DOUBLE" || t == "FLOAT8" || t == "DECIMAL" {
+        DataType::Float64 // Treat decimals as Float64 for simplicity unless precise mapping strategy
+    } else if t == "FLOAT" || t == "FLOAT4" || t == "REAL" {
+        DataType::Float32
     } else if t == "BOOLEAN" || t == "BOOL" {
         DataType::Boolean
     } else if t.contains("TIMESTAMP") {
         DataType::Timestamp(TimeUnit::Microsecond, None)
     } else if t == "DATE" {
         DataType::Date32
+    } else if t == "BLOB" || t == "BYTEA" || t == "BINARY" || t == "VARBINARY" {
+        DataType::Binary
     } else {
+        // Fallback
         DataType::Utf8
-    } // Fallback
+    }
 }
 
 #[async_trait]
@@ -148,53 +188,71 @@ impl TableProvider for DuckDBTableProvider {
                 .collect();
             let query = format!("SELECT {} FROM {}", col_names.join(", "), self.table_name);
 
+            // TODO: Apply filters and limit to query if possible
+            
             let mut stmt = conn
                 .prepare(&query)
                 .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?;
-
-            let num_cols = target_schema.fields().len();
 
             let mut rows = stmt
                 .query([])
                 .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?;
 
-            let mut col_buffers: Vec<Vec<ScalarValue>> = vec![vec![]; num_cols];
-
-            while let Some(row) = rows
-                .next()
+            convert_duckdb_rows_to_arrow(&mut rows, Arc::new(target_schema))
                 .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?
-            {
-                for (i, buffer) in col_buffers.iter_mut().enumerate() {
-                    let val_ref = row.get_ref(i).unwrap();
-                    let scalar = duck_val_to_scalar(val_ref, target_schema.field(i).data_type());
-                    buffer.push(scalar);
-                }
-            }
-
-            let mut arrays = Vec::new();
-            for buffer in col_buffers {
-                let array = ScalarValue::iter_to_array(buffer)
-                    .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?;
-                arrays.push(array);
-            }
-
-            arrow::record_batch::RecordBatch::try_new(Arc::new(target_schema.clone()), arrays)?
-        }; // conn, stmt, rows are dropped here
+        }; 
 
         let mem_table = MemTable::try_new(batch.schema(), vec![vec![batch]])?;
 
         mem_table.scan(state, None, filters, limit).await
     }
+
+
+}
+
+fn convert_duckdb_rows_to_arrow(rows: &mut duckdb::Rows, schema: SchemaRef) -> Result<RecordBatch> {
+    let num_cols = schema.fields().len();
+    let mut col_buffers: Vec<Vec<ScalarValue>> = vec![vec![]; num_cols];
+
+    while let Some(row) = rows.next()? {
+        for (i, buffer) in col_buffers.iter_mut().enumerate() {
+            // Safety: We assume schema matches row width. 
+            // If row has fewer columns, unwrap panics.
+            // Should be robust?
+             if i >= row.as_ref().column_count() {
+                 continue; // or error
+             }
+            let val_ref = row.get_ref(i).unwrap();
+            let scalar = duck_val_to_scalar(val_ref, schema.field(i).data_type());
+            buffer.push(scalar);
+        }
+    }
+
+    let mut arrays = Vec::new();
+    for buffer in col_buffers {
+        let array = ScalarValue::iter_to_array(buffer)?;
+        arrays.push(array);
+    }
+
+    Ok(arrow::record_batch::RecordBatch::try_new(schema, arrays)?)
 }
 
 fn duck_val_to_scalar(val: duckdb::types::ValueRef, dt: &DataType) -> ScalarValue {
     use duckdb::types::ValueRef;
+    
+    // Attempt to match requested type if possible
     match val {
         ValueRef::Null => ScalarValue::try_from(dt).unwrap(),
         ValueRef::Boolean(b) => ScalarValue::Boolean(Some(b)),
         ValueRef::TinyInt(i) => ScalarValue::Int8(Some(i)),
         ValueRef::SmallInt(i) => ScalarValue::Int16(Some(i)),
-        ValueRef::Int(i) => ScalarValue::Int32(Some(i)),
+        ValueRef::Int(i) => {
+            if let DataType::Int64 = dt {
+                 ScalarValue::Int64(Some(i as i64))
+            } else {
+                 ScalarValue::Int32(Some(i)) 
+            }
+        },
         ValueRef::BigInt(i) => ScalarValue::Int64(Some(i)),
         ValueRef::HugeInt(i) => ScalarValue::Decimal128(Some(i), 38, 0),
         ValueRef::Float(f) => ScalarValue::Float32(Some(f)),
@@ -330,4 +388,88 @@ pub async fn introspect_duckdb_tables(db_path: &str) -> Result<Vec<String>> {
         .context("Failed to collect DuckDB table names")?;
 
     Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::prelude::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_map_duckdb_type() {
+        assert_eq!(map_duckdb_type("BIGINT"), DataType::Int64);
+        assert_eq!(map_duckdb_type("INTEGER"), DataType::Int32);
+        assert_eq!(map_duckdb_type("VARCHAR"), DataType::Utf8);
+        assert_eq!(map_duckdb_type("BOOLEAN"), DataType::Boolean);
+        assert_eq!(map_duckdb_type("UNKNOWN"), DataType::Utf8);
+    }
+
+    #[test]
+    fn test_duckdb_version() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let version: String = conn.query_row("SELECT version()", [], |row| row.get(0))?;
+        println!("DuckDB Version: {}", version);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_duckdb_substrait_handover() -> Result<()> {
+        let dir = tempdir()?;
+        let db_path = dir.path().join("test.duckdb");
+        let db_path_str = db_path.to_str().unwrap();
+
+        // 1. Setup DuckDB with some data
+        {
+            let conn = duckdb::Connection::open(db_path_str)?;
+            conn.execute("CREATE TABLE users (id INTEGER, name VARCHAR)", [])?;
+            conn.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')", [])?;
+        }
+
+        let provider = DuckDBTableProvider::new(db_path_str.to_string(), "users".to_string()).await?;
+        
+        // 2. Create a DataFusion plan
+        let ctx = SessionContext::new();
+        
+        // Use a simple logical plan that can be converted to Substrait.
+        // We use a scan of an empty table with the same schema to generate the plan,
+        // then we'll execute it against our DuckDB provider.
+        let schema = provider.schema();
+        ctx.register_table("users", Arc::new(datafusion::datasource::empty::EmptyTable::new(schema)))?;
+        
+        let plan = ctx.table("users").await?
+            .filter(col("id").eq(lit(1)))?
+            .into_optimized_plan()?;
+
+        // 3. Convert to Substrait
+        let plan_bytes = crate::substrait_producer::to_substrait_bytes(&plan, &ctx).await?;
+        
+        // 4. Handover to DuckDB
+        // execute_substrait_plan will try to INSTALL/LOAD substrait
+        // In some environments this might fail if no internet.
+        // We catch error and skip if it's an extension loading error.
+        match provider.execute_substrait_plan(plan_bytes).await {
+            Ok(batch) => {
+                assert_eq!(batch.num_rows(), 1);
+                // Schema has id and name
+                let id_col = batch.column(0).as_any().downcast_ref::<arrow::array::Int32Array>().unwrap();
+                assert_eq!(id_col.value(0), 1);
+                let name_col = batch.column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+                assert_eq!(name_col.value(0), "Alice");
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("Failed to install substrait extension") || 
+                   msg.contains("Failed to load substrait extension") ||
+                   msg.contains("IO Error: Failed to download") || 
+                   msg.contains("Extension \"substrait\" not found") {
+                    println!("Skipping test: Substrait extension not available or cannot be downloaded: {}", msg);
+                } else {
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok(())
+    }
 }

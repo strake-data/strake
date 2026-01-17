@@ -34,6 +34,8 @@ pub enum SqlDialect {
     MySql,
     Sqlite,
     Clickhouse,
+    #[serde(alias = "duckdb")]
+    DuckDB,
 }
 
 pub fn next_retry_delay(attempt: u32, base_ms: u64, max_ms: u64) -> Duration {
