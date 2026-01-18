@@ -4,11 +4,11 @@ use axum::{
     Json, Router,
 };
 use std::sync::Arc;
-use strake_core::federation::FederationEngine;
-use strake_core::models::{
+use strake_common::models::{
     QueryRequest, QueryResponse, SourcesConfig, TableDiscovery, ValidationRequest,
     ValidationResponse,
 };
+use strake_runtime::federation::FederationEngine;
 
 pub fn create_api_router(engine: Arc<FederationEngine>) -> Router {
     Router::new()
@@ -89,7 +89,7 @@ async fn introspect_tables(
     Path((domain, source_name)): Path<(String, String)>,
     Json(tables): Json<Vec<String>>,
 ) -> Json<SourcesConfig> {
-    use strake_core::models::{ColumnConfig, SourceConfig, TableConfig};
+    use strake_common::models::{ColumnConfig, SourceConfig, TableConfig};
 
     let mut config = SourcesConfig {
         domain: Some(domain.clone()),
@@ -180,7 +180,7 @@ async fn list_sources(State(engine): State<Arc<FederationEngine>>) -> Json<Sourc
     let api_sources = sources
         .into_iter()
         .map(|s| {
-            strake_core::models::SourceConfig {
+            strake_common::models::SourceConfig {
                 name: s.name,
                 source_type: s.r#type,
                 url: s

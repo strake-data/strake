@@ -14,7 +14,7 @@
 
 **Strake** is a high-performance federated SQL engine built on [Apache Arrow DataFusion](https://github.com/apache/arrow-datafusion). It enables users to query across disparate data sources—including PostgreSQL, Parquet, and JSON—using a single SQL interface without the need for data movement or ETL.
 
-> 📚 **Full Documentation**: Check out the [complete documentation](docs/index.md) for installation, architecture, and API references.
+> 📚 **Full Documentation**: Check out the [complete documentation](https://strake-data.github.io/strake/) for installation, architecture, and API references.
 
 ---
 
@@ -24,12 +24,14 @@ Strake acts as an "Intelligent Pipe," sitting between your data sources and your
 
 ### Key Features
 
-- **Zero-Copy Federation**: Query Postgres, MySQL, SQLite, Parquet, JSON, and more without moving data.
-- **Enterprise Governance**: License-keyed concurrency control, RLS, column masking, and OIDC/SSO integration.
-- **GitOps-Driven**: Manage your data mesh configuration as code with `strake-cli`.
-- **High-Performance Python**: Direct PyO3 bindings for zero-copy conversion to Pandas/Polars.
-- **Production Observability**: Integrated OpenTelemetry and Prometheus support.
-- **Flight SQL**: Standard-compliant Arrow Flight SQL interface.
+- **GitOps Native**: Manage your data mesh configuration as code. Version control your sources, policies, and metrics.
+- **Developer First**: Built for engineers. Type-safe configuration, rich CLI tooling, and local development workflows.
+- **High Performance**: Sub-second latency for federated joins using Apache Arrow.
+- **Pluggable Sources**: Postgres, S3, Local Files, REST, gRPC, and more.
+- **Enterprise Governance**: Row-Level Security (RLS), Column Masking, and OIDC Authentication (Enterprise Edition).
+- **Python Native**: Zero-copy integration with Pandas and Polars via PyO3.
+- **Observability**: Built-in OpenTelemetry tracing and Prometheus metrics.
+- **Enterprise Features**: OIDC, Row-Level Security, and Data Contracts (see [Enterprise Edition](https://strake-data.github.io/strake/enterprise/)).
 
 ## Quick Start
 
@@ -48,7 +50,7 @@ cargo install --path crates/server
 
 #### Python Client
 ```bash
-pip install strakepy
+pip install strake
 ```
 
 ### 2. Configuration (GitOps)
@@ -71,12 +73,12 @@ strake-cli apply sources.yaml --force
 Strake provides a seamless interface for data scientists and engineers:
 
 ```python
-import strakepy
+import strake
 import polars as pl
 
 # Connect using a local configuration file (Embedded Mode)
 LOCAL_CONFIG = "config/strake.yaml" 
-conn = strakepy.StrakeConnection(LOCAL_CONFIG)
+conn = strake.StrakeConnection(LOCAL_CONFIG)
 
 print("\n--- List Tables ---")
 print(conn.describe())
@@ -94,11 +96,14 @@ print(pl.from_arrow(data))
 
 | Component | Description |
 |-----------|-------------|
-| [**strake-core**](crates/core) | Central engine for configuration validation and source registration. |
+| [**strake-runtime**](crates/runtime) | Orchestration layer (Federation Engine, Sidecar). |
+| [**strake-connectors**](crates/connectors) | Data source implementations (Postgres, S3, REST, etc). |
+| [**strake-sql**](crates/sql) | SQL Dialects, Query Optimization, and Substrait generation. |
+| [**strake-common**](crates/common) | Shared types, configuration, and error handling. |
 | [**strake-server**](crates/server) | Arrow Flight SQL server implementation. |
 | [**strake-cli**](crates/cli) | GitOps CLI for managing data mesh configurations. |
 | [**strake-python**](python) | Python bindings for high-performance data access. |
-| [**strake-enterprise**](strake-enterprise) | Enterprise features (SSO, Governance). |
+
 
 ## Contributing
 

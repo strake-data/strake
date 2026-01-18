@@ -11,7 +11,7 @@ use tower::{Layer, Service, ServiceExt};
 
 use moka::future::Cache;
 use std::time::Duration;
-use strake_core::auth::AuthenticatedUser;
+use strake_common::auth::AuthenticatedUser;
 
 #[async_trait]
 pub trait Authenticator: Send + Sync {

@@ -16,3 +16,7 @@ dependencies = [
     "pyarrow>=14.0.0",
     "uvicorn>=0.20.0"
 ]
+
+[tool.maturin]
+python-source = "."
+module-name = "strake._strake"

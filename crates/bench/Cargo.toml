@@ -5,7 +5,9 @@ license = "MIT OR Apache-2.0"
 edition = "2021"
 
 [dependencies]
-strake-core = { path = "../core" }
+strake-runtime = { path = "../runtime" }
+strake-common = { path = "../common" }
+# strake-sql = { path = "../sql" } # Might need this if benching optimizer
 datafusion = { workspace = true }
 tokio = { workspace = true }
 clap = { version = "4.4", features = ["derive"] }

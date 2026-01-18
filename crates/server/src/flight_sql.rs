@@ -22,8 +22,8 @@ use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use futures::Stream;
 use prost::Message;
-use strake_core::error::StrakeError;
-use strake_core::federation::FederationEngine;
+use strake_common::error::StrakeError;
+use strake_runtime::federation::FederationEngine;
 use tonic::{Request, Response, Status, Streaming};
 
 /// Constants for SQL Info (avoid magic numbers in build_sql_info_batch)
@@ -53,10 +53,10 @@ impl StrakeFlightSqlService {
         self.engine.context()
     }
 
-    fn get_user<T>(&self, request: &Request<T>) -> Option<strake_core::auth::AuthenticatedUser> {
+    fn get_user<T>(&self, request: &Request<T>) -> Option<strake_common::auth::AuthenticatedUser> {
         request
             .extensions()
-            .get::<strake_core::auth::AuthenticatedUser>()
+            .get::<strake_common::auth::AuthenticatedUser>()
             .cloned()
     }
 
@@ -384,7 +384,7 @@ impl FlightSqlService for StrakeFlightSqlService {
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         let fd = request.into_inner();
-        let union_fields = UnionFields::new(
+        let union_fields = UnionFields::try_new(
             vec![0, 1, 2, 3, 4, 5],
             vec![
                 Field::new("string_value", DataType::Utf8, false),
@@ -398,7 +398,8 @@ impl FlightSqlService for StrakeFlightSqlService {
                 ),
                 Field::new("int32_bitmask", DataType::Int32, false),
             ],
-        );
+        )
+        .map_err(|e| Status::internal(e.to_string()))?;
         let schema = Schema::new(vec![
             Field::new("info_name", DataType::UInt32, false),
             Field::new(
@@ -721,7 +722,7 @@ impl StrakeFlightSqlService {
             None,
         ));
 
-        let union_fields = UnionFields::new(
+        let union_fields = UnionFields::try_new(
             vec![0, 1, 2, 3, 4, 5],
             vec![
                 Field::new("string_value", DataType::Utf8, false),
@@ -735,7 +736,8 @@ impl StrakeFlightSqlService {
                 ),
                 Field::new("int32_bitmask", DataType::Int32, false),
             ],
-        );
+        )
+        .map_err(|e| Status::internal(e.to_string()))?;
 
         let children: Vec<Arc<dyn Array>> = vec![
             string_array,

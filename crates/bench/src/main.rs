@@ -3,8 +3,8 @@ use clap::{Parser, Subcommand};
 use rand::Rng;
 use serde::Serialize;
 use std::time::Instant;
-use strake_core::config::{Config, RetrySettings};
-use strake_core::federation::FederationEngine;
+use strake_common::config::{Config, RetrySettings};
+use strake_runtime::federation::FederationEngine;
 use tracing::{error, info, warn};
 
 #[derive(Parser)]
@@ -81,14 +81,14 @@ async fn run_benchmarks(
     });
 
     // Increase limits for benchmarking to allow full TPC-H scans at SF=0.5 (3M rows)
-    let _limits = strake_core::config::QueryLimits::default();
+    let _limits = strake_common::config::QueryLimits::default();
     let _retry = RetrySettings::default();
 
-    let engine = FederationEngine::new(strake_core::federation::FederationEngineOptions {
+    let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
         config,
         catalog_name: "strake".to_string(),
-        query_limits: strake_core::config::QueryLimits::default(),
-        resource_config: strake_core::config::ResourceConfig::default(),
+        query_limits: strake_common::config::QueryLimits::default(),
+        resource_config: strake_common::config::ResourceConfig::default(),
         datafusion_config: std::collections::HashMap::new(),
         global_budget: 100, // global_budget
         extra_optimizer_rules: vec![],

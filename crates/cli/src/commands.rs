@@ -24,7 +24,7 @@ pub fn get_api_url() -> String {
     }
 
     // 2. Check strake.yaml
-    if let Ok(app_config) = strake_core::config::AppConfig::from_file("config/strake.yaml") {
+    if let Ok(app_config) = strake_common::config::AppConfig::from_file("config/strake.yaml") {
         return app_config.server.api_url;
     }
 
@@ -257,7 +257,7 @@ async fn validate_contracts(sources_yaml: &str, contracts_path: &str) -> Result<
 
     let response = client
         .post(format!("{}/validate-contracts", api_url))
-        .json(&strake_core::models::ValidationRequest {
+        .json(&strake_common::models::ValidationRequest {
             sources_yaml: sources_yaml.to_string(),
             contracts_yaml,
         })
@@ -265,7 +265,7 @@ async fn validate_contracts(sources_yaml: &str, contracts_path: &str) -> Result<
         .await
         .context("Failed to connect to Strake Validation API. Ensure the server is running.")?;
 
-    let result: strake_core::models::ValidationResponse = response
+    let result: strake_common::models::ValidationResponse = response
         .json()
         .await
         .context("Failed to parse validation response from server")?;
@@ -595,7 +595,7 @@ pub async fn search(source: &str, file_path: &str, domain: Option<&str>) -> Resu
         return Err(anyhow!("Search failed: {}", response.text().await?));
     }
 
-    let tables: Vec<strake_core::models::TableDiscovery> = response.json().await?;
+    let tables: Vec<strake_common::models::TableDiscovery> = response.json().await?;
 
     println!("\n{}", "DISCOVERED TABLES:".bold().underline());
     println!("{:<20} {:<20}", "SCHEMA".bold(), "NAME".bold());
@@ -643,13 +643,13 @@ pub async fn add(
         return Err(anyhow!("Import failed: {}", response.text().await?));
     }
 
-    let imported_config: strake_core::models::SourcesConfig = response.json().await?;
+    let imported_config: strake_common::models::SourcesConfig = response.json().await?;
 
     // Append to local sources.yaml
     let mut current_config = if std::path::Path::new(output_path).exists() {
         parse_yaml(output_path)?
     } else {
-        strake_core::models::SourcesConfig {
+        strake_common::models::SourcesConfig {
             domain: Some(domain.into()),
             sources: vec![],
         }

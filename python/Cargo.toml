@@ -1,7 +1,7 @@
 [package]
 name = "strake-python"
-version = "0.1.2"
-license = "Apache-2.0"
+version.workspace = true
+license.workspace = true
 edition = "2021"
 
 [lib]
@@ -9,7 +9,8 @@ name = "_strake"
 crate-type = ["cdylib"]
 
 [dependencies]
-strake-core = { path = "../crates/core" }
+strake-runtime = { path = "../crates/runtime" }
+strake-common = { path = "../crates/common" }
 pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }
 arrow = { workspace = true, features = ["pyarrow", "prettyprint"] }
 arrow-flight = { workspace = true, features = ["flight-sql-experimental"] }

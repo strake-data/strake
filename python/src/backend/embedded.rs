@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use strake_core::config::{AppConfig, Config, QueryLimits, ResourceConfig};
-use strake_core::federation::FederationEngine;
+use strake_common::config::{AppConfig, Config, QueryLimits, ResourceConfig};
+use strake_runtime::federation::FederationEngine;
 
 use super::StrakeQueryExecutor;
 
@@ -35,7 +35,7 @@ impl EmbeddedBackend {
         let config = Config::from_file(config_path_final.to_str().unwrap_or("config/sources.yaml"))
             .map_err(|e| anyhow::anyhow!("Failed to load sources config: {}", e))?;
 
-        let engine = FederationEngine::new(strake_core::federation::FederationEngineOptions {
+        let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
             config,
             catalog_name: "strake".to_string(),
             query_limits: QueryLimits::default(),

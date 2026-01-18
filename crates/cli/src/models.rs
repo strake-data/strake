@@ -1,1 +1,1 @@
-pub use strake_core::models::*;
+pub use strake_common::models::*;

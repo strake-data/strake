@@ -1,0 +1,41 @@
+[package]
+name = "strake-runtime"
+version.workspace = true
+license.workspace = true
+edition = "2021"
+
+[dependencies]
+strake-common = { path = "../common" }
+strake-sql = { path = "../sql" }
+strake-connectors = { path = "../connectors" }
+
+arrow = { workspace = true }
+datafusion = { workspace = true }
+datafusion-federation = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+parking_lot = "0.12.5"
+bytes = "1.0"
+
+# Query result caching
+sha2 = { workspace = true }
+nix = { workspace = true, features = ["signal", "process"] }
+parquet = "57.1.0"  # For cache serialization
+moka = { version = "0.12", features = ["future"] }  # Concurrent LRU cache
+
+[dev-dependencies]
+tokio-test = "0.4"
+proptest = "1.0"
+wiremock = "0.6.5"
+parquet = "57.1.0"
+tempfile = "3.24.0"
+rusqlite = { version = "0.37", features = ["bundled"] }

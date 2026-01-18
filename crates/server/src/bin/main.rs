@@ -1,3 +1,12 @@
+//! Strake Server Executable.
+//!
+//! Launches the multi-protocol federation server.
+//!
+//! # CLI Arguments
+//!
+//! - `--config`: Path to `strake.yaml` (server config)
+//! - `--sources`: Path to `sources.yaml` (data sources)
+//! - `--mcp`: Flag to enable the Python MCP sidecar
 use strake_server::StrakeServer;
 
 #[derive(clap::Parser)]
@@ -19,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Load AppConfig to get server address
     // Load AppConfig to get server address
-    use strake_core::config::AppConfig;
+    use strake_common::config::AppConfig;
     let mut app_config = AppConfig::from_file(&args.config).unwrap_or_default();
 
     if args.mcp {
@@ -27,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Spawn sidecar (if enabled in config or via override)
-    let _sidecar_handle = strake_core::sidecar::spawn_sidecar(&app_config).await?;
+    let _sidecar_handle = strake_runtime::sidecar::spawn_sidecar(&app_config).await?;
 
     println!("--------------------------------------------------");
     println!("   Strake Community Edition");

@@ -1,0 +1,47 @@
+[package]
+name = "strake-connectors"
+version.workspace = true
+license.workspace = true
+edition = "2021"
+
+[dependencies]
+strake-common = { path = "../common" }
+strake-sql = { path = "../sql" }
+datafusion = { workspace = true }
+datafusion-table-providers = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+url = "2.5"
+secrecy = { workspace = true }
+serde = { workspace = true }
+
+# Connectors
+duckdb = { version = "1.1", features = ["bundled"] }
+tokio-postgres = { workspace = true }
+mysql_async = "0.36"
+rusqlite = { version = "0.37", features = ["bundled"] }
+object_store = { version = "0.12.4", features = ["aws"] }
+opendal = { version = "0.55.0", features = ["services-s3", "services-azblob", "services-gcs", "services-http", "services-ftp"] }
+object_store_opendal = "0.55.0"
+reqwest = { version = "0.11", features = ["json", "blocking"] }
+base64 = "0.22"
+jsonwebtoken = "9"
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+rand = "0.9.2"
+arrow = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+tonic = { workspace = true }
+futures = { workspace = true }
+arrow-flight = { workspace = true }
+tower = { workspace = true }
+prost-reflect = { version = "0.16", features = ["serde"] }
+moka = { version = "0.12", features = ["future"] }
+
+[dev-dependencies]
+wiremock = "0.6"
+tempfile = "3.10"
+tokio-test = "0.4"

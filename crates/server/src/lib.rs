@@ -1,3 +1,9 @@
+//! Strake Server: The HTTP and gRPC API layer.
+//!
+//! Exposes the Federation Engine via:
+//! - **Flight SQL (50051)**: High-performance Arrow data access.
+//! - **REST (8080)**: Management API and JSON query endpoint.
+//! - **Observability**: Prometheus metrics and OpenTelemetry tracing.
 use anyhow::Context;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use axum::{response::IntoResponse, routing::get, Json, Router};
@@ -7,8 +13,8 @@ use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use strake_core::config::Config;
-use strake_core::federation::FederationEngine;
+use strake_common::config::Config;
+use strake_runtime::federation::FederationEngine;
 use tonic::transport::Server;
 use tonic::transport::{Identity, ServerTlsConfig};
 use tracing::info;
@@ -44,7 +50,7 @@ pub mod flight_sql;
 pub use auth::{ApiKeyAuthenticator, AuthLayer, Authenticator};
 pub use concurrency::{ConcurrencyLayer, ConnectionSlotManager};
 use flight_sql::StrakeFlightSqlService;
-pub use strake_core::auth::AuthenticatedUser;
+pub use strake_common::auth::AuthenticatedUser;
 
 pub struct StrakeServer {
     config_path: String,
@@ -53,7 +59,7 @@ pub struct StrakeServer {
     concurrency_manager: Option<Arc<dyn ConnectionSlotManager>>,
     audit_logging_enabled: bool,
     observability_enabled: bool,
-    extra_sources: Vec<Box<dyn strake_core::sources::SourceProvider>>,
+    extra_sources: Vec<Box<dyn strake_connectors::sources::SourceProvider>>,
     extra_optimizer_rules:
         Vec<Arc<dyn datafusion::optimizer::optimizer::OptimizerRule + Send + Sync>>,
     api_router: Router,
@@ -112,7 +118,7 @@ impl StrakeServer {
 
     pub fn with_source_provider(
         mut self,
-        provider: Box<dyn strake_core::sources::SourceProvider>,
+        provider: Box<dyn strake_connectors::sources::SourceProvider>,
     ) -> Self {
         self.extra_sources.push(provider);
         self
@@ -139,7 +145,7 @@ impl StrakeServer {
     pub async fn run(self) -> anyhow::Result<()> {
         // 0. Initialize Telemetry (OpenTelemetry) if enabled
         if self.observability_enabled {
-            strake_core::telemetry::init_telemetry("strake-server")?;
+            strake_common::telemetry::init_telemetry("strake-server")?;
         }
 
         // Ensure logs directory exists
@@ -199,11 +205,11 @@ impl StrakeServer {
             registry.try_init().ok();
         }
 
-        use strake_core::config::AppConfig;
+        use strake_common::config::AppConfig;
         let app_config = AppConfig::from_file(&self.app_config_path)?;
         let config = Config::from_file(&self.config_path)?;
         let engine = Arc::new(
-            FederationEngine::new(strake_core::federation::FederationEngineOptions {
+            FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
                 config,
                 catalog_name: app_config.server.catalog.clone(),
                 query_limits: app_config.query_limits.clone(),

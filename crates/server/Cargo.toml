@@ -1,7 +1,7 @@
 [package]
 name = "strake-server"
-version = "0.1.0"
-license = "MIT OR Apache-2.0"
+version.workspace = true
+license.workspace = true
 edition = "2021"
 
 [lib]
@@ -13,7 +13,9 @@ name = "strake-server"
 path = "src/bin/main.rs"
 
 [dependencies]
-strake-core = { path = "../core" }
+strake-runtime = { path = "../runtime" }
+strake-common = { path = "../common" }
+strake-connectors = { path = "../connectors" }
 arrow-flight = { workspace = true }
 tonic = { workspace = true }
 tokio = { workspace = true }
