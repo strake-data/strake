@@ -5,7 +5,7 @@ license.workspace = true
 edition = "2021"
 
 [dependencies]
-strake-common = { path = "../common" }
+strake-common = { path = "../common", features = ["telemetry"] }
 strake-sql = { path = "../sql" }
 strake-connectors = { path = "../connectors" }
 
@@ -39,3 +39,9 @@ wiremock = "0.6.5"
 parquet = "57.1.0"
 tempfile = "3.24.0"
 rusqlite = { version = "0.37", features = ["bundled"] }
+serial_test = { workspace = true }
+axum = { workspace = true }
+
+[features]
+default = []
+telemetry = ["strake-common/telemetry"]

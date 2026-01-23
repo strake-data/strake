@@ -14,7 +14,7 @@ path = "src/bin/main.rs"
 
 [dependencies]
 strake-runtime = { path = "../runtime" }
-strake-common = { path = "../common" }
+strake-common = { path = "../common", features = ["telemetry"] }
 strake-connectors = { path = "../connectors" }
 arrow-flight = { workspace = true }
 tonic = { workspace = true }

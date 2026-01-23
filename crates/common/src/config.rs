@@ -29,6 +29,9 @@ pub const DEFAULT_CACHE_DIR: &str = "/tmp/strake-cache";
 pub const DEFAULT_CACHE_MAX_SIZE_MB: u64 = 10240; // 10GB
 pub const DEFAULT_CACHE_TTL_SECONDS: u64 = 3600; // 1 hour
 
+pub const DEFAULT_TELEMETRY_ENABLED: bool = false;
+pub const DEFAULT_OTLP_ENDPOINT: &str = "http://localhost:4317";
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub sources: Vec<SourceConfig>,
@@ -116,6 +119,40 @@ pub struct AppConfig {
     pub cache: QueryCacheConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct TelemetryConfig {
+    #[serde(default = "default_telemetry_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_otlp_endpoint")]
+    pub endpoint: String,
+    #[serde(default = "default_service_name_config")]
+    pub service_name: String,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_telemetry_enabled(),
+            endpoint: default_otlp_endpoint(),
+            service_name: default_service_name_config(),
+        }
+    }
+}
+
+fn default_telemetry_enabled() -> bool {
+    DEFAULT_TELEMETRY_ENABLED
+}
+
+fn default_otlp_endpoint() -> String {
+    DEFAULT_OTLP_ENDPOINT.to_string()
+}
+
+fn default_service_name_config() -> String {
+    DEFAULT_SERVER_NAME.to_string()
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -395,6 +432,36 @@ impl AppConfig {
             config.mcp.health_check_url = Some(val);
         }
 
+        if let Ok(enabled) = std::env::var("STRAKE_TELEMETRY__ENABLED") {
+            if let Ok(val) = enabled.parse() {
+                config.telemetry.enabled = val;
+            }
+        }
+        if let Ok(endpoint) = std::env::var("STRAKE_TELEMETRY__ENDPOINT") {
+            config.telemetry.endpoint = endpoint;
+        }
+        if let Ok(name) = std::env::var("STRAKE_TELEMETRY__SERVICE_NAME") {
+            config.telemetry.service_name = name;
+        }
+
+        // Validate telemetry configuration
+        if config.telemetry.enabled {
+            let url = url::Url::parse(&config.telemetry.endpoint).map_err(|e| {
+                anyhow::anyhow!(
+                    "Invalid telemetry endpoint '{}': {}",
+                    config.telemetry.endpoint,
+                    e
+                )
+            })?;
+
+            if url.scheme() != "http" && url.scheme() != "https" {
+                return Err(anyhow::anyhow!(
+                    "Telemetry endpoint must use http or https scheme, found '{}'",
+                    url.scheme()
+                ));
+            }
+        }
+
         Ok(config)
     }
 }
@@ -434,6 +501,33 @@ retry:
     }
 
     #[test]
+    fn test_telemetry_config_parsing() {
+        let yaml = r#"
+telemetry:
+  enabled: true
+  endpoint: "http://otel-collector:4317"
+  service_name: "custom-strake"
+"#;
+        let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.telemetry.enabled);
+        assert_eq!(config.telemetry.endpoint, "http://otel-collector:4317");
+        assert_eq!(config.telemetry.service_name, "custom-strake");
+    }
+
+    #[test]
+    fn test_telemetry_defaults() {
+        let yaml = r#"
+server:
+  listen_addr: "0.0.0.0:50053"
+"#;
+        let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(!config.telemetry.enabled);
+        assert_eq!(config.telemetry.endpoint, "http://localhost:4317");
+        assert_eq!(config.telemetry.service_name, "Strake Server");
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn test_env_var_overrides() {
         // Set env vars
         std::env::set_var("STRAKE_SERVER__LISTEN_ADDR", "1.2.3.4:9999");
@@ -460,5 +554,47 @@ retry:
         std::env::remove_var("STRAKE_AUTH__ENABLED");
         std::env::remove_var("STRAKE_AUTH__API_KEY");
         std::env::remove_var("STRAKE_RETRY__MAX_ATTEMPTS");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_telemetry_validation() {
+        // Valid HTTP
+        let yaml = r#"
+telemetry:
+  enabled: true
+  endpoint: "http://localhost:4317"
+"#;
+        let _config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        // We can't easily call from_file without a file, but we can test the validation logic
+        // if we extract it or just mock it.
+        // For now, let's verify that from_file handles it via env vars.
+
+        std::env::set_var("STRAKE_TELEMETRY__ENABLED", "true");
+        std::env::set_var("STRAKE_TELEMETRY__ENDPOINT", "http://valid:4317");
+        let res = AppConfig::from_file("non_existent.yaml");
+        assert!(res.is_ok());
+
+        // Invalid scheme
+        std::env::set_var("STRAKE_TELEMETRY__ENDPOINT", "grpc://invalid:4317");
+        let res = AppConfig::from_file("non_existent.yaml");
+        assert!(res.is_err());
+        assert!(res
+            .unwrap_err()
+            .to_string()
+            .contains("must use http or https"));
+
+        // Invalid URL
+        std::env::set_var("STRAKE_TELEMETRY__ENDPOINT", "not a url");
+        let res = AppConfig::from_file("non_existent.yaml");
+        assert!(res.is_err());
+        assert!(res
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid telemetry endpoint"));
+
+        // Cleanup
+        std::env::remove_var("STRAKE_TELEMETRY__ENABLED");
+        std::env::remove_var("STRAKE_TELEMETRY__ENDPOINT");
     }
 }

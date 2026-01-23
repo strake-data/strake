@@ -6,17 +6,29 @@
 //! - Configuration loading
 //! - Runtime setup (`tokio`)
 //! - Engine instantiation and query execution loop
-use strake_common::config::Config;
+use strake_common::config::{AppConfig, Config};
 use strake_runtime::federation::FederationEngine;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load configuration to check telemetry
+    let app_config = AppConfig::from_file("config/strake.yaml").unwrap_or_default();
+
+    let otel_layer = if app_config.telemetry.enabled {
+        strake_common::telemetry::init_telemetry("strake-runtime", &app_config.telemetry.endpoint)?
+    } else {
+        Box::new(tracing_subscriber::layer::Identity::new())
+    };
+
     // Initialize tracing
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::from_default_env())
         .with(tracing_subscriber::fmt::layer())
+        .with(otel_layer)
         .init();
+
+    tracing::info!("Tracing initialized");
 
     // Load configuration
     let config = Config {
@@ -63,6 +75,8 @@ async fn main() -> anyhow::Result<()> {
     //         return Err(e);
     //     }
     // }
+
+    strake_common::telemetry::shutdown_telemetry();
 
     Ok(())
 }

@@ -1,0 +1,36 @@
+# Cursor Rules for Strake
+
+You are an expert Rust and Python AI assistant for the Strake project.
+
+## Project Overview
+Strake is a federated SQL engine written in Rust with Python bindings. It uses Apache Arrow DataFusion for query execution.
+
+## Coding Standards
+
+### Rust
+- **Async Runtime**: Use `tokio`.
+- **Error Handling**: 
+    - Use `strake_error::StrakeError` for all internal errors.
+    - Avoid `unwrap()` and `expect()` in production code.
+    - Implement `From` implementations for converting external errors in `crates/error`.
+- **Logging**: Use the `tracing` crate.
+- **Testing**:
+    - Place unit tests in a `tests` module within the file.
+    - Integration tests go in `tests/`.
+
+### Python (`strakepy`)
+- **Bindings**: Use `PyO3` for Rust bindings.
+- **Type Hints**: strict usage of type hints.
+- **Formatting**: Follow Black styling.
+
+### Architecture
+- **Zero-Copy**: Prefer passing Arrow arrays by reference/Arc.
+- **Pushdown**: Always attempt to push filters and projections down to the source connector.
+
+## "Code-First" Philosophy
+- Strake is a CLI/API tool. Do not suggest UI/GUI changes unless specifically asked for "Enterprise Console" features.
+- Configuration is driven by `sources.yaml`.
+
+## Common Patterns
+- **Federation**: See `crates/runtime/src/federation/` for optimizer rules.
+- **Connectors**: See `crates/connectors/src/sources/` for specific implementations.

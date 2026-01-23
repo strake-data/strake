@@ -144,9 +144,18 @@ impl StrakeServer {
 
     pub async fn run(self) -> anyhow::Result<()> {
         // 0. Initialize Telemetry (OpenTelemetry) if enabled
-        if self.observability_enabled {
-            strake_common::telemetry::init_telemetry("strake-server")?;
-        }
+        use strake_common::config::AppConfig;
+        let app_config = AppConfig::from_file(&self.app_config_path)?;
+        let config = Config::from_file(&self.config_path)?;
+
+        let otel_layer = if self.observability_enabled {
+            strake_common::telemetry::init_telemetry(
+                &app_config.telemetry.service_name,
+                &app_config.telemetry.endpoint,
+            )?
+        } else {
+            Box::new(tracing_subscriber::layer::Identity::new())
+        };
 
         // Ensure logs directory exists
         std::fs::create_dir_all("logs").ok();
@@ -175,6 +184,7 @@ impl StrakeServer {
 
         let registry = tracing_subscriber::registry()
             .with(stdout_layer)
+            .with(otel_layer)
             .with(metrics_layer)
             .with(errors_layer);
 
@@ -204,10 +214,6 @@ impl StrakeServer {
         } else {
             registry.try_init().ok();
         }
-
-        use strake_common::config::AppConfig;
-        let app_config = AppConfig::from_file(&self.app_config_path)?;
-        let config = Config::from_file(&self.config_path)?;
         let engine = Arc::new(
             FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
                 config,
@@ -382,6 +388,8 @@ impl StrakeServer {
                 .serve(addr)
                 .await?;
         }
+
+        strake_common::telemetry::shutdown_telemetry();
 
         Ok(())
     }
