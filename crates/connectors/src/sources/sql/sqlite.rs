@@ -99,7 +99,16 @@ async fn try_register_sqlite(
     .await
     .map_err(|e| anyhow::anyhow!(e))
     .context("Failed to create SQLite connection pool")?;
-    let factory = SqliteTableFactory::new(Arc::new(pool));
+    let inner_factory = SqliteTableFactory::new(Arc::new(pool));
+
+    // Create federation provider
+    let executor = super::sqlite_federation::SqliteExecutor::new(connection_string.to_string());
+    let federation_provider = executor.create_federation_provider();
+
+    let factory = FederatedSqliteTableFactory {
+        inner: inner_factory,
+        federation_provider,
+    };
 
     let tables_to_register: Vec<(String, String)> = if let Some(config_tables) = explicit_tables {
         config_tables
@@ -132,6 +141,42 @@ async fn try_register_sqlite(
     )
     .await?;
     Ok(())
+}
+
+struct FederatedSqliteTableFactory {
+    inner: SqliteTableFactory,
+    federation_provider: Arc<datafusion_federation::sql::SQLFederationProvider>,
+}
+
+#[async_trait]
+impl SqlProviderFactory for FederatedSqliteTableFactory {
+    async fn create_table_provider(
+        &self,
+        table_ref: TableReference,
+    ) -> Result<Arc<dyn TableProvider>> {
+        let inner_provider = self
+            .inner
+            .table_provider(table_ref.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        // Use SQLTableSource for federation logic
+        // We assume the schema matches inner_provider
+        let sql_source = datafusion_federation::sql::SQLTableSource::new_with_schema(
+            self.federation_provider.clone(),
+            table_ref.into(), // explicit conversion to RemoteTableRef? Or it handles TableReference
+            inner_provider.schema(),
+        );
+
+        // Wrap with federation adaptor
+        // First arg: Source (logical), Second arg: Provider (physical fallback)
+        let adaptor = datafusion_federation::FederatedTableProviderAdaptor::new_with_provider(
+            Arc::new(sql_source),
+            inner_provider,
+        );
+
+        Ok(Arc::new(adaptor))
+    }
 }
 
 pub async fn introspect_sqlite_tables(db_path: &str) -> Result<Vec<String>> {

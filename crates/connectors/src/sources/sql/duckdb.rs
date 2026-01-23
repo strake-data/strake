@@ -30,9 +30,8 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::catalog::Session;
 use datafusion::common::ScalarValue;
 use datafusion::datasource::MemTable;
-use datafusion::logical_expr::TableType;
+use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::Expr;
 use std::any::Any;
 
 /// DuckDB Table Provider
@@ -113,7 +112,7 @@ impl DuckDBTableProvider {
     }
 }
 
-fn map_duckdb_type(type_str: &str) -> DataType {
+pub fn map_duckdb_type(type_str: &str) -> DataType {
     let t = type_str.to_uppercase();
     if t == "BIGINT" || t == "INT8" || t == "LONG" {
         DataType::Int64
@@ -188,9 +187,35 @@ impl TableProvider for DuckDBTableProvider {
                 .iter()
                 .map(|f| format!("\"{}\"", f.name()))
                 .collect();
-            let query = format!("SELECT {} FROM {}", col_names.join(", "), self.table_name);
 
-            // TODO: Apply filters and limit to query if possible
+            // Build Query with Pushdown
+            let mut query = format!("SELECT {} FROM {}", col_names.join(", "), self.table_name);
+
+            // Filters
+            // Use Postgres dialect as it's compatible with DuckDB quote style
+            let dialect = datafusion::sql::unparser::dialect::PostgreSqlDialect {};
+            let unparser = datafusion::sql::unparser::Unparser::new(&dialect);
+
+            let mut where_clauses = Vec::new();
+            for filter in filters {
+                if let Ok(sql) = unparser.expr_to_sql(filter) {
+                    where_clauses.push(sql.to_string());
+                } else {
+                    tracing::warn!("Failed to unparse filter for pushdown: {:?}", filter);
+                }
+            }
+
+            if !where_clauses.is_empty() {
+                query.push_str(" WHERE ");
+                query.push_str(&where_clauses.join(" AND "));
+            }
+
+            // Limit
+            if let Some(n) = limit {
+                query.push_str(&format!(" LIMIT {}", n));
+            }
+
+            tracing::info!(query = %query, "Executing DuckDB Pushdown Query");
 
             let mut stmt = conn
                 .prepare(&query)
@@ -206,7 +231,20 @@ impl TableProvider for DuckDBTableProvider {
 
         let mem_table = MemTable::try_new(batch.schema(), vec![vec![batch]])?;
 
+        // Note: we pass 'None' for filters and 'None' for limit to mem_table.scan
+        // because we have already applied them at the source (DuckDB).
+        // However, DataFusion might still stick a Filter/Limit node on top if we don't return Exact pushdown confirmation.
+        // For correctness, passing them again to MemTable is safe (limit 2 on 2 rows is 2 rows).
+        // But to verify pushdown optimization, we ideally want to fetch less data.
         mem_table.scan(state, None, filters, limit).await
+    }
+
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> datafusion::error::Result<Vec<TableProviderFilterPushDown>> {
+        // Optimistically accept all filters
+        Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
     }
 }
 

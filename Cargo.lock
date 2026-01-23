@@ -6394,7 +6394,9 @@ dependencies = [
  "arrow-flight",
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "datafusion",
+ "datafusion-federation",
  "datafusion-table-providers",
  "duckdb",
  "futures",
@@ -6482,6 +6484,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

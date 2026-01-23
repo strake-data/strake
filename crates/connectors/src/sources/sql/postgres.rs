@@ -90,7 +90,16 @@ async fn try_register_postgres(
     explicit_tables: &Option<Vec<TableConfig>>,
 ) -> Result<()> {
     let pool = create_pg_pool(connection_string, pool_size).await?;
-    let factory = PostgresTableFactory::new(pool);
+    let inner_factory = PostgresTableFactory::new(pool);
+
+    // Create federation provider
+    let executor = super::postgres_federation::PostgresExecutor::new(connection_string.to_string());
+    let federation_provider = executor.create_federation_provider();
+
+    let factory = FederatedPostgresTableFactory {
+        inner: inner_factory,
+        federation_provider,
+    };
 
     let tables_to_register: Vec<(String, String)> = if let Some(config_tables) = explicit_tables {
         config_tables
@@ -123,6 +132,41 @@ async fn try_register_postgres(
     )
     .await?;
     Ok(())
+}
+
+struct FederatedPostgresTableFactory {
+    inner: PostgresTableFactory,
+    federation_provider: Arc<datafusion_federation::sql::SQLFederationProvider>,
+}
+
+#[async_trait]
+impl SqlProviderFactory for FederatedPostgresTableFactory {
+    async fn create_table_provider(
+        &self,
+        table_ref: TableReference,
+    ) -> Result<Arc<dyn TableProvider>> {
+        let inner_provider = self
+            .inner
+            .table_provider(table_ref.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        // Use SQLTableSource for federation logic
+        let sql_source = datafusion_federation::sql::SQLTableSource::new_with_schema(
+            self.federation_provider.clone(),
+            table_ref.into(),
+            inner_provider.schema(),
+        );
+
+        // Wrap with federation adaptor
+        // First arg: Source (logical), Second arg: Provider (physical fallback)
+        let adaptor = datafusion_federation::FederatedTableProviderAdaptor::new_with_provider(
+            Arc::new(sql_source),
+            inner_provider,
+        );
+
+        Ok(Arc::new(adaptor))
+    }
 }
 
 async fn create_pg_pool(

@@ -9,6 +9,7 @@ strake-common = { path = "../common" }
 strake-sql = { path = "../sql" }
 datafusion = { workspace = true }
 datafusion-table-providers = { workspace = true }
+datafusion-federation = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
@@ -40,6 +41,7 @@ arrow-flight = { workspace = true }
 tower = { workspace = true }
 prost-reflect = { version = "0.16", features = ["serde"] }
 moka = { version = "0.12", features = ["future"] }
+chrono = "0.4"
 
 [dev-dependencies]
 wiremock = "0.6"

@@ -13,7 +13,9 @@ use strake_common::config::{RetrySettings, SourceConfig, TableConfig};
 pub mod common;
 pub mod mysql;
 pub mod postgres;
+pub mod postgres_federation;
 pub mod sqlite;
+pub mod sqlite_federation;
 pub mod wrappers;
 
 pub use common::SqlDialect;
@@ -22,6 +24,7 @@ use postgres::register_postgres;
 use sqlite::register_sqlite;
 pub mod clickhouse;
 pub mod duckdb;
+pub mod duckdb_federation;
 use clickhouse::register_clickhouse;
 use duckdb::register_duckdb;
 

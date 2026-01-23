@@ -15,6 +15,8 @@ pub trait StrakeQueryExecutor: Send + Sync {
     async fn execute(&mut self, query: &str) -> anyhow::Result<(Arc<Schema>, Vec<RecordBatch>)>;
     /// Returns the logical plan of the query without executing it
     async fn trace(&mut self, query: &str) -> anyhow::Result<String>;
+    /// Returns a detailed ASCII tree visualization of the execution plan
+    async fn explain_tree(&mut self, query: &str) -> anyhow::Result<String>;
     /// Returns a list of available tables and sources
     async fn describe(&mut self, table_name: Option<String>) -> anyhow::Result<String>;
 }
@@ -47,6 +49,13 @@ impl Backend {
         match self {
             Backend::Embedded(e) => e.describe(table_name).await,
             Backend::Remote(r) => r.describe(table_name).await,
+        }
+    }
+
+    pub async fn explain_tree(&mut self, query: &str) -> anyhow::Result<String> {
+        match self {
+            Backend::Embedded(e) => e.explain_tree(query).await,
+            Backend::Remote(r) => r.explain_tree(query).await,
         }
     }
 }

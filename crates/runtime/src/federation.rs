@@ -445,6 +445,31 @@ impl FederationEngine {
         // Use the trace module to execute and report
         crate::query::trace::execute_and_report(&self.context, sql).await
     }
+
+    /// Returns a detailed ASCII tree visualization of the execution plan.
+    ///
+    /// Shows federation pushdown indicators, join conditions, filter/projection
+    /// details, and timing metrics when available.
+    pub async fn explain_tree(&self, sql: &str) -> Result<String> {
+        // Create logical plan
+        let logical_plan = self
+            .context
+            .state()
+            .create_logical_plan(sql)
+            .await
+            .context("Failed to create logical plan")?;
+
+        // Create physical plan
+        let physical_plan = self
+            .context
+            .state()
+            .create_physical_plan(&logical_plan)
+            .await
+            .context("Failed to create physical plan")?;
+
+        // Format as tree
+        Ok(crate::query::plan_tree::format_plan_tree(&physical_plan))
+    }
 }
 
 #[cfg(test)]

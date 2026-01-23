@@ -110,6 +110,16 @@ impl StrakeConnection {
             .map_err(|e| to_py_err("Describe failed", e))
     }
 
+    /// Returns a detailed ASCII tree visualization of the execution plan.
+    ///
+    /// Shows federation pushdown indicators, join conditions, filter/projection
+    /// details, and timing metrics when available.
+    fn explain_tree(&mut self, query: String, _py: Python) -> PyResult<String> {
+        self.runtime
+            .block_on(async { self.backend.explain_tree(&query).await })
+            .map_err(|e| to_py_err("Explain tree failed", e))
+    }
+
     // Context Manager Protocol
     fn __enter__(slf: Py<Self>) -> Py<Self> {
         slf

@@ -185,4 +185,12 @@ impl StrakeQueryExecutor for RemoteBackend {
             Ok(arrow::util::pretty::pretty_format_batches(&batches)?.to_string())
         }
     }
+
+    async fn explain_tree(&mut self, query: &str) -> anyhow::Result<String> {
+        // For remote backend, we don't have direct access to the execution plan,
+        // so we fall back to returning the EXPLAIN output.
+        // Full tree visualization requires the physical plan which is only
+        // available in embedded mode.
+        self.trace(query).await
+    }
 }

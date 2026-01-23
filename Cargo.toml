@@ -13,7 +13,7 @@ openssl = { version = "0.10", features = ["vendored"] }
 arrow = "57"
 datafusion = "51"
 datafusion-python = "50"
-datafusion-federation = "0.4"
+datafusion-federation = { version = "0.4", features = ["sql"] }
 datafusion-table-providers = { version = "0.9", features = ["postgres", "mysql", "sqlite", "flight", "clickhouse"] }
 arrow-flight = { version = "57", features = ["flight-sql-experimental"] }
 arrow-json = "57"

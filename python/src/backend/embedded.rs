@@ -80,4 +80,8 @@ impl StrakeQueryExecutor for EmbeddedBackend {
         let pretty = arrow::util::pretty::pretty_format_batches(&batches)?.to_string();
         Ok(pretty)
     }
+
+    async fn explain_tree(&mut self, query: &str) -> anyhow::Result<String> {
+        self.engine.explain_tree(query).await
+    }
 }
