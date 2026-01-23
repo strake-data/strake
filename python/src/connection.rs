@@ -3,7 +3,7 @@ use pyo3::prelude::*;
 use std::collections::HashMap;
 
 use crate::backend::{Backend, EmbeddedBackend, RemoteBackend};
-use crate::errors::{to_py_err, to_py_value_err};
+use crate::errors::InternalError;
 
 /// A connection to the Strake federation engine.
 #[pyclass]
@@ -21,25 +21,28 @@ impl StrakeConnection {
         sources_config: Option<String>,
         api_key: Option<String>,
     ) -> PyResult<Self> {
-        let runtime =
-            tokio::runtime::Runtime::new().map_err(|e| to_py_err("Failed to create runtime", e))?;
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| InternalError::new_err(format!("Failed to create runtime: {}", e)))?;
 
-        let backend =
-            if dsn_or_config.starts_with("grpc://") || dsn_or_config.starts_with("grpcs://") {
-                // Remote mode
-                let client = runtime
-                    .block_on(async { RemoteBackend::new(dsn_or_config, api_key).await })
-                    .map_err(|e| to_py_err("Remote connection failed", e))?;
+        let backend = if dsn_or_config.starts_with("grpc://")
+            || dsn_or_config.starts_with("grpcs://")
+        {
+            // Remote mode
+            let client = runtime
+                .block_on(async { RemoteBackend::new(dsn_or_config, api_key).await })
+                .map_err(|e| InternalError::new_err(format!("Remote connection failed: {}", e)))?;
 
-                Backend::Remote(Box::new(client))
-            } else {
-                // Embedded mode
-                let engine = runtime
-                    .block_on(async { EmbeddedBackend::new(&dsn_or_config, sources_config).await })
-                    .map_err(|e| to_py_value_err("Engine initialization failed", e))?;
+            Backend::Remote(Box::new(client))
+        } else {
+            // Embedded mode
+            let engine = runtime
+                .block_on(async { EmbeddedBackend::new(&dsn_or_config, sources_config).await })
+                .map_err(|e| {
+                    InternalError::new_err(format!("Engine initialization failed: {}", e))
+                })?;
 
-                Backend::Embedded(engine)
-            };
+            Backend::Embedded(engine)
+        };
 
         Ok(Self { backend, runtime })
     }
@@ -54,22 +57,21 @@ impl StrakeConnection {
     ) -> PyResult<Py<PyAny>> {
         // TODO: validation of params or interpolation logic
         if let Some(_p) = params {
-            return Err(to_py_value_err(
-                "Parameter binding",
-                "Not yet implemented in this version",
+            return Err(InternalError::new_err(
+                "Parameter binding: Not yet implemented in this version",
             ));
         }
 
         let (schema, batches) = self
             .runtime
             .block_on(async { self.backend.execute(&query).await })
-            .map_err(|e| to_py_err("Query execution failed", e))?;
+            .map_err(|e| InternalError::new_err(format!("Query execution failed: {}", e)))?;
 
         // Convert to PyArrow
         let pyarrow = py.import("pyarrow")?;
-        let py_schema = schema
-            .to_pyarrow(py)
-            .map_err(|e| to_py_err("Arrow schema conversion failed", e))?;
+        let py_schema = schema.to_pyarrow(py).map_err(|e| {
+            InternalError::new_err(format!("Arrow schema conversion failed: {}", e))
+        })?;
 
         let is_empty = batches.is_empty();
 
@@ -77,7 +79,7 @@ impl StrakeConnection {
         for batch in batches {
             let py_batch = batch
                 .to_pyarrow(py)
-                .map_err(|e| to_py_err("Arrow conversion failed", e))?;
+                .map_err(|e| InternalError::new_err(format!("Arrow conversion failed: {}", e)))?;
             py_batches.push(py_batch);
         }
 
@@ -99,7 +101,7 @@ impl StrakeConnection {
     fn trace(&mut self, query: String, _py: Python) -> PyResult<String> {
         self.runtime
             .block_on(async { self.backend.trace(&query).await })
-            .map_err(|e| to_py_err("Trace failed", e))
+            .map_err(|e| InternalError::new_err(format!("Trace failed: {}", e)))
     }
 
     /// Returns a list of available tables and sources.
@@ -107,7 +109,7 @@ impl StrakeConnection {
     fn describe(&mut self, table_name: Option<String>, _py: Python) -> PyResult<String> {
         self.runtime
             .block_on(async { self.backend.describe(table_name).await })
-            .map_err(|e| to_py_err("Describe failed", e))
+            .map_err(|e| InternalError::new_err(format!("Describe failed: {}", e)))
     }
 
     /// Returns a detailed ASCII tree visualization of the execution plan.
@@ -117,7 +119,7 @@ impl StrakeConnection {
     fn explain_tree(&mut self, query: String, _py: Python) -> PyResult<String> {
         self.runtime
             .block_on(async { self.backend.explain_tree(&query).await })
-            .map_err(|e| to_py_err("Explain tree failed", e))
+            .map_err(|e| InternalError::new_err(format!("Explain tree failed: {}", e)))
     }
 
     // Context Manager Protocol

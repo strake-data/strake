@@ -45,9 +45,7 @@ impl SQLExecutor for PostgresExecutor {
 
     fn compute_context(&self) -> Option<String> {
         // Same connection string = same PostgreSQL instance = can push down joins
-        let ctx = self.connection_string.clone();
-        println!("compute_context called: {}", ctx);
-        Some(ctx)
+        Some(self.connection_string.clone())
     }
 
     fn dialect(&self) -> Arc<dyn datafusion::sql::unparser::dialect::Dialect> {
@@ -289,7 +287,11 @@ pub fn map_postgres_type(type_str: &str) -> DataType {
         DataType::Float32
     }
     // Floating point and numeric/decimal types - all map to Float64
-    else if t == "double precision" || t == "float8" || t.starts_with("numeric") || t.starts_with("decimal") {
+    else if t == "double precision"
+        || t == "float8"
+        || t.starts_with("numeric")
+        || t.starts_with("decimal")
+    {
         DataType::Float64
     }
     // Boolean

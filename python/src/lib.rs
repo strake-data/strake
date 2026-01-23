@@ -31,5 +31,6 @@ fn _strake(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
         .try_init();
 
     m.add_class::<StrakeConnection>()?;
+    errors::register_exceptions(_py, m)?;
     Ok(())
 }

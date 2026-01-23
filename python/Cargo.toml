@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 [dependencies]
 strake-runtime = { path = "../crates/runtime" }
 strake-common = { path = "../crates/common" }
+strake-error = { path = "../crates/error" }
 pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }
 arrow = { workspace = true, features = ["pyarrow", "prettyprint"] }
 arrow-flight = { workspace = true, features = ["flight-sql-experimental"] }
@@ -20,6 +21,7 @@ anyhow = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 tracing = { workspace = true }
 async-trait.workspace = true

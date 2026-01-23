@@ -190,9 +190,7 @@ impl PlanTreeFormatter {
             }
             if let Some(type_start) = display.find("join_type=") {
                 let type_part = &display[type_start..];
-                let end = type_part
-                    .find([',', ')', ' '])
-                    .unwrap_or(type_part.len());
+                let end = type_part.find([',', ')', ' ']).unwrap_or(type_part.len());
                 let _ = writeln!(output, "{}{}", detail_prefix, &type_part[..end]);
             }
         }

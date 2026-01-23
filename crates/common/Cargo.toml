@@ -5,6 +5,7 @@ license.workspace = true
 edition = "2021"
 
 [dependencies]
+strake-error = { path = "../error" }
 serde = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }

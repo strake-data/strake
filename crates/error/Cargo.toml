@@ -1,0 +1,17 @@
+[package]
+name = "strake-error"
+version.workspace = true
+edition = "2021"
+description = "Unified, AI-parseable error types for Strake"
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+datafusion = { workspace = true }
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_test = "1.0"
