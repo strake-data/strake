@@ -14,15 +14,14 @@
 use super::helpers::{parse_yaml, DiffChange, DiffResult};
 use crate::models;
 use crate::{
-    db,
+    metadata::MetadataStore,
     output::{self, OutputFormat},
 };
 use anyhow::Result;
 use owo_colors::OwoColorize;
-use tokio_postgres::Client;
 
-pub async fn diff(client: &Client, file_path: &str, format: OutputFormat) -> Result<()> {
-    let result = diff_internal(client, file_path).await?;
+pub async fn diff(store: &dyn MetadataStore, file_path: &str, format: OutputFormat) -> Result<()> {
+    let result = diff_internal(store, file_path).await?;
     if format.is_machine_readable() {
         output::print_success(format, &result)?;
     } else {
@@ -33,14 +32,11 @@ pub async fn diff(client: &Client, file_path: &str, format: OutputFormat) -> Res
 
 pub(crate) fn print_diff_human(result: &DiffResult) {
     if result.changes.is_empty() {
-        println!(
-            "{}",
-            "No changes detected (schema matches metadata store).".dimmed()
-        );
+        println!("{}", "No changes detected.".green());
         return;
     }
 
-    println!("\nDetected {} change(s).", result.changes.len().yellow());
+    println!("{}", "Proposed Changes:".bold().cyan());
     for change in &result.changes {
         let symbol = match change.change_type.as_str() {
             "ADD" => "+".green().to_string(),
@@ -49,46 +45,27 @@ pub(crate) fn print_diff_human(result: &DiffResult) {
             _ => "?".dimmed().to_string(),
         };
 
-        match change.category.as_str() {
-            "source" => {
-                let details = change.details.as_deref().unwrap_or("");
-                println!(
-                    "{} {} source: {} {}",
-                    symbol,
-                    change.change_type,
-                    change.name.bold(),
-                    details
-                );
-            }
-            "table" => {
-                let details = change.details.as_deref().unwrap_or("");
-                println!(
-                    "  {} {} table: {} {}",
-                    symbol,
-                    change.change_type,
-                    change.name.bold(),
-                    details
-                );
-            }
-            "column" => {
-                let details = change.details.as_deref().unwrap_or("");
-                println!(
-                    "    {} {} column: {} {}",
-                    symbol,
-                    change.change_type,
-                    change.name.bold(),
-                    details
-                );
-            }
-            _ => {}
+        println!(
+            "{} {} {} {}",
+            symbol,
+            change.change_type.bold(),
+            change.category,
+            change.name.bold()
+        );
+
+        if let Some(details) = &change.details {
+            println!("    {}", details.dimmed());
         }
     }
 }
 
-pub(crate) async fn diff_internal(client: &Client, file_path: &str) -> Result<DiffResult> {
+pub(crate) async fn diff_internal(
+    store: &dyn MetadataStore,
+    file_path: &str,
+) -> Result<DiffResult> {
     let local_config = parse_yaml(file_path)?;
-    let domain = local_config.domain.as_deref();
-    let db_config = db::get_all_sources(client, domain).await?;
+    let domain = local_config.domain.as_deref().unwrap_or("default");
+    let db_config = store.get_sources(domain).await?;
 
     let mut changes = Vec::new();
 

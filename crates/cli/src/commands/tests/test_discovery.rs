@@ -37,6 +37,7 @@ async fn test_search_success() {
         token: None,
         api_url: mock_server.uri(),
         database_url: None,
+        metadata: None,
     };
 
     let result = search(
@@ -78,6 +79,7 @@ async fn test_add_new_source() {
         token: None,
         api_url: mock_server.uri(),
         database_url: None,
+        metadata: None,
     };
 
     let result = add(

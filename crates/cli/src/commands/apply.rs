@@ -16,16 +16,16 @@ use super::helpers::{parse_yaml, ApplyResult};
 use super::validate::validate;
 use crate::config::CliConfig;
 use crate::{
-    db,
+    metadata::{models::ApplyLogEntry, MetadataStore},
     output::{self, OutputFormat},
 };
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
+use serde_json::json;
 use std::fs;
-use tokio_postgres::Client;
 
 pub async fn apply(
-    client: &Client,
+    store: &dyn MetadataStore,
     file_path: &str,
     force: bool,
     dry_run: bool,
@@ -45,7 +45,7 @@ pub async fn apply(
     let source_config = parse_yaml(file_path)?;
     let domain = source_config.domain.as_deref().unwrap_or("default");
 
-    db::init_db(client).await?; // Ensure schema exists before any logic or diffing
+    store.init().await?; // Ensure schema exists before any logic or diffing
 
     if dry_run {
         if !format.is_machine_readable() {
@@ -60,12 +60,12 @@ pub async fn apply(
             println!();
         }
 
-        let diff_result = diff_internal(client, file_path).await?;
+        let diff_result = diff_internal(store, file_path).await?;
 
         if format.is_machine_readable() {
             let result = ApplyResult {
                 domain: domain.to_string(),
-                version: db::get_domain_version(client, domain).await.unwrap_or(0),
+                version: store.get_domain_version(domain).await.unwrap_or(0),
                 added: vec![],
                 deleted: vec![],
                 dry_run: true,
@@ -81,42 +81,43 @@ pub async fn apply(
         return Ok(());
     }
 
-    // db::init_db already called above before dry_run check
+    // store.init() already called above before dry_run check
 
     // 1. Optimistic Locking
     let current_version_to_update = match expected_version {
         Some(v) => v,
-        None => db::get_domain_version(client, domain).await?,
+        None => store.get_domain_version(domain).await?,
     };
 
     // 2. Increment version (Locking)
-    let new_version = db::increment_domain_version(client, domain, current_version_to_update)
+    let new_version: i32 = store
+        .increment_domain_version(domain, current_version_to_update)
         .await
         .context(
             "Failed to increment domain version. Another user may have modified the domain.",
         )?;
 
     // 3. Import
-    let (added, deleted) = db::import_sources(client, &source_config, force).await?;
+    let apply_res = store.apply_sources(&source_config, force).await?;
 
     // 4. Audit Log
     let user_id = std::env::var("USER").unwrap_or_else(|_| "cli-user".to_string());
     let raw_yaml = fs::read_to_string(file_path)?;
     let config_hash = format!("{:x}", md5::compute(&raw_yaml)); // Simple hash
 
-    db::log_apply_event(
-        client,
-        db::ApplyLogEntry {
-            domain,
+    store
+        .log_apply_event(ApplyLogEntry {
+            domain: domain.to_string(),
             version: new_version,
-            user_id: &user_id,
-            added: &added,
-            deleted: &deleted,
-            config_hash: &config_hash,
-            config_yaml: &raw_yaml,
-        },
-    )
-    .await?;
+            user_id,
+            sources_added: serde_json::to_value(&apply_res.sources_added).unwrap_or(json!([])),
+            sources_deleted: serde_json::to_value(&apply_res.sources_deleted).unwrap_or(json!([])),
+            tables_modified: json!([]), // Not detailed yet
+            config_hash,
+            config_yaml: raw_yaml,
+            timestamp: None,
+        })
+        .await?;
 
     if format.is_machine_readable() {
         output::print_success(
@@ -124,8 +125,8 @@ pub async fn apply(
             ApplyResult {
                 domain: domain.to_string(),
                 version: new_version,
-                added,
-                deleted,
+                added: apply_res.sources_added,
+                deleted: apply_res.sources_deleted,
                 dry_run: false,
                 diff: None,
             },

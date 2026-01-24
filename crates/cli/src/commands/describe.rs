@@ -13,7 +13,9 @@ use super::helpers::{TestConnectionResult, TestConnectionSummary};
 use super::validate::validate_source;
 use crate::config::CliConfig;
 use crate::{
-    db, exit_codes, models,
+    exit_codes,
+    metadata::MetadataStore,
+    models,
     output::{self, OutputFormat},
 };
 use anyhow::{Context, Result};
@@ -21,10 +23,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 
 use std::fs;
-use tokio_postgres::Client;
 
 pub async fn describe(
-    client: &Client,
+    store: &dyn MetadataStore,
     file_path: &str,
     domain: Option<&str>,
     format: OutputFormat,
@@ -42,7 +43,7 @@ pub async fn describe(
             domain.bold()
         );
     }
-    let config = db::get_all_sources(client, Some(domain)).await?;
+    let config = store.get_sources(domain).await?;
 
     if format.is_machine_readable() {
         output::print_success(format, &config)?;
@@ -72,7 +73,11 @@ pub async fn describe(
                 table.name.bold()
             );
             if let Some(pc) = &table.partition_column {
-                println!("    {} {}", "Partition Column:".dimmed(), pc.yellow());
+                println!(
+                    "    {} {}",
+                    "Partition Column:".dimmed(),
+                    pc.as_str().yellow()
+                );
             }
             println!("    {}", "Columns:".dimmed());
             for col in table.columns {

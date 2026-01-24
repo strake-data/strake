@@ -20,6 +20,7 @@ async fn test_validate_contracts_success() {
         token: None,
         api_url: mock_server.uri(),
         database_url: None,
+        metadata: None,
     };
 
     let result = validate_contracts("sources: []", "contracts.yaml", &config).await;
@@ -43,6 +44,7 @@ async fn test_validate_contracts_failure() {
         token: None,
         api_url: mock_server.uri(),
         database_url: None,
+        metadata: None,
     };
 
     let result = validate_contracts("sources: []", "contracts.yaml", &config).await;

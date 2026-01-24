@@ -116,6 +116,7 @@ fn test_get_client_no_token() {
         token: None,
         api_url: "http://localhost".to_string(),
         database_url: None,
+        metadata: None,
     };
     let client = get_client(&config);
     assert!(client.is_ok());
@@ -127,6 +128,7 @@ fn test_get_client_with_token() {
         token: Some("secret_token".to_string()),
         api_url: "http://localhost".to_string(),
         database_url: None,
+        metadata: None,
     };
     let client = get_client(&config);
     assert!(client.is_ok());

@@ -6,11 +6,21 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "backend")]
+pub enum MetadataBackendConfig {
+    #[serde(rename = "sqlite")]
+    Sqlite { path: PathBuf },
+    #[serde(rename = "postgres")]
+    Postgres { url: String },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CliConfig {
     #[serde(default = "default_api_url")]
     pub api_url: String,
     pub token: Option<String>,
-    pub database_url: Option<String>,
+    pub database_url: Option<String>, // Legacy
+    pub metadata: Option<MetadataBackendConfig>,
 }
 
 impl Default for CliConfig {
@@ -19,6 +29,7 @@ impl Default for CliConfig {
             api_url: default_api_url(),
             token: None,
             database_url: None,
+            metadata: None,
         }
     }
 }
@@ -29,9 +40,6 @@ fn default_api_url() -> String {
 
 /// Default API URL for Strake server
 pub const DEFAULT_API_URL: &str = "http://localhost:8080/api/v1";
-
-/// Default database URL for local development
-pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres:postgres@localhost:5432/postgres";
 
 #[derive(Serialize, Deserialize, Default)]
 struct ConfigFile {
@@ -76,9 +84,19 @@ pub fn load(profile_arg: Option<&str>) -> Result<CliConfig> {
         config.token = Some(token);
     }
     if let Ok(db_url) = env::var("DATABASE_URL") {
-        config.database_url = Some(db_url);
+        config.database_url = Some(db_url.clone());
+        // Auto-configure metadata to Postgres if env var set and no metadata set
+        if config.metadata.is_none() {
+            config.metadata = Some(MetadataBackendConfig::Postgres { url: db_url });
+        }
     }
-    // Also support legacy STRAKE_URL? Not standard.
+
+    // 5. Default Metadata to SQLite if not set
+    if config.metadata.is_none() {
+        config.metadata = Some(MetadataBackendConfig::Sqlite {
+            path: get_default_sqlite_path(),
+        });
+    }
 
     Ok(config)
 }
@@ -95,5 +113,13 @@ fn get_config_path() -> PathBuf {
         // Fallback to current dir if no home? Or fail?
         // For CLI, home should exist.
         PathBuf::from(".strake/config.yaml")
+    }
+}
+
+fn get_default_sqlite_path() -> PathBuf {
+    if let Some(home) = dirs::home_dir() {
+        home.join(".strake").join("metadata.db")
+    } else {
+        PathBuf::from(".strake/metadata.db")
     }
 }

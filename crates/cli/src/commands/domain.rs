@@ -11,15 +11,17 @@
 
 use super::helpers::{ApplyResult, DomainEntry, DomainHistoryEntry};
 use crate::{
-    db, models,
+    metadata::{models::ApplyLogEntry, MetadataStore},
+    models,
     output::{self, OutputFormat},
 };
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use owo_colors::OwoColorize;
-use tokio_postgres::Client;
+use serde_json::json;
 
 pub async fn rollback(
-    client: &Client,
+    store: &dyn MetadataStore,
     domain: &str,
     to_version: i32,
     format: OutputFormat,
@@ -33,34 +35,37 @@ pub async fn rollback(
         );
     }
 
-    // 1. Fetch old config
-    let config_yaml = db::get_history_config(client, domain, to_version).await?;
+    // 1. Fetch old config (explicit type to help inference)
+    let config_yaml: String = store.get_history_config(domain, to_version).await?;
     let config: models::SourcesConfig = serde_yaml::from_str(&config_yaml)?;
 
     // 2. Optimistic Locking
-    let current_version = db::get_domain_version(client, domain).await?;
-    let new_version = db::increment_domain_version(client, domain, current_version).await?;
+    let current_version = store.get_domain_version(domain).await?;
+    // 3. Increment version
+    let new_version = store
+        .increment_domain_version(domain, current_version)
+        .await?;
 
-    // 3. Import
-    let (added, deleted) = db::import_sources(client, &config, true).await?;
+    // 4. Import
+    let apply_res = store.apply_sources(&config, true).await?;
 
-    // 4. Audit Log
+    // 5. Audit Log
     let user_id = std::env::var("USER").unwrap_or_else(|_| "cli-user".to_string());
     let config_hash = format!("{:x}", md5::compute(&config_yaml));
 
-    db::log_apply_event(
-        client,
-        db::ApplyLogEntry {
-            domain,
+    store
+        .log_apply_event(ApplyLogEntry {
+            domain: domain.to_string(),
             version: new_version,
-            user_id: &user_id,
-            added: &added,
-            deleted: &deleted,
-            config_hash: &config_hash,
-            config_yaml: &config_yaml,
-        },
-    )
-    .await?;
+            user_id,
+            sources_added: serde_json::to_value(&apply_res.sources_added).unwrap_or(json!([])),
+            sources_deleted: serde_json::to_value(&apply_res.sources_deleted).unwrap_or(json!([])),
+            tables_modified: json!([]),
+            config_hash,
+            config_yaml,
+            timestamp: None,
+        })
+        .await?;
 
     if format.is_machine_readable() {
         output::print_success(
@@ -68,8 +73,8 @@ pub async fn rollback(
             ApplyResult {
                 domain: domain.to_string(),
                 version: new_version,
-                added,
-                deleted,
+                added: apply_res.sources_added,
+                deleted: apply_res.sources_deleted,
                 dry_run: false,
                 diff: None,
             },
@@ -86,21 +91,16 @@ pub async fn rollback(
     Ok(())
 }
 
-pub async fn list_domains(client: &Client, format: OutputFormat) -> Result<()> {
-    let rows = client
-        .query(
-            "SELECT name, version, created_at FROM domains ORDER BY name",
-            &[],
-        )
-        .await?;
+pub async fn list_domains(store: &dyn MetadataStore, format: OutputFormat) -> Result<()> {
+    let domains = store.list_domains().await?;
 
     if format.is_machine_readable() {
         let mut results = Vec::new();
-        for row in rows {
+        for d in domains {
             results.push(DomainEntry {
-                name: row.get(0),
-                version: row.get(1),
-                created_at: row.get(2),
+                name: d.name,
+                version: d.version,
+                created_at: d.created_at.unwrap_or_else(chrono::Utc::now),
             });
         }
         output::print_success(format, &results)?;
@@ -114,42 +114,46 @@ pub async fn list_domains(client: &Client, format: OutputFormat) -> Result<()> {
         "CREATED AT".bold()
     );
     println!("{}", "-".repeat(50).dimmed());
-    for row in rows {
-        let name: String = row.get(0);
-        let version: i32 = row.get(1);
-        let created_at: chrono::DateTime<chrono::Utc> = row.get(2);
+    for d in domains {
         println!(
             "{:<20} v{:<9} {}",
-            name.bold().cyan(),
-            version.yellow(),
-            created_at.format("%Y-%m-%d %H:%M:%S").dimmed()
+            d.name.bold().cyan(),
+            d.version.yellow(),
+            d.created_at
+                .map(|ts: DateTime<Utc>| ts.format("%Y-%m-%d %H:%M:%S").to_string())
+                .unwrap_or_else(|| "N/A".to_string())
+                .dimmed()
         );
     }
     Ok(())
 }
 
 pub async fn show_domain_history(
-    client: &Client,
+    store: &dyn MetadataStore,
     domain: String,
     format: OutputFormat,
 ) -> Result<()> {
-    let rows = client.query(
-        "SELECT version, user_id, timestamp, sources_added, sources_deleted FROM apply_history WHERE domain_name = $1 ORDER BY version DESC LIMIT 10",
-        &[&domain]
-    ).await?;
+    let history = store.get_history(&domain, 10).await?;
 
     if format.is_machine_readable() {
         let mut results = Vec::new();
-        for row in rows {
-            let added: serde_json::Value = row.get(3);
-            let deleted: serde_json::Value = row.get(4);
-            let added_count = added.as_array().map(|a| a.len()).unwrap_or(0);
-            let deleted_count = deleted.as_array().map(|d| d.len()).unwrap_or(0);
+        for entry in history {
+            // Explicit types for closure parameters to fix inference
+            let added_count = entry
+                .sources_added
+                .as_array()
+                .map(|a: &Vec<serde_json::Value>| a.len())
+                .unwrap_or(0);
+            let deleted_count = entry
+                .sources_deleted
+                .as_array()
+                .map(|d: &Vec<serde_json::Value>| d.len())
+                .unwrap_or(0);
 
             results.push(DomainHistoryEntry {
-                version: row.get(0),
-                user_id: row.get(1),
-                timestamp: row.get(2),
+                version: entry.version,
+                user_id: entry.user_id,
+                timestamp: entry.timestamp.unwrap_or_else(chrono::Utc::now),
                 added: added_count,
                 deleted: deleted_count,
             });
@@ -172,21 +176,27 @@ pub async fn show_domain_history(
     );
     println!("{}", "-".repeat(70).dimmed());
 
-    for row in rows {
-        let version: i32 = row.get(0);
-        let user: String = row.get(1);
-        let ts: chrono::DateTime<chrono::Utc> = row.get(2);
-        let added: serde_json::Value = row.get(3);
-        let deleted: serde_json::Value = row.get(4);
-
-        let added_list = added.as_array().map(|a| a.len()).unwrap_or(0);
-        let deleted_list = deleted.as_array().map(|d| d.len()).unwrap_or(0);
+    for entry in history {
+        let added_list = entry
+            .sources_added
+            .as_array()
+            .map(|a: &Vec<serde_json::Value>| a.len())
+            .unwrap_or(0);
+        let deleted_list = entry
+            .sources_deleted
+            .as_array()
+            .map(|d: &Vec<serde_json::Value>| d.len())
+            .unwrap_or(0);
+        let ts_str = entry
+            .timestamp
+            .map(|ts: DateTime<Utc>| ts.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "N/A".to_string());
 
         println!(
             "{:<18} {:<15} {:<20} {} / {}",
-            format!("v{}", version).yellow().bold(),
-            user.dimmed(),
-            ts.format("%Y-%m-%d %H:%M").dimmed(),
+            format!("v{}", entry.version).yellow().bold(),
+            entry.user_id.dimmed(),
+            ts_str.dimmed(),
             format!("+{}", added_list).green(),
             format!("-{}", deleted_list).red()
         );

@@ -19,16 +19,16 @@
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use owo_colors::OwoColorize;
-use std::env;
 
 mod commands;
 mod config;
-mod db;
 mod exit_codes;
+mod metadata;
 mod models;
 mod output;
 
-use config::CliConfig;
+use config::{CliConfig, MetadataBackendConfig};
+use metadata::{postgres::PostgresStore, sqlite::SqliteStore, MetadataStore};
 use strake_error::ErrorCategory;
 
 use output::OutputFormat;
@@ -189,12 +189,7 @@ async fn main() -> Result<(), anyhow::Error> {
         config.token = Some(token.clone());
     }
 
-    // Determine DB URL priority: Config > Env > Default
-    let db_url = config.database_url.clone().unwrap_or_else(|| {
-        env::var("DATABASE_URL").unwrap_or_else(|_| config::DEFAULT_DATABASE_URL.to_string())
-    });
-
-    if let Err(e) = run_cli(&cli, &db_url, &config).await {
+    if let Err(e) = run_cli(&cli, &config).await {
         let exit_code = map_error_to_exit_code(&e);
         if cli.output.is_machine_readable() {
             output::print_error::<()>(cli.output, &e.to_string(), exit_code).ok();
@@ -205,6 +200,21 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     Ok(())
+}
+
+async fn init_store(config: &CliConfig) -> Result<Box<dyn MetadataStore>, anyhow::Error> {
+    match &config.metadata {
+        Some(MetadataBackendConfig::Sqlite { path }) => {
+            Ok(Box::new(SqliteStore::new(path.clone())?))
+        }
+        Some(MetadataBackendConfig::Postgres { url }) => {
+            Ok(Box::new(PostgresStore::new(url).await?))
+        }
+        None => {
+            // Should be covered by load() defaults, but fallback just in case
+            Err(anyhow::anyhow!("No metadata backend configuration found."))
+        }
+    }
 }
 
 fn map_error_to_exit_code(e: &anyhow::Error) -> i32 {
@@ -243,7 +253,7 @@ fn map_error_to_exit_code(e: &anyhow::Error) -> i32 {
     exit_codes::GENERAL_ERROR
 }
 
-async fn run_cli(cli: &Cli, db_url: &str, config: &CliConfig) -> Result<(), anyhow::Error> {
+async fn run_cli(cli: &Cli, config: &CliConfig) -> Result<(), anyhow::Error> {
     match &cli.command {
         Commands::Init { template } => {
             commands::init(
@@ -262,9 +272,9 @@ async fn run_cli(cli: &Cli, db_url: &str, config: &CliConfig) -> Result<(), anyh
             dry_run,
             expected_version,
         } => {
-            let client = db::connect(db_url).await?;
+            let store = init_store(config).await?;
             commands::apply(
-                &client,
+                &*store,
                 file,
                 *force,
                 *dry_run,
@@ -275,20 +285,17 @@ async fn run_cli(cli: &Cli, db_url: &str, config: &CliConfig) -> Result<(), anyh
             .await?;
         }
         Commands::Diff { file } => {
-            let client = db::connect(db_url).await?;
-            commands::diff(&client, file, cli.output).await?;
+            let store = init_store(config).await?;
+            commands::diff(&*store, file, cli.output).await?;
         }
-        Commands::Introspect {
-            source,
-            file,
-        } => {
-            commands::introspect(
-                source,
-                file,
-                cli.output,
-                config,
-            )
-            .await?;
+        Commands::Introspect { source, file } => {
+            // Introspect connects to source or server, not metadata DB usually?
+            // Checking db usage in introspect: introspect currently unimplemented or calls helpers
+            // If legacy introspect used client, it might need store.
+            // But usually it discovers FROM source.
+            // Re-checking legacy main.rs for Introspect: "commands::introspect(source, file, cli.output, config).await?;"
+            // No client passed. So it's fine.
+            commands::introspect(source, file, cli.output, config).await?;
         }
         Commands::Search {
             source,
@@ -309,20 +316,20 @@ async fn run_cli(cli: &Cli, db_url: &str, config: &CliConfig) -> Result<(), anyh
             commands::test_connection(file, cli.output, config).await?;
         }
         Commands::Describe { file, domain } => {
-            let client = db::connect(db_url).await?;
-            commands::describe(&client, file, domain.as_deref(), cli.output).await?;
+            let store = init_store(config).await?;
+            commands::describe(&*store, file, domain.as_deref(), cli.output).await?;
         }
         Commands::Domain { subcommand } => {
-            let client = db::connect(db_url).await?;
+            let store = init_store(config).await?;
             match subcommand {
                 DomainCommands::List => {
-                    commands::list_domains(&client, cli.output).await?;
+                    commands::list_domains(&*store, cli.output).await?;
                 }
                 DomainCommands::History { name } => {
-                    commands::show_domain_history(&client, name.to_string(), cli.output).await?;
+                    commands::show_domain_history(&*store, name.to_string(), cli.output).await?;
                 }
                 DomainCommands::Rollback { name, to_version } => {
-                    commands::rollback(&client, name, *to_version, cli.output).await?;
+                    commands::rollback(&*store, name, *to_version, cli.output).await?;
                 }
             }
         }
