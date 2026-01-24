@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn test_io_error_mapping() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "File error");
+        let io_err = std::io::Error::other("File error");
         let strake_err: StrakeError = io_err.into();
         assert_eq!(strake_err.code, ErrorCode::DataFusionInternal);
         assert!(strake_err.message.contains("File error"));
