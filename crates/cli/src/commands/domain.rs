@@ -51,7 +51,11 @@ pub async fn rollback(
 
     // 5. Audit Log
     let user_id = std::env::var("USER").unwrap_or_else(|_| "cli-user".to_string());
-    let config_hash = format!("{:x}", md5::compute(&config_yaml));
+
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(config_yaml.as_bytes());
+    let config_hash = format!("{:x}", hasher.finalize());
 
     store
         .log_apply_event(ApplyLogEntry {

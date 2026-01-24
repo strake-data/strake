@@ -1,9 +1,59 @@
+# REST Source Configuration Template
+#
+# Authentication Options:
+# 1. bearer     - Static token (simple APIs)
+# 2. basic      - Username/password 
+# 3. oauth_client_credentials - OAuth 2.0 Client Credentials (enterprise APIs)
+# 4. jwt_assertion - Self-signed JWT (Google, GitHub Apps)
+#
+# Compile with --no-default-features to skip heavy connectors (DuckDB, SQLite, MySQL)
+
 sources:
+  # Example 1: GitHub API with Bearer token
   - type: rest
     name: github_api
     base_url: "https://api.github.com"
     method: "GET"
     headers:
-      Authorization: "Bearer ${GITHUB_TOKEN}"
+      Accept: "application/vnd.github+json"
+    auth:
+      type: bearer
+      token: "${GITHUB_TOKEN}"
     pagination:
-      type: link_header
+      type: header
+      header_name: "Link"
+
+  # Example 2: Salesforce with OAuth Client Credentials
+  # - type: rest
+  #   name: salesforce
+  #   base_url: "https://yourinstance.salesforce.com/services/data/v59.0"
+  #   auth:
+  #     type: oauth_client_credentials
+  #     client_id: "${SF_CLIENT_ID}"
+  #     client_secret: "${SF_CLIENT_SECRET}"
+  #     token_url: "https://login.salesforce.com/services/oauth2/token"
+  #     scopes:
+  #       - "api"
+  #       - "refresh_token"
+
+  # Example 3: Google APIs with Self-Signed JWT
+  # - type: rest
+  #   name: bigquery_api
+  #   base_url: "https://bigquery.googleapis.com/bigquery/v2"
+  #   auth:
+  #     type: jwt_assertion
+  #     issuer: "${GOOGLE_SERVICE_ACCOUNT}"
+  #     audience: "https://bigquery.googleapis.com/"
+  #     private_key_pem: "${GOOGLE_PRIVATE_KEY_PEM}"
+  #     algorithm: RS256
+  #     expiry_secs: 3600
+  #     subject: "${GOOGLE_USER_EMAIL}"  # Optional: for domain-wide delegation
+
+  # Example 4: Basic Auth (legacy systems)
+  # - type: rest
+  #   name: legacy_api
+  #   base_url: "https://api.legacy-system.com/v1"
+  #   auth:
+  #     type: basic
+  #     username: "${API_USER}"
+  #     password: "${API_PASS}"

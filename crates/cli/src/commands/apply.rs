@@ -103,7 +103,11 @@ pub async fn apply(
     // 4. Audit Log
     let user_id = std::env::var("USER").unwrap_or_else(|_| "cli-user".to_string());
     let raw_yaml = fs::read_to_string(file_path)?;
-    let config_hash = format!("{:x}", md5::compute(&raw_yaml)); // Simple hash
+
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(raw_yaml.as_bytes());
+    let config_hash = format!("{:x}", hasher.finalize());
 
     store
         .log_apply_event(ApplyLogEntry {

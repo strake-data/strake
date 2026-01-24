@@ -1,50 +1,79 @@
 use crate::commands::init;
 use crate::output::OutputFormat;
 use std::fs;
-use std::path::PathBuf;
-
-fn get_temp_path() -> PathBuf {
-    let mut path = std::env::temp_dir();
-    let filename = format!(
-        "strake_init_test_{}.yaml",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    path.push(filename);
-    path
-}
+use tempfile::tempdir;
 
 #[tokio::test]
-async fn test_init_creates_file() {
-    let output_path = get_temp_path();
-    // Ensure it doesn't exist
-    if output_path.exists() {
-        fs::remove_file(&output_path).unwrap();
-    }
+async fn test_init_creates_all_files() {
+    let temp_dir = tempdir().unwrap();
+    let sources_path = temp_dir.path().join("sources.yaml");
+    let config_path = temp_dir.path().join("strake.yaml");
+    let readme_path = temp_dir.path().join("README.md");
 
-    let result = init::init(None, &output_path, OutputFormat::Human).await;
+    // Change current directory to temp_dir because init creates strake.yaml/README.md in CWD
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(temp_dir.path()).unwrap();
+
+    let result = init::init(None, &sources_path, false, OutputFormat::Human).await;
+
+    std::env::set_current_dir(original_dir).unwrap();
 
     assert!(result.is_ok());
-    assert!(output_path.exists());
+    assert!(sources_path.exists());
+    assert!(config_path.exists());
+    assert!(readme_path.exists());
 
-    let content = fs::read_to_string(&output_path).unwrap();
-    assert!(content.contains("type: JDBC")); // Basic check for default template content
+    let sources_content = fs::read_to_string(&sources_path).unwrap();
+    assert!(sources_content.contains("type: JDBC"));
 
-    fs::remove_file(output_path).unwrap();
+    let config_content = fs::read_to_string(&config_path).unwrap();
+    assert!(config_content.contains("database_url: \"sqlite://strake_metadata.db\""));
+
+    let readme_content = fs::read_to_string(&readme_path).unwrap();
+    assert!(readme_content.contains("# Strake Workspace"));
 }
 
 #[tokio::test]
 async fn test_init_with_template() {
-    let output_path = get_temp_path();
+    let temp_dir = tempdir().unwrap();
+    let sources_path = temp_dir.path().join("sources_sql.yaml");
 
-    let result = init::init(Some("sql".to_string()), &output_path, OutputFormat::Human).await;
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(temp_dir.path()).unwrap();
+
+    let result = init::init(
+        Some("sql".to_string()),
+        &sources_path,
+        true,
+        OutputFormat::Human,
+    )
+    .await;
+
+    std::env::set_current_dir(original_dir).unwrap();
 
     assert!(result.is_ok());
-    let content = fs::read_to_string(&output_path).unwrap();
-    // SQL template usually has jdbc or postgres type
+    let content = fs::read_to_string(&sources_path).unwrap();
     assert!(content.contains("dialect: postgres"));
 
-    fs::remove_file(output_path).unwrap();
+    // With sources_only=true, strake.yaml and README.md should NOT exist
+    assert!(!temp_dir.path().join("strake.yaml").exists());
+    assert!(!temp_dir.path().join("README.md").exists());
+}
+
+#[tokio::test]
+async fn test_init_sources_only() {
+    let temp_dir = tempdir().unwrap();
+    let sources_path = temp_dir.path().join("sources.yaml");
+
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(temp_dir.path()).unwrap();
+
+    let result = init::init(None, &sources_path, true, OutputFormat::Human).await;
+
+    std::env::set_current_dir(original_dir).unwrap();
+
+    assert!(result.is_ok());
+    assert!(sources_path.exists());
+    assert!(!temp_dir.path().join("strake.yaml").exists());
+    assert!(!temp_dir.path().join("README.md").exists());
 }

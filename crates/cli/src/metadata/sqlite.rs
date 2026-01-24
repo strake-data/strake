@@ -3,10 +3,9 @@ use super::{
     MetadataStore,
 };
 use anyhow::{anyhow, Context, Result};
-use chrono::NaiveDateTime;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use futures::future::BoxFuture;
 use rusqlite::{params, Connection, Row, ToSql};
-use serde_json::json;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use strake_common::models::{ColumnConfig, SourceConfig, SourcesConfig, TableConfig};
@@ -172,9 +171,32 @@ impl MetadataStore for SqliteStore {
                         }
 
                         if !active_column_names.is_empty() {
+                            // Check for deletions if not forcing
+                            if !_force {
+                                let placeholders = vec!["?"; active_column_names.len()].join(",");
+                                let sql_sel = format!("SELECT name FROM columns WHERE table_id = ? AND name NOT IN ({})", placeholders);
+                                let mut params_vec: Vec<&dyn ToSql> = Vec::new();
+                                params_vec.push(&table_id);
+                                for name in &active_column_names {
+                                    params_vec.push(name);
+                                }
+                                let mut stmt = tx.prepare(&sql_sel)?;
+                                let rows = stmt.query_map(rusqlite::params_from_iter(params_vec.iter().copied()), |row: &Row| row.get::<_, String>(0))?;
+                                let mut to_delete = Vec::new();
+                                for name in rows {
+                                    to_delete.push(name?);
+                                }
+
+                                if !to_delete.is_empty() {
+                                    return Err(anyhow!(
+                                        "Safety guard: This update would delete columns {:?} in table '{}'. Use --force to proceed.",
+                                        to_delete, table.name
+                                    ));
+                                }
+                            }
+
                              let placeholders = vec!["?"; active_column_names.len()].join(",");
                              let sql = format!("DELETE FROM columns WHERE table_id = ? AND name NOT IN ({})", placeholders);
-
                              let mut params_vec: Vec<&dyn ToSql> = Vec::new();
                              params_vec.push(&table_id);
                              for name in &active_column_names {
@@ -185,6 +207,30 @@ impl MetadataStore for SqliteStore {
                     }
 
                     if !active_table_ids.is_empty() {
+                        // Check for deletions if not forcing
+                        if !_force {
+                            let placeholders = vec!["?"; active_table_ids.len()].join(",");
+                            let sql_sel = format!("SELECT name FROM tables WHERE source_id = ? AND id NOT IN ({})", placeholders);
+                            let mut params_vec: Vec<&dyn ToSql> = Vec::new();
+                            params_vec.push(&source_id);
+                            for id in &active_table_ids {
+                                params_vec.push(id);
+                            }
+                            let mut stmt = tx.prepare(&sql_sel)?;
+                            let rows = stmt.query_map(rusqlite::params_from_iter(params_vec.iter().copied()), |row: &Row| row.get::<_, String>(0))?;
+                            let mut to_delete = Vec::new();
+                            for name in rows {
+                                to_delete.push(name?);
+                            }
+
+                            if !to_delete.is_empty() {
+                                return Err(anyhow!(
+                                    "Safety guard: This update would delete tables {:?} in source '{}'. Use --force to proceed.",
+                                    to_delete, source.name
+                                ));
+                            }
+                        }
+
                         let placeholders = vec!["?"; active_table_ids.len()].join(",");
                         let sql = format!("DELETE FROM tables WHERE source_id = ? AND id NOT IN ({})", placeholders);
 
@@ -209,25 +255,47 @@ impl MetadataStore for SqliteStore {
                         params_vec.push(id);
                      }
 
+                     let mut to_delete = Vec::new();
                      {
                         let mut stmt = tx.prepare(&sql_sel)?;
-                        // Explicit closure annotation
-                        let rows = stmt.query_map(rusqlite::params_from_iter(params_vec.iter().copied()), |row: &Row| row.get(0))?;
+                        let rows = stmt.query_map(rusqlite::params_from_iter(params_vec.iter().copied()), |row: &Row| row.get::<_, String>(0))?;
                         for name in rows {
-                            sources_deleted.push(name?);
+                            to_delete.push(name?);
                         }
                      }
 
-                     let sql_del = format!("DELETE FROM sources WHERE domain_name = ? AND id NOT IN ({})", placeholders);
-                     tx.execute(&sql_del, rusqlite::params_from_iter(params_vec))?;
+                     if !to_delete.is_empty() {
+                        if !_force {
+                            return Err(anyhow!(
+                                "Safety guard: This update would delete sources {:?} in domain '{}'. Use --force to proceed.",
+                                to_delete, domain
+                            ));
+                        }
+                        sources_deleted = to_delete;
+                        let sql_del = format!("DELETE FROM sources WHERE domain_name = ? AND id NOT IN ({})", placeholders);
+                        tx.execute(&sql_del, rusqlite::params_from_iter(params_vec))?;
+                     }
 
                 } else if config.sources.is_empty() {
-                    let mut stmt = tx.prepare("SELECT name FROM sources WHERE domain_name = ?")?;
-                    let rows = stmt.query_map(params![domain], |row: &Row| row.get(0))?;
-                    for name in rows {
-                        sources_deleted.push(name?);
+                    let mut to_delete = Vec::new();
+                    {
+                        let mut stmt = tx.prepare("SELECT name FROM sources WHERE domain_name = ?")?;
+                        let rows = stmt.query_map(params![domain], |row: &Row| row.get::<_, String>(0))?;
+                        for name in rows {
+                            to_delete.push(name?);
+                        }
                     }
-                    tx.execute("DELETE FROM sources WHERE domain_name = ?", params![domain])?;
+
+                    if !to_delete.is_empty() {
+                        if !_force {
+                            return Err(anyhow!(
+                                "Safety guard: This update would delete ALL sources {:?} in domain '{}'. Use --force to proceed.",
+                                to_delete, domain
+                            ));
+                        }
+                        sources_deleted = to_delete;
+                        tx.execute("DELETE FROM sources WHERE domain_name = ?", params![domain])?;
+                    }
                 }
 
                 tx.commit()?;
@@ -287,12 +355,13 @@ impl MetadataStore for SqliteStore {
                         domain: row.get("domain_name")?,
                         version: row.get("version")?,
                         user_id: row.get("user_id")?,
-                        sources_added: serde_json::from_str(&added_str).unwrap_or(json!([])),
-                        sources_deleted: serde_json::from_str(&deleted_str).unwrap_or(json!([])),
-                        tables_modified: serde_json::from_str(&modified_str).unwrap_or(json!([])),
+                        sources_added: serde_json::from_str(&added_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?,
+                        sources_deleted: serde_json::from_str(&deleted_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e)))?,
+                        tables_modified: serde_json::from_str(&modified_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e)))?,
                         config_hash: row.get("config_hash")?,
                         config_yaml: row.get("config_yaml")?,
-                        timestamp: row.get::<_, String>("timestamp").ok().and_then(|t: String| t.parse().ok()),
+                        timestamp: row.get::<_, Option<String>>("timestamp")?
+                            .and_then(|t| t.parse::<DateTime<Utc>>().ok()),
                      })
                 })?;
 

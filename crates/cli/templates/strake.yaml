@@ -1,0 +1,44 @@
+# Strake Runtime Configuration
+# Learn more: https://docs.strake.dev/configuration
+
+# Metadata database (required for CLI commands like 'domain list', 'apply', 'diff')
+metadata:
+  database_url: "sqlite://strake_metadata.db"
+
+# Server configuration (optional, for strake-server)
+server:
+  listen_addr: "0.0.0.0:50053"
+  health_addr: "0.0.0.0:8099"
+  catalog: "strake"
+  api_url: "http://localhost:8099/api/v1"
+  global_connection_budget: 100
+  tls:
+    enabled: false
+  auth:
+    enabled: false
+
+# Query execution limits
+query_limits:
+  max_output_rows: 10000
+
+# Retry configuration
+retry:
+  max_attempts: 3
+
+# Result caching
+cache:
+  enabled: true
+  directory: "/tmp/strake-cache"
+  max_size_mb: 2048
+  ttl_seconds: 3600
+
+# Model Context Protocol (for AI agents)
+mcp:
+  enabled: true
+  port: 8001
+
+# Telemetry (disabled by default)
+telemetry:
+  enabled: false
+  endpoint: "http://localhost:4317"
+  service_name: "strake"

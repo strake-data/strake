@@ -20,9 +20,25 @@ use std::path::Path;
 pub async fn init(
     template: Option<String>,
     output_path: &Path,
+    sources_only: bool,
     _format: OutputFormat,
 ) -> Result<()> {
-    // Check if file exists at output_path
+    // 1. Create sources.yaml
+    create_sources_yaml(template, output_path)?;
+
+    // 2. Additionally create strake.yaml and README.md unless --sources-only
+    if !sources_only {
+        let config_path = Path::new("strake.yaml");
+        create_strake_yaml(config_path)?;
+
+        let readme_path = Path::new("README.md");
+        create_readme(readme_path)?;
+    }
+
+    Ok(())
+}
+
+fn create_sources_yaml(template: Option<String>, output_path: &Path) -> Result<()> {
     if output_path.exists() {
         println!("sources.yaml already exists.");
         if !confirm_overwrite() {
@@ -40,9 +56,39 @@ pub async fn init(
 
     fs::write(output_path, default_config).context(format!("Failed to write {:?}", output_path))?;
     println!(
-        "Initialized sources.yaml with {:?} template",
-        template.unwrap_or_else(|| "default".to_string())
+        "✓ Created sources.yaml with {:?} template",
+        template.as_deref().unwrap_or("default")
     );
+    Ok(())
+}
+
+fn create_strake_yaml(config_path: &Path) -> Result<()> {
+    if config_path.exists() {
+        println!("strake.yaml already exists.");
+        if !confirm_overwrite() {
+            return Ok(());
+        }
+    }
+
+    let config_template = include_str!("../../templates/strake.yaml");
+    fs::write(config_path, config_template)
+        .context(format!("Failed to write {:?}", config_path))?;
+    println!("✓ Created strake.yaml");
+    Ok(())
+}
+
+fn create_readme(readme_path: &Path) -> Result<()> {
+    if readme_path.exists() {
+        println!("README.md already exists.");
+        if !confirm_overwrite() {
+            return Ok(());
+        }
+    }
+
+    let readme_template = include_str!("../../templates/README.md");
+    fs::write(readme_path, readme_template)
+        .context(format!("Failed to write {:?}", readme_path))?;
+    println!("✓ Created README.md");
     Ok(())
 }
 

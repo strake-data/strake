@@ -167,6 +167,23 @@ impl MetadataStore for PostgresStore {
                     }
 
                     if !active_column_names.is_empty() {
+                        // Check for deletions if not forcing
+                        if !_force {
+                            let to_delete = self.client.query(
+                                "SELECT name FROM columns WHERE table_id = $1 AND name != ALL($2)",
+                                &[&table_id, &active_column_names],
+                            ).await.context("Failed to check for column deletions")?;
+
+                            if !to_delete.is_empty() {
+                                let names: Vec<String> =
+                                    to_delete.iter().map(|r| r.get(0)).collect();
+                                return Err(anyhow!(
+                                    "Safety guard: This update would delete columns {:?} in table '{}'. Use --force to proceed.",
+                                    names, table.name
+                                ));
+                            }
+                        }
+
                         self.client
                             .execute(
                                 "DELETE FROM columns WHERE table_id = $1 AND name != ALL($2)",
@@ -178,6 +195,26 @@ impl MetadataStore for PostgresStore {
                 }
 
                 if !active_table_ids.is_empty() {
+                    // Check for deletions if not forcing
+                    if !_force {
+                        let to_delete = self
+                            .client
+                            .query(
+                                "SELECT name FROM tables WHERE source_id = $1 AND id != ALL($2)",
+                                &[&source_id, &active_table_ids],
+                            )
+                            .await
+                            .context("Failed to check for table deletions")?;
+
+                        if !to_delete.is_empty() {
+                            let names: Vec<String> = to_delete.iter().map(|r| r.get(0)).collect();
+                            return Err(anyhow!(
+                                "Safety guard: This update would delete tables {:?} in source '{}'. Use --force to proceed.",
+                                names, source.name
+                            ));
+                        }
+                    }
+
                     self.client
                         .execute(
                             "DELETE FROM tables WHERE source_id = $1 AND id != ALL($2)",
@@ -198,17 +235,27 @@ impl MetadataStore for PostgresStore {
                         &[&domain, &active_source_ids],
                     )
                     .await?;
-                for row in to_delete {
-                    sources_deleted.push(row.get(0));
-                }
 
-                self.client
-                    .execute(
-                        "DELETE FROM sources WHERE domain_name = $1 AND id != ALL($2)",
-                        &[&domain, &active_source_ids],
-                    )
-                    .await
-                    .context("Failed to prune sources")?;
+                if !to_delete.is_empty() {
+                    if !_force {
+                        let names: Vec<String> = to_delete.iter().map(|r| r.get(0)).collect();
+                        return Err(anyhow!(
+                            "Safety guard: This update would delete sources {:?} in domain '{}'. Use --force to proceed.",
+                            names, domain
+                        ));
+                    }
+                    for row in to_delete {
+                        sources_deleted.push(row.get(0));
+                    }
+
+                    self.client
+                        .execute(
+                            "DELETE FROM sources WHERE domain_name = $1 AND id != ALL($2)",
+                            &[&domain, &active_source_ids],
+                        )
+                        .await
+                        .context("Failed to prune sources")?;
+                }
             } else if config.sources.is_empty() {
                 let to_delete = self
                     .client
@@ -217,12 +264,22 @@ impl MetadataStore for PostgresStore {
                         &[&domain],
                     )
                     .await?;
-                for row in to_delete {
-                    sources_deleted.push(row.get(0));
+
+                if !to_delete.is_empty() {
+                    if !_force {
+                        let names: Vec<String> = to_delete.iter().map(|r| r.get(0)).collect();
+                        return Err(anyhow!(
+                            "Safety guard: This update would delete ALL sources {:?} in domain '{}'. Use --force to proceed.",
+                            names, domain
+                        ));
+                    }
+                    for row in to_delete {
+                        sources_deleted.push(row.get(0));
+                    }
+                    self.client
+                        .execute("DELETE FROM sources WHERE domain_name = $1", &[&domain])
+                        .await?;
                 }
-                self.client
-                    .execute("DELETE FROM sources WHERE domain_name = $1", &[&domain])
-                    .await?;
             }
 
             Ok(ApplyResult {

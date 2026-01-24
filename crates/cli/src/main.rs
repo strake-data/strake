@@ -60,6 +60,12 @@ enum Commands {
         /// Type of template to use
         #[arg(long, value_enum)]
         template: Option<Template>,
+        /// Path to the sources.yaml file
+        #[arg(default_value = "sources.yaml")]
+        file: String,
+        /// Only create sources.yaml, skip strake.yaml and README.md
+        #[arg(long, default_value_t = false)]
+        sources_only: bool,
     },
     /// Validate the sources.yaml configuration
     Validate {
@@ -255,10 +261,16 @@ fn map_error_to_exit_code(e: &anyhow::Error) -> i32 {
 
 async fn run_cli(cli: &Cli, config: &CliConfig) -> Result<(), anyhow::Error> {
     match &cli.command {
-        Commands::Init { template } => {
+        Commands::Init {
+            template,
+            file,
+            sources_only,
+        } => {
+            let template_str = template.as_ref().map(|t| format!("{:?}", t).to_lowercase());
             commands::init(
-                template.as_ref().map(|t| format!("{:?}", t).to_lowercase()),
-                std::path::Path::new("sources.yaml"),
+                template_str,
+                std::path::Path::new(file),
+                *sources_only,
                 cli.output,
             )
             .await?;
@@ -289,12 +301,6 @@ async fn run_cli(cli: &Cli, config: &CliConfig) -> Result<(), anyhow::Error> {
             commands::diff(&*store, file, cli.output).await?;
         }
         Commands::Introspect { source, file } => {
-            // Introspect connects to source or server, not metadata DB usually?
-            // Checking db usage in introspect: introspect currently unimplemented or calls helpers
-            // If legacy introspect used client, it might need store.
-            // But usually it discovers FROM source.
-            // Re-checking legacy main.rs for Introspect: "commands::introspect(source, file, cli.output, config).await?;"
-            // No client passed. So it's fine.
             commands::introspect(source, file, cli.output, config).await?;
         }
         Commands::Search {
