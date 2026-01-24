@@ -12,7 +12,7 @@
 //! - **Dry Run**: Preview changes (via `diff`) without applying them.
 
 use super::diff::{diff_internal, print_diff_human};
-use super::helpers::{parse_yaml, ApplyResult};
+use super::helpers::ApplyResult;
 use super::validate::validate;
 use crate::config::CliConfig;
 use crate::{
@@ -24,6 +24,7 @@ use owo_colors::OwoColorize;
 use serde_json::json;
 use std::fs;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn apply(
     store: &dyn MetadataStore,
     file_path: &str,
@@ -32,6 +33,7 @@ pub async fn apply(
     expected_version: Option<i32>,
     format: OutputFormat,
     config: &CliConfig,
+    notify_url: Option<String>,
 ) -> Result<()> {
     if !format.is_machine_readable() {
         println!(
@@ -42,7 +44,15 @@ pub async fn apply(
         );
     }
 
-    let source_config = parse_yaml(file_path)?;
+    // Read file once to avoid race condition (TOCTOU) between parsing and hashing
+    let raw_yaml = fs::read_to_string(file_path)
+        .context(format!("Failed to read config file: {}", file_path))?;
+
+    // Expand secrets and parse
+    let expanded_yaml = super::helpers::expand_secrets(&raw_yaml);
+    let source_config: crate::models::SourcesConfig =
+        serde_yaml::from_str(&expanded_yaml).context("Failed to parse YAML structure")?;
+
     let domain = source_config.domain.as_deref().unwrap_or("default");
 
     store.init().await?; // Ensure schema exists before any logic or diffing
@@ -102,7 +112,7 @@ pub async fn apply(
 
     // 4. Audit Log
     let user_id = std::env::var("USER").unwrap_or_else(|_| "cli-user".to_string());
-    let raw_yaml = fs::read_to_string(file_path)?;
+    // raw_yaml is already read at the start of the function
 
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -143,5 +153,28 @@ pub async fn apply(
             format!("v{}", new_version).yellow()
         );
     }
+
+    // 5. Notify Server (if configured)
+    if let Some(url) = notify_url {
+        if !format.is_machine_readable() {
+            println!("{} Notifying server at {}...", "ℹ".blue(), url);
+        }
+        let client = reqwest::Client::new();
+        match client.post(&url).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    if !format.is_machine_readable() {
+                        println!("{} Server notification successful.", "✔".green());
+                    }
+                } else {
+                    eprintln!("{} Server returned error: {}", "✖".red(), resp.status());
+                }
+            }
+            Err(e) => {
+                eprintln!("{} Failed to notify server: {}", "✖".red(), e);
+            }
+        }
+    }
+
     Ok(())
 }

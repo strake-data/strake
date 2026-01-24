@@ -89,6 +89,9 @@ enum Commands {
         /// Optimistic locking: Expected current version of the domain. Fails if mismatch.
         #[arg(long)]
         expected_version: Option<i32>,
+        /// URL to notify after successful application (for cache invalidation)
+        #[arg(long)]
+        notify_url: Option<String>,
     },
     /// Preview changes between the configuration and metadata store
     Diff {
@@ -267,6 +270,7 @@ async fn run_cli(cli: &Cli, config: &CliConfig) -> Result<(), anyhow::Error> {
             force,
             dry_run,
             expected_version,
+            notify_url,
         } => {
             let store = metadata::init_store(config).await?;
             commands::apply(
@@ -277,6 +281,7 @@ async fn run_cli(cli: &Cli, config: &CliConfig) -> Result<(), anyhow::Error> {
                 *expected_version,
                 cli.output,
                 config,
+                notify_url.clone(),
             )
             .await?;
         }
