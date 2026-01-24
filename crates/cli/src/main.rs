@@ -27,8 +27,7 @@ mod metadata;
 mod models;
 mod output;
 
-use config::{CliConfig, MetadataBackendConfig};
-use metadata::{postgres::PostgresStore, sqlite::SqliteStore, MetadataStore};
+use crate::config::CliConfig;
 use strake_error::ErrorCategory;
 
 use output::OutputFormat;
@@ -208,21 +207,6 @@ async fn main() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-async fn init_store(config: &CliConfig) -> Result<Box<dyn MetadataStore>, anyhow::Error> {
-    match &config.metadata {
-        Some(MetadataBackendConfig::Sqlite { path }) => {
-            Ok(Box::new(SqliteStore::new(path.clone())?))
-        }
-        Some(MetadataBackendConfig::Postgres { url }) => {
-            Ok(Box::new(PostgresStore::new(url).await?))
-        }
-        None => {
-            // Should be covered by load() defaults, but fallback just in case
-            Err(anyhow::anyhow!("No metadata backend configuration found."))
-        }
-    }
-}
-
 fn map_error_to_exit_code(e: &anyhow::Error) -> i32 {
     // Try to downcast to StrakeError for type-safe mapping
     if let Some(strake_err) = e.downcast_ref::<strake_error::StrakeError>() {
@@ -284,7 +268,7 @@ async fn run_cli(cli: &Cli, config: &CliConfig) -> Result<(), anyhow::Error> {
             dry_run,
             expected_version,
         } => {
-            let store = init_store(config).await?;
+            let store = metadata::init_store(config).await?;
             commands::apply(
                 &*store,
                 file,
@@ -297,7 +281,7 @@ async fn run_cli(cli: &Cli, config: &CliConfig) -> Result<(), anyhow::Error> {
             .await?;
         }
         Commands::Diff { file } => {
-            let store = init_store(config).await?;
+            let store = metadata::init_store(config).await?;
             commands::diff(&*store, file, cli.output).await?;
         }
         Commands::Introspect { source, file } => {
@@ -322,11 +306,11 @@ async fn run_cli(cli: &Cli, config: &CliConfig) -> Result<(), anyhow::Error> {
             commands::test_connection(file, cli.output, config).await?;
         }
         Commands::Describe { file, domain } => {
-            let store = init_store(config).await?;
+            let store = metadata::init_store(config).await?;
             commands::describe(&*store, file, domain.as_deref(), cli.output).await?;
         }
         Commands::Domain { subcommand } => {
-            let store = init_store(config).await?;
+            let store = metadata::init_store(config).await?;
             match subcommand {
                 DomainCommands::List => {
                     commands::list_domains(&*store, cli.output).await?;

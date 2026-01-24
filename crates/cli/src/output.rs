@@ -97,3 +97,18 @@ pub fn print_error<T: Serialize + Default>(
     let response = CommandResponse::error(message.to_string(), exit_code, T::default());
     print_output(format, response)
 }
+
+/// Print a structured error response with data for machine outputs
+pub fn print_error_with_data<T: Serialize>(
+    format: OutputFormat,
+    message: &str,
+    exit_code: i32,
+    data: T,
+) -> anyhow::Result<()> {
+    if format == OutputFormat::Human {
+        return Ok(());
+    }
+
+    let response = CommandResponse::error(message.to_string(), exit_code, data);
+    print_output(format, response)
+}

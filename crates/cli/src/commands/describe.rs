@@ -187,9 +187,18 @@ pub async fn test_connection(
 
     if format.is_machine_readable() {
         let has_failures = results.iter().any(|r| !r.valid);
-        output::print_success(format, TestConnectionSummary { results })?;
+        let summary = TestConnectionSummary { results };
+
         if has_failures {
+            output::print_error_with_data(
+                format,
+                "One or more connection tests failed",
+                exit_codes::CONNECTION_ERROR,
+                summary,
+            )?;
             std::process::exit(exit_codes::CONNECTION_ERROR);
+        } else {
+            output::print_success(format, summary)?;
         }
     }
 

@@ -51,3 +51,20 @@ pub trait MetadataStore: Send + Sync {
     /// List all domains and their status
     fn list_domains(&self) -> BoxFuture<'_, Result<Vec<DomainStatus>>>;
 }
+
+/// Initialize the metadata store based on configuration
+pub async fn init_store(config: &crate::config::CliConfig) -> Result<Box<dyn MetadataStore>> {
+    use crate::config::MetadataBackendConfig;
+    use postgres::PostgresStore;
+    use sqlite::SqliteStore;
+
+    match &config.metadata {
+        Some(MetadataBackendConfig::Sqlite { path }) => {
+            Ok(Box::new(SqliteStore::new(path.clone())?))
+        }
+        Some(MetadataBackendConfig::Postgres { url }) => {
+            Ok(Box::new(PostgresStore::new(url).await?))
+        }
+        None => Err(anyhow::anyhow!("No metadata backend configuration found.")),
+    }
+}

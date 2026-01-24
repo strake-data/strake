@@ -33,6 +33,19 @@ pub async fn init(
 
         let readme_path = Path::new("README.md");
         create_readme(readme_path)?;
+
+        // 3. Initialize metadata database
+        println!("Initializing metadata database...");
+        let config =
+            crate::config::load(None).context("Failed to load newly created configuration")?;
+        let store = crate::metadata::init_store(&config)
+            .await
+            .context("Failed to initialize metadata store")?;
+        store
+            .init()
+            .await
+            .context("Failed to create initial schema in metadata database")?;
+        println!("✓ Metadata database initialized");
     }
 
     Ok(())

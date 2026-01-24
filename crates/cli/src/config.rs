@@ -56,7 +56,27 @@ pub fn load(profile_arg: Option<&str>) -> Result<CliConfig> {
     let config_file = if config_path.exists() {
         let content = fs::read_to_string(&config_path)
             .context(format!("Failed to read config file: {:?}", config_path))?;
-        serde_yaml::from_str::<ConfigFile>(&content).context("Failed to parse config.yaml")?
+
+        // Detect if it's a flat CliConfig (has 'metadata' or 'api_url' at top level)
+        // or a profiled ConfigFile
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(&content).context("Failed to parse config file as YAML")?;
+
+        if value.get("metadata").is_some()
+            || value.get("api_url").is_some()
+            || value.get("profiles").is_none()
+        {
+            // Treat as flat CliConfig
+            let flat_config: CliConfig =
+                serde_yaml::from_value(value).context("Failed to parse flat configuration")?;
+            let mut cf = ConfigFile::default();
+            cf.profiles.insert("default".to_string(), flat_config);
+            cf
+        } else {
+            // Treat as profiled ConfigFile
+            serde_yaml::from_str::<ConfigFile>(&content)
+                .context("Failed to parse profiled configuration file")?
+        }
     } else {
         ConfigFile::default()
     };
@@ -106,12 +126,17 @@ fn get_config_path() -> PathBuf {
         return PathBuf::from(path);
     }
 
+    // Check for local strake.yaml first
+    let local = PathBuf::from("strake.yaml");
+    if local.exists() {
+        return local;
+    }
+
     // ~/.strake/config.yaml
     if let Some(home) = dirs::home_dir() {
         home.join(".strake").join("config.yaml")
     } else {
-        // Fallback to current dir if no home? Or fail?
-        // For CLI, home should exist.
+        // Fallback to current dir if no home
         PathBuf::from(".strake/config.yaml")
     }
 }

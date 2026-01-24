@@ -27,10 +27,12 @@ async fn test_init_creates_all_files() {
     assert!(sources_content.contains("type: JDBC"));
 
     let config_content = fs::read_to_string(&config_path).unwrap();
-    assert!(config_content.contains("database_url: \"sqlite://strake_metadata.db\""));
+    assert!(config_content.contains("backend: sqlite"));
+    assert!(config_content.contains("path: strake_metadata.db"));
 
     let readme_content = fs::read_to_string(&readme_path).unwrap();
     assert!(readme_content.contains("# Strake Workspace"));
+    assert!(readme_content.contains("Running in Embedded Mode"));
 }
 
 #[tokio::test]

@@ -3,7 +3,8 @@
 
 # Metadata database (required for CLI commands like 'domain list', 'apply', 'diff')
 metadata:
-  database_url: "sqlite://strake_metadata.db"
+  backend: sqlite
+  path: strake_metadata.db
 
 # Server configuration (optional, for strake-server)
 server:
