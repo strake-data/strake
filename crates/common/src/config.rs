@@ -228,6 +228,8 @@ pub struct ServerSettings {
     pub api_url: String,
     #[serde(default = "default_global_budget")]
     pub global_connection_budget: usize,
+    #[serde(default = "default_database_url")]
+    pub database_url: String,
     #[serde(default)]
     pub tls: TlsSettings,
     #[serde(default)]
@@ -255,6 +257,10 @@ fn default_pool_size() -> usize {
 
 fn default_global_budget() -> usize {
     DEFAULT_GLOBAL_CONNECTION_BUDGET
+}
+
+fn default_database_url() -> String {
+    String::new()
 }
 
 fn default_catalog() -> String {
@@ -377,6 +383,9 @@ impl AppConfig {
                 config.server.global_connection_budget = val;
             }
         }
+        if let Ok(url) = std::env::var("STRAKE_DATABASE_URL") {
+            config.server.database_url = url;
+        }
         if let Ok(enabled) = std::env::var("STRAKE_AUTH__ENABLED") {
             if let Ok(val) = enabled.parse() {
                 config.server.auth.enabled = val;
@@ -462,6 +471,13 @@ impl AppConfig {
             }
         }
 
+        // Validate database URL if auth is enabled
+        if config.server.auth.enabled && config.server.database_url.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Database URL (STRAKE_DATABASE_URL or server.database_url) must be provided when authentication is enabled"
+            ));
+        }
+
         Ok(config)
     }
 }
@@ -534,6 +550,7 @@ server:
         std::env::set_var("STRAKE_SERVER__CATALOG", "test_catalog");
         std::env::set_var("STRAKE_SERVER__GLOBAL_CONNECTION_BUDGET", "500");
         std::env::set_var("STRAKE_AUTH__ENABLED", "true");
+        std::env::set_var("STRAKE_DATABASE_URL", "postgres://localhost/test");
         std::env::set_var("STRAKE_AUTH__API_KEY", "env-key");
         std::env::set_var("STRAKE_RETRY__MAX_ATTEMPTS", "10");
 
@@ -552,6 +569,7 @@ server:
         std::env::remove_var("STRAKE_SERVER__CATALOG");
         std::env::remove_var("STRAKE_SERVER__GLOBAL_CONNECTION_BUDGET");
         std::env::remove_var("STRAKE_AUTH__ENABLED");
+        std::env::remove_var("STRAKE_DATABASE_URL");
         std::env::remove_var("STRAKE_AUTH__API_KEY");
         std::env::remove_var("STRAKE_RETRY__MAX_ATTEMPTS");
     }

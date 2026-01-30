@@ -26,6 +26,8 @@ pub enum ErrorCode {
     PoolExhausted = 1004,
     /// STRAKE-1005: Source type not supported
     UnsupportedSourceType = 1005,
+    /// STRAKE-1006: Database connection/query error
+    DatabaseError = 1006,
 
     // === Query Errors (2000-2999) ===
     /// STRAKE-2001: SQL syntax error
@@ -54,6 +56,10 @@ pub enum ErrorCode {
     MissingRequiredField = 3003,
     /// STRAKE-3004: Invalid connection string
     InvalidConnectionString = 3004,
+    /// STRAKE-3005: Data contract violation
+    ContractViolation = 3005,
+    /// STRAKE-3006: General configuration error
+    ConfigError = 3006,
 
     // === Auth Errors (4000-4999) ===
     /// STRAKE-4001: Authentication failed
@@ -76,6 +82,8 @@ pub enum ErrorCode {
     InternalPanic = 5003,
     /// STRAKE-5004: Feature not implemented
     NotImplemented = 5004,
+    /// STRAKE-5005: Sidecar process error
+    SidecarError = 5005,
 
     /// STRAKE-9999: Unknown/unclassified error
     Unknown = 9999,
@@ -140,6 +148,7 @@ impl TryFrom<u16> for ErrorCode {
             1003 => Ok(Self::SslHandshakeFailed),
             1004 => Ok(Self::PoolExhausted),
             1005 => Ok(Self::UnsupportedSourceType),
+            1006 => Ok(Self::DatabaseError),
             2001 => Ok(Self::SyntaxError),
             2002 => Ok(Self::FieldNotFound),
             2003 => Ok(Self::TableNotFound),
@@ -152,6 +161,8 @@ impl TryFrom<u16> for ErrorCode {
             3002 => Ok(Self::SchemaViolation),
             3003 => Ok(Self::MissingRequiredField),
             3004 => Ok(Self::InvalidConnectionString),
+            3005 => Ok(Self::ContractViolation),
+            3006 => Ok(Self::ConfigError),
             4001 => Ok(Self::AuthenticationFailed),
             4002 => Ok(Self::AuthorizationDenied),
             4003 => Ok(Self::InvalidApiKey),
@@ -161,6 +172,7 @@ impl TryFrom<u16> for ErrorCode {
             5002 => Ok(Self::SerializationFailed),
             5003 => Ok(Self::InternalPanic),
             5004 => Ok(Self::NotImplemented),
+            5005 => Ok(Self::SidecarError),
             9999 => Ok(Self::Unknown),
             _ => Err(format!("Unknown error code: {}", n)),
         }

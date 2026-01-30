@@ -9,9 +9,16 @@ use tonic::codegen::http::{Request, Response};
 use tonic::{metadata::MetadataMap, Status};
 use tower::{Layer, Service, ServiceExt};
 
+use axum::{
+    body::Body as AxumBody,
+    http::{Request as AxumRequest, Response as AxumResponse},
+    middleware::Next,
+};
 use moka::future::Cache;
 use std::time::Duration;
 use strake_common::auth::AuthenticatedUser;
+ 
+pub const API_KEY_PREFIX_LENGTH: usize = 8;
 
 #[async_trait]
 pub trait Authenticator: Send + Sync {
@@ -51,65 +58,94 @@ impl Authenticator for ApiKeyAuthenticator {
             return Ok(user);
         }
 
-        // We need at least the prefix length (e.g., 8)
-        if token_str.len() < 8 {
-            return Err(Status::unauthenticated("Invalid API Key format"));
-        }
+        // 2. Verify Credentials
+        let (user_id, permissions) = verify_api_key_credentials(&self.pool, token_str).await?;
 
-        let prefix = &token_str[..8];
+        let user = AuthenticatedUser {
+            id: user_id,
+            permissions,
+            ..Default::default()
+        };
 
-        let client = self.pool.get().await.map_err(|e| {
-            tracing::error!("DB Pool error: {}", e);
-            Status::internal("Authentication service unavailable")
-        })?;
+        // 3. Populate Cache
+        self.cache.insert(token_str.to_string(), user.clone()).await;
 
-        // 2. Fetch candidate keys by prefix
-        let rows = client.query(
+        Ok(user)
+    }
+}
+
+/// Verifies an API key against the database.
+///
+/// This function:
+/// 1. Validates the key format and length.
+/// 2. Fetches candidate keys from the database using the prefix.
+/// 3. Verifies the full key using Argon2 hashing.
+/// 5. Updates the `last_used_at` timestamp on success.
+///
+/// Returns `(user_id, permissions)` on success.
+pub async fn verify_api_key_credentials(
+    pool: &Pool,
+    token_str: &str,
+) -> Result<(String, Vec<String>), Status> {
+    // We need at least the prefix length
+    if token_str.len() < API_KEY_PREFIX_LENGTH {
+        return Err(Status::unauthenticated("Invalid API Key format"));
+    }
+
+    let prefix = &token_str[..API_KEY_PREFIX_LENGTH];
+
+    let client = pool.get().await.map_err(|e| {
+        tracing::error!("DB Pool error: {}", e);
+        Status::internal("Authentication service unavailable")
+    })?;
+
+    // Fetch candidate keys by prefix
+    let rows = client
+        .query(
             "SELECT id, key_hash, user_id, permissions FROM api_keys WHERE key_prefix = $1 AND revoked_at IS NULL",
             &[&prefix],
-        ).await.map_err(|e| {
+        )
+        .await
+        .map_err(|e| {
             tracing::error!("DB Query error: {}", e);
             Status::internal("Authentication service error")
         })?;
 
-        let argon2 = Argon2::default();
+    let argon2 = Argon2::default();
 
-        for row in rows {
-            let hash_str: String = row.get("key_hash");
-            let user_id: String = row.get("user_id");
-            let permissions: Vec<String> = row.get("permissions");
+    for row in rows {
+        let hash_str: String = row.get("key_hash");
+        let user_id: String = row.get("user_id");
+        let permissions: Vec<String> = row.get("permissions");
 
-            let parsed_hash = PasswordHash::new(&hash_str)
-                .map_err(|_| Status::internal("Invalid key hash in database"))?;
+        let parsed_hash = PasswordHash::new(&hash_str)
+            .map_err(|_| Status::internal("Invalid key hash in database"))?;
 
-            if argon2
-                .verify_password(token_str.as_bytes(), &parsed_hash)
-                .is_ok()
+        if argon2
+            .verify_password(token_str.as_bytes(), &parsed_hash)
+            .is_ok()
+        {
+            // Update last_used_at (best effort)
+            let key_id: uuid::Uuid = row.get("id");
+            if let Err(e) = client
+                .execute(
+                    "UPDATE api_keys SET last_used_at = NOW() WHERE id = $1",
+                    &[&key_id],
+                )
+                .await
             {
-                // Update last_used_at (fire and forget or best effort)
-                let key_id: uuid::Uuid = row.get("id");
-                let _ = client
-                    .execute(
-                        "UPDATE api_keys SET last_used_at = NOW() WHERE id = $1",
-                        &[&key_id],
-                    )
-                    .await;
-
-                let user = AuthenticatedUser {
-                    id: user_id,
-                    permissions,
-                    ..Default::default()
-                };
-
-                // 3. Populate Cache
-                self.cache.insert(token_str.to_string(), user.clone()).await;
-
-                return Ok(user);
+                tracing::error!(
+                    key_id = %key_id,
+                    error = %e,
+                    "Failed to update API key last_used_at timestamp"
+                );
             }
+ 
+            return Ok((user_id, permissions));
         }
-
-        Err(Status::unauthenticated("Invalid API Key"))
     }
+
+    Err(Status::unauthenticated("Invalid API Key"))
 }
 
 // Tower Middleware for Async Auth (Unchanged from previous successful version)
@@ -177,11 +213,63 @@ where
     }
 }
 
+pub async fn axum_auth_middleware(
+    req: AxumRequest<AxumBody>,
+    next: Next,
+    authenticator: Arc<dyn Authenticator>,
+) -> AxumResponse<AxumBody> {
+    let metadata = MetadataMap::from_headers(req.headers().clone());
+    tracing::info!(
+        "Auth middleware: Checking request with headers: {:?}",
+        req.headers()
+    );
+
+    match authenticator.authenticate(&metadata).await {
+        Ok(user) => {
+            tracing::info!("Auth middleware: Success for user {}", user.id);
+            let mut req = req;
+            req.extensions_mut().insert(user);
+            next.run(req).await
+        }
+        Err(status) => {
+            tracing::warn!("Auth middleware: Failed. Status: {:?}", status);
+            // Return proper HTTP 401 for REST API
+            let json_err = serde_json::json!({
+                "status": "error",
+                "message": status.message(),
+                "code": "UNAUTHENTICATED"
+            });
+
+            let body = AxumBody::from(serde_json::to_vec(&json_err).unwrap_or_default());
+
+            AxumResponse::builder()
+                .status(axum::http::StatusCode::UNAUTHORIZED)
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(body)
+                .unwrap_or_else(|_| AxumResponse::new(AxumBody::empty()))
+        }
+    }
+}
+
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tonic::server::NamedService;
     use tower::{ServiceBuilder, ServiceExt};
+
+    #[tokio::test]
+    async fn test_verify_api_key_credentials_format() {
+        let mut cfg = deadpool_postgres::Config::new();
+        cfg.host = Some("localhost".to_string());
+        cfg.dbname = Some("strake".to_string());
+        let pool = cfg.create_pool(None, tokio_postgres::NoTls).unwrap();
+        
+        let res = verify_api_key_credentials(&pool, "short").await;
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().message(), "Invalid API Key format");
+    }
 
     #[derive(Clone)]
     struct MockAuthenticator;

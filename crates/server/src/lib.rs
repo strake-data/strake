@@ -22,6 +22,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 // Global metrics registry
 pub static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
+ 
+pub const METRICS_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
 // Example metrics
 pub static QUERY_COUNT: Lazy<IntCounter> = Lazy::new(|| {
@@ -228,8 +230,31 @@ impl StrakeServer {
             .await?,
         );
 
-        // Spawn Health & API Server
-        let _api_router = api::create_api_router(engine.clone());
+        // 1. Determine Authenticator
+        let final_authenticator: Option<Arc<dyn Authenticator>> = if self.authenticator.is_some() {
+            self.authenticator
+        } else if app_config.server.auth.enabled {
+            let db_url = app_config.server.database_url.clone();
+
+            let mut cfg = deadpool_postgres::Config::new();
+            cfg.url = Some(db_url);
+            cfg.manager = Some(deadpool_postgres::ManagerConfig {
+                recycling_method: deadpool_postgres::RecyclingMethod::Fast,
+            });
+            let pool = cfg
+                .create_pool(None, tokio_postgres::NoTls)
+                .context("Failed to create database pool")?;
+
+            Some(Arc::new(ApiKeyAuthenticator::new(
+                pool,
+                app_config.server.auth.cache_ttl_secs,
+                app_config.server.auth.cache_max_capacity,
+            )))
+        } else {
+            None
+        };
+
+        // 2. Spawn Health & API Server
         let mut health_app = Router::new()
             .route("/health", get(health_handler))
             .route("/ready", get(ready_handler));
@@ -238,49 +263,54 @@ impl StrakeServer {
             health_app = health_app.route("/metrics", get(metrics_handler));
         }
 
-        // Nest the custom API router plus our own router
-        // Use consolidated API router as base and merge enterprise/custom routes
         let base_api_router = api::create_api_router(engine.clone());
-        let final_v1 = base_api_router.merge(self.api_router);
+        let mut final_v1 = base_api_router.merge(self.api_router);
+
+        if let Some(auth) = &final_authenticator {
+            let auth_clone = auth.clone();
+            final_v1 = final_v1.layer(axum::middleware::from_fn(move |req, next| {
+                auth::axum_auth_middleware(req, next, auth_clone.clone())
+            }));
+        }
+
         let final_app = health_app.nest("/api/v1", final_v1);
 
         let health_addr: SocketAddr = app_config.server.health_addr.parse()?;
         info!("Management & API server listening on {}", health_addr);
 
         tokio::spawn(async move {
-            let listener = tokio::net::TcpListener::bind(health_addr).await.unwrap();
-            axum::serve(listener, final_app).await.unwrap();
+            match tokio::net::TcpListener::bind(health_addr).await {
+                Ok(listener) => {
+                    if let Err(e) = axum::serve(listener, final_app).await {
+                        tracing::error!("REST API server error: {}", e);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to bind to health address {}: {}", health_addr, e);
+                }
+            }
         });
 
-        // Spawn Metrics Task (Internal Background Monitoring) if enabled
+        // 3. Spawn Metrics Task
         if self.observability_enabled {
             let engine_clone = engine.clone();
             let start_time = std::time::Instant::now();
             tokio::spawn(async move {
-                // Initialize sysinfo
-                use sysinfo::{Pid, System};
+                use sysinfo::{Pid, ProcessesToUpdate, System};
                 let mut sys = System::new();
                 let pid = Pid::from_u32(std::process::id());
 
                 loop {
-                    tokio::time::sleep(Duration::from_secs(10)).await;
-
-                    // Refresh system memory
+                    tokio::time::sleep(METRICS_REFRESH_INTERVAL).await;
                     sys.refresh_memory();
-
-                    // Refresh specific process
-                    use sysinfo::ProcessesToUpdate;
                     sys.refresh_processes(ProcessesToUpdate::All, true);
 
                     let active = engine_clone.active_queries();
                     ACTIVE_QUERIES.set(active as i64);
 
                     let uptime = start_time.elapsed().as_secs();
-
-                    // System Metrics
                     let available_memory_mb = sys.available_memory() / 1024 / 1024;
 
-                    // Process Metrics
                     let (proc_memory_mb, proc_cpu, thread_count, open_fds) =
                         if let Some(proc) = sys.process(pid) {
                             let mem = proc.memory() / 1024 / 1024;
@@ -332,33 +362,6 @@ impl StrakeServer {
             None
         };
 
-        // Determine Authenticator
-        let final_authenticator: Option<Arc<dyn Authenticator>> = if self.authenticator.is_some() {
-            self.authenticator
-        } else if app_config.server.auth.enabled {
-            // Initialize Metadata DB Pool for OSS Auth
-            // Priority: Env -> Config
-            let db_url = std::env::var("DATABASE_URL")
-                .unwrap_or_else(|_| "postgres://strake:strake@localhost:5432/strake".to_string());
-
-            let mut cfg = deadpool_postgres::Config::new();
-            cfg.url = Some(db_url);
-            cfg.manager = Some(deadpool_postgres::ManagerConfig {
-                recycling_method: deadpool_postgres::RecyclingMethod::Fast,
-            });
-            let pool = cfg
-                .create_pool(None, tokio_postgres::NoTls)
-                .context("Failed to create database pool")?;
-
-            Some(Arc::new(ApiKeyAuthenticator::new(
-                pool,
-                app_config.server.auth.cache_ttl_secs,
-                app_config.server.auth.cache_max_capacity,
-            )))
-        } else {
-            None
-        };
-
         info!(
             "Flight SQL server listening on {} (TLS={}, Auth={}, ConcurrencyLimit={})",
             addr,
@@ -372,7 +375,6 @@ impl StrakeServer {
         if let Some(tls) = tls_config {
             builder = builder.tls_config(tls)?;
         }
-        // ConcurrencyLayer is now always applied but handles None manager gracefully
         let mut builder = builder.layer(ConcurrencyLayer::new(self.concurrency_manager));
 
         if let Some(auth) = final_authenticator {
@@ -390,7 +392,6 @@ impl StrakeServer {
         }
 
         strake_common::telemetry::shutdown_telemetry();
-
         Ok(())
     }
 }
