@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(strake_err.hint, Some("Did you mean 'revenue'?".to_string()));
 
         // Check context type
-        match strake_err.context {
+        match strake_err.context.as_deref() {
             Some(ErrorContext::FieldNotFound {
                 field,
                 available_fields,

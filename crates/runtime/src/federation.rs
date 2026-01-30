@@ -37,8 +37,10 @@ use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
+
 use datafusion_federation::FederationOptimizerRule;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::query::cache::CacheConfig as InternalCacheConfig;
 use crate::query::cache::QueryCache;
@@ -223,18 +225,24 @@ impl FederationEngine {
         for rule in extra_optimizer_rules {
             optimizer_rules.push(rule);
         }
+
         optimizer_rules.push(Arc::new(FederationOptimizerRule::new()));
+        // Ensure nested federated nodes are flattened to prevent unparser failures
+        optimizer_rules.push(Arc::new(
+            crate::optimizer::flatten_federated::FlattenFederatedNodesRule::new(),
+        ));
 
         if let Some(limit) = limits.default_limit {
             optimizer_rules.push(Arc::new(DefensiveLimitRule::new(limit)));
         }
 
-        let state = SessionStateBuilder::new_from_existing(state.clone())
-            .with_optimizer_rules(optimizer_rules)
-            .build();
+        debug!("Optimizer rules registered:");
+        for (i, rule) in optimizer_rules.iter().enumerate() {
+            debug!("  {}: {}", i, rule.name());
+        }
 
-        // CostBasedValidator runs last in physical optimization to reject expensive plans
-        // after all optimizations have been applied
+        // Create physical planner with extension planners registered
+        // Build physical optimizer list first
         let cost_validator = Arc::new(CostBasedValidator::new(
             limits.max_output_rows,
             limits.max_scan_bytes,
@@ -243,9 +251,20 @@ impl FederationEngine {
         let mut physical_optimizers = state.physical_optimizers().to_vec();
         physical_optimizers.push(cost_validator);
 
+        // IMPORTANT: Build state in a single chain to preserve QueryPlanner registration.
+        // Calling SessionStateBuilder::new_from_existing twice would lose the query planner.
         let state = SessionStateBuilder::new_from_existing(state)
+            .with_optimizer_rules(optimizer_rules)
+            .with_query_planner(Arc::new(crate::query::planner::QueryPlanner::new()))
             .with_physical_optimizer_rules(physical_optimizers)
             .build();
+
+        debug!("Physical optimizers registered:");
+        let physical_optimizers: &[Arc<dyn PhysicalOptimizerRule + Send + Sync>] =
+            state.physical_optimizers();
+        for (i, opt) in physical_optimizers.iter().enumerate() {
+            debug!("  {}: {}", i, opt.name());
+        }
 
         Ok(SessionContext::new_with_state(state))
     }
@@ -313,15 +332,20 @@ impl FederationEngine {
         self.active_queries.fetch_add(1, Ordering::Relaxed);
         let start = Instant::now();
 
-        let mut state = self.context.state();
+        let state = self.context.state();
+        let mut config = state.config().clone();
 
         if let Some(u) = user.clone() {
-            let mut config = state.config().clone();
             config.options_mut().extensions.insert(u);
-            state = SessionStateBuilder::new_from_existing(state)
-                .with_config(config)
-                .build();
         }
+
+        // Re-construct state to ensure QueryPlanner is present and config is updated.
+        // We observe that QueryPlanner might be lost during default state transitions,
+        // so we explicitly re-register it here.
+        let state = SessionStateBuilder::new_from_existing(state)
+            .with_config(config)
+            .with_query_planner(Arc::new(crate::query::planner::QueryPlanner::new()))
+            .build();
 
         // Create a temporary context for plan creation and execution
         let context = SessionContext::new_with_state(state);

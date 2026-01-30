@@ -1,9 +1,11 @@
 use crate::commands::init;
 use crate::output::OutputFormat;
+use serial_test::serial;
 use std::fs;
 use tempfile::tempdir;
 
 #[tokio::test]
+#[serial]
 async fn test_init_creates_all_files() {
     let temp_dir = tempdir().unwrap();
     let sources_path = temp_dir.path().join("sources.yaml");
@@ -36,6 +38,7 @@ async fn test_init_creates_all_files() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_init_with_template() {
     let temp_dir = tempdir().unwrap();
     let sources_path = temp_dir.path().join("sources_sql.yaml");
@@ -63,6 +66,7 @@ async fn test_init_with_template() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_init_sources_only() {
     let temp_dir = tempdir().unwrap();
     let sources_path = temp_dir.path().join("sources.yaml");

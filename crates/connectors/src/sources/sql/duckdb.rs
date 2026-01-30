@@ -318,13 +318,20 @@ impl SqlProviderFactory for DuckDBTableFactory {
     async fn create_table_provider(
         &self,
         table_ref: TableReference,
+        metadata: FetchedMetadata,
+        cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
     ) -> Result<Arc<dyn TableProvider>> {
         let table_name = table_ref.table();
         let provider =
             DuckDBTableProvider::new(self.connection_string.clone(), table_name.to_string())
                 .await?;
 
-        Ok(Arc::new(provider))
+        // Wrap with metadata and circuit breaker
+        Ok(super::wrappers::wrap_provider(
+            Arc::new(provider),
+            cb,
+            metadata,
+        ))
     }
 }
 

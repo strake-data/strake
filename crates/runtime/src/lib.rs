@@ -23,5 +23,6 @@
 //! ```
 
 pub mod federation;
+pub mod optimizer;
 pub mod query;
 pub mod sidecar;

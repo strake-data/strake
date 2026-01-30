@@ -28,18 +28,6 @@ impl SqlMetadataFetcher for SqliteMetadataFetcher {
     }
 }
 
-#[async_trait]
-impl SqlProviderFactory for SqliteTableFactory {
-    async fn create_table_provider(
-        &self,
-        table_ref: TableReference,
-    ) -> Result<Arc<dyn TableProvider>> {
-        self.table_provider(table_ref)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))
-    }
-}
-
 pub async fn register_sqlite(params: SqlSourceParams<'_>) -> Result<()> {
     let mut attempt = 0;
     let retry = params.retry;
@@ -153,6 +141,8 @@ impl SqlProviderFactory for FederatedSqliteTableFactory {
     async fn create_table_provider(
         &self,
         table_ref: TableReference,
+        metadata: FetchedMetadata,
+        cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
     ) -> Result<Arc<dyn TableProvider>> {
         let inner_provider = self
             .inner
@@ -160,19 +150,21 @@ impl SqlProviderFactory for FederatedSqliteTableFactory {
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
+        // Wrap the inner provider with metadata and circuit breaker
+        let wrapped_inner = super::wrappers::wrap_provider(inner_provider, cb, metadata);
+
         // Use SQLTableSource for federation logic
-        // We assume the schema matches inner_provider
         let sql_source = datafusion_federation::sql::SQLTableSource::new_with_schema(
             self.federation_provider.clone(),
-            table_ref.into(), // explicit conversion to RemoteTableRef? Or it handles TableReference
-            inner_provider.schema(),
+            table_ref.into(),
+            wrapped_inner.schema(),
         );
 
         // Wrap with federation adaptor
         // First arg: Source (logical), Second arg: Provider (physical fallback)
         let adaptor = datafusion_federation::FederatedTableProviderAdaptor::new_with_provider(
             Arc::new(sql_source),
-            inner_provider,
+            wrapped_inner,
         );
 
         Ok(Arc::new(adaptor))

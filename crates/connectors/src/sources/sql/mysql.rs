@@ -32,14 +32,21 @@ pub struct MySQLTableFactoryWrapper {
 }
 
 #[async_trait]
-impl SqlProviderFactory for MySQLTableFactory {
+impl SqlProviderFactory for MySQLTableFactoryWrapper {
     async fn create_table_provider(
         &self,
-        table_ref: TableReference,
+        _table_ref: TableReference,
+        metadata: FetchedMetadata,
+        cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
     ) -> Result<Arc<dyn TableProvider>> {
-        self.table_provider(table_ref)
+        let inner = self
+            .factory
+            .table_provider(_table_ref)
             .await
-            .map_err(|e| anyhow::anyhow!(e))
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        // Wrap with metadata and circuit breaker
+        Ok(super::wrappers::wrap_provider(inner, cb, metadata))
     }
 }
 
@@ -108,6 +115,7 @@ async fn try_register_mysql(
         .map_err(|e| anyhow::anyhow!(e))
         .context("Failed to create MySQL connection pool")?;
     let factory = MySQLTableFactory::new(Arc::new(pool));
+    let factory_wrapper = MySQLTableFactoryWrapper { factory };
 
     let tables_to_register: Vec<(String, String)> = if let Some(config_tables) = explicit_tables {
         config_tables
@@ -134,7 +142,7 @@ async fn try_register_mysql(
         catalog_name,
         name,
         fetcher,
-        &factory,
+        &factory_wrapper,
         cb,
         tables_to_register,
     )

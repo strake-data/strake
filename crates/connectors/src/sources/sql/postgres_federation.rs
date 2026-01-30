@@ -5,8 +5,8 @@
 //! entire join can be pushed down to PostgreSQL instead of being executed by DataFusion.
 
 use arrow::array::{
-    ArrayBuilder, BooleanBuilder, Date32Builder, Float32Builder, Float64Builder, Int16Builder,
-    Int32Builder, Int64Builder, StringBuilder, TimestampMicrosecondBuilder,
+    ArrayBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float32Builder, Float64Builder,
+    Int16Builder, Int32Builder, Int64Builder, StringBuilder, TimestampMicrosecondBuilder,
 };
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use arrow::record_batch::RecordBatch;
@@ -52,6 +52,18 @@ impl SQLExecutor for PostgresExecutor {
         Arc::new(datafusion::sql::unparser::dialect::PostgreSqlDialect {})
     }
 
+    /// Returns a logical optimizer that fixes column qualifiers for SQL scoping.
+    ///
+    /// This ensures that when a subquery is aliased (e.g., `(SELECT ...) AS derived`),
+    /// any references to columns from that subquery use the alias name, not the
+    /// inner table names. This fixes the "alias leakage" problem where inner table
+    /// names like `u.id` appear in outer scopes where they should be `derived.id`.
+    fn logical_optimizer(&self) -> Option<datafusion_federation::sql::LogicalOptimizer> {
+        Some(Box::new(|plan| {
+            strake_sql::sql_gen::remap_plan_for_federation(plan)
+        }))
+    }
+
     fn execute(
         &self,
         query: &str,
@@ -67,7 +79,10 @@ impl SQLExecutor for PostgresExecutor {
             let (client, connection) =
                 tokio_postgres::connect(&connection_string, tokio_postgres::NoTls)
                     .await
-                    .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+                    .map_err(|e| {
+                        tracing::error!(target: "federation", error = %e, "Failed to connect to PostgreSQL");
+                        datafusion::error::DataFusionError::Execution(format!("Failed to connect to PostgreSQL: {}", e))
+                    })?;
 
             // Spawn connection task
             tokio::spawn(async move {
@@ -79,7 +94,10 @@ impl SQLExecutor for PostgresExecutor {
             let rows = client
                 .query(&query, &[])
                 .await
-                .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+                .map_err(|e| {
+                    tracing::error!(target: "federation", query = %query, error = %e, "PostgreSQL query execution failed");
+                    datafusion::error::DataFusionError::Execution(format!("PostgreSQL query failed: {}. Query: {}", e, query))
+                })?;
 
             // Build Arrow arrays from rows
             let column_count = schema_for_task.fields().len();
@@ -100,6 +118,11 @@ impl SQLExecutor for PostgresExecutor {
                     DataType::Timestamp(TimeUnit::Microsecond, _) => {
                         builders.push(Box::new(TimestampMicrosecondBuilder::new()))
                     }
+                    DataType::Decimal128(p, s) => {
+                        let builder =
+                            Decimal128Builder::new().with_data_type(DataType::Decimal128(*p, *s));
+                        builders.push(Box::new(builder))
+                    }
                     dt => {
                         return Err(datafusion::error::DataFusionError::NotImplemented(format!(
                             "PostgreSQL federation: Unsupported data type: {:?}",
@@ -112,7 +135,8 @@ impl SQLExecutor for PostgresExecutor {
             // Iterate over rows
             for row in &rows {
                 for (i, builder) in builders.iter_mut().enumerate() {
-                    append_value_to_builder(builder, row, i)?;
+                    let dt = schema_for_task.field(i).data_type();
+                    append_value_to_builder(builder, row, i, dt)?;
                 }
             }
 
@@ -193,6 +217,7 @@ fn append_value_to_builder(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &tokio_postgres::Row,
     col_idx: usize,
+    data_type: &DataType,
 ) -> datafusion::error::Result<()> {
     // Try each builder type in turn
     if let Some(b) = builder.as_any_mut().downcast_mut::<Int16Builder>() {
@@ -208,10 +233,29 @@ fn append_value_to_builder(
             Err(e) => return Err(datafusion::error::DataFusionError::External(Box::new(e))),
         }
     } else if let Some(b) = builder.as_any_mut().downcast_mut::<Int64Builder>() {
-        match row.try_get::<_, Option<i64>>(col_idx) {
-            Ok(Some(v)) => b.append_value(v),
-            Ok(None) => b.append_null(),
-            Err(e) => return Err(datafusion::error::DataFusionError::External(Box::new(e))),
+        let pg_type = row.columns()[col_idx].type_();
+        if *pg_type == postgres_types::Type::NUMERIC {
+            use rust_decimal::prelude::ToPrimitive;
+            match row.try_get::<_, Option<rust_decimal::Decimal>>(col_idx) {
+                Ok(Some(v)) => {
+                    if let Some(i) = v.to_i64() {
+                        b.append_value(i);
+                    } else {
+                        return Err(datafusion::error::DataFusionError::Execution(format!(
+                            "Value {:?} out of range for Int64",
+                            v
+                        )));
+                    }
+                }
+                Ok(None) => b.append_null(),
+                Err(e) => return Err(datafusion::error::DataFusionError::External(Box::new(e))),
+            }
+        } else {
+            match row.try_get::<_, Option<i64>>(col_idx) {
+                Ok(Some(v)) => b.append_value(v),
+                Ok(None) => b.append_null(),
+                Err(e) => return Err(datafusion::error::DataFusionError::External(Box::new(e))),
+            }
         }
     } else if let Some(b) = builder.as_any_mut().downcast_mut::<Float32Builder>() {
         match row.try_get::<_, Option<f32>>(col_idx) {
@@ -257,6 +301,27 @@ fn append_value_to_builder(
             Ok(Some(v)) => {
                 let micros = v.and_utc().timestamp_micros();
                 b.append_value(micros);
+            }
+            Ok(None) => b.append_null(),
+            Err(e) => return Err(datafusion::error::DataFusionError::External(Box::new(e))),
+        }
+    } else if let Some(b) = builder.as_any_mut().downcast_mut::<Decimal128Builder>() {
+        match row.try_get::<_, Option<rust_decimal::Decimal>>(col_idx) {
+            Ok(Some(mut v)) => {
+                // Ensure scale matches.
+                // b.scale() returns i8, rust_decimal takes u32.
+                // Ensure scale matches.
+                // Use passed data_type.
+                let target_scale = if let DataType::Decimal128(_, s) = data_type {
+                    (*s).max(0) as u32
+                } else {
+                    0
+                };
+                if v.scale() != target_scale {
+                    // Best effort rescale
+                    v.rescale(target_scale);
+                }
+                b.append_value(v.mantissa());
             }
             Ok(None) => b.append_null(),
             Err(e) => return Err(datafusion::error::DataFusionError::External(Box::new(e))),

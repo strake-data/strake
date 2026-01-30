@@ -21,7 +21,6 @@ pub async fn register_tables(
     tables: Vec<(String, String)>, // (table_name, target_schema_name)
 ) -> Result<()> {
     use datafusion::catalog::MemorySchemaProvider;
-    use strake_common::circuit_breaker::CircuitBreakerTableProvider;
 
     // Ensure catalog exists
     let catalog = context
@@ -34,67 +33,32 @@ pub async fn register_tables(
             catalog.register_schema(&target_schema, Arc::new(MemorySchemaProvider::new()))?;
         }
 
-        let table_ref = TableReference::bare(table_name.as_str());
-        match factory.create_table_provider(table_ref).await {
-            Ok(provider) => {
-                let metadata = if let Some(fetcher) = &metadata_fetcher {
-                    match fetcher.fetch_metadata("public", &table_name).await {
-                        Ok(c) => c,
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to fetch metadata for {}.{}: {}",
-                                target_schema,
-                                table_name,
-                                e
-                            );
-                            FetchedMetadata::default()
-                        }
-                    }
-                } else {
+        let metadata = if let Some(fetcher) = &metadata_fetcher {
+            match fetcher.fetch_metadata("public", &table_name).await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to fetch metadata for {}.{}: {}",
+                        target_schema,
+                        table_name,
+                        e
+                    );
                     FetchedMetadata::default()
-                };
-
-                // Enrich Schema
-                let existing_schema = provider.schema();
-                let mut new_fields = Vec::new();
-                for field in existing_schema.fields() {
-                    if let Some(desc) = metadata.columns.get(field.name()) {
-                        let mut new_metadata = field.metadata().clone();
-                        new_metadata.insert("ARROW:FLIGHT:SQL:REMARKS".to_string(), desc.clone());
-                        new_metadata.insert("description".to_string(), desc.clone());
-                        new_metadata.insert("comment".to_string(), desc.clone());
-                        new_metadata.insert("remarks".to_string(), desc.clone());
-                        let new_field = field.as_ref().clone().with_metadata(new_metadata);
-                        new_fields.push(Arc::new(new_field));
-                    } else {
-                        new_fields.push(field.clone());
-                    }
                 }
+            }
+        } else {
+            FetchedMetadata::default()
+        };
 
-                let mut schema_metadata = existing_schema.metadata().clone();
-                if let Some(table_desc) = metadata.table_description {
-                    schema_metadata
-                        .insert("ARROW:FLIGHT:SQL:REMARKS".to_string(), table_desc.clone());
-                    schema_metadata.insert("description".to_string(), table_desc.clone());
-                    schema_metadata.insert("comment".to_string(), table_desc.clone());
-                    schema_metadata.insert("remarks".to_string(), table_desc.clone());
-                }
-
-                let new_schema = Arc::new(Schema::new_with_metadata(new_fields, schema_metadata));
-
-                let enriched_provider = Arc::new(MetadataEnrichedTableProvider {
-                    inner: provider,
-                    schema: new_schema,
-                });
-
-                let cb_provider = Arc::new(CircuitBreakerTableProvider::new(
-                    enriched_provider,
-                    cb.clone(),
-                ));
-
+        let table_ref = TableReference::bare(table_name.as_str());
+        match factory
+            .create_table_provider(table_ref, metadata, cb.clone())
+            .await
+        {
+            Ok(provider) => {
                 let qualified =
                     TableReference::full(target_catalog, &*target_schema, table_name.as_str());
-                if let Err(e) = context.register_table(qualified, cb_provider) {
+                if let Err(e) = context.register_table(qualified, provider) {
                     tracing::warn!(
                         "Failed to register table {}.{}: {}",
                         target_schema,
@@ -119,10 +83,58 @@ pub async fn register_tables(
     Ok(())
 }
 
+/// Helper to wrap a provider with metadata and circuit breaking
+pub fn wrap_provider(
+    provider: Arc<dyn TableProvider>,
+    cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
+    metadata: FetchedMetadata,
+) -> Arc<dyn TableProvider> {
+    use strake_common::circuit_breaker::CircuitBreakerTableProvider;
+
+    let enriched = Arc::new(MetadataEnrichedTableProvider::new(provider, metadata));
+    Arc::new(CircuitBreakerTableProvider::new(enriched, cb))
+}
+
 #[derive(Debug)]
 pub struct MetadataEnrichedTableProvider {
     pub inner: Arc<dyn TableProvider>,
     pub schema: SchemaRef,
+}
+
+impl MetadataEnrichedTableProvider {
+    pub fn new(provider: Arc<dyn TableProvider>, metadata: FetchedMetadata) -> Self {
+        let existing_schema = provider.schema();
+        let mut new_fields = Vec::new();
+
+        for field in existing_schema.fields() {
+            if let Some(desc) = metadata.columns.get(field.name()) {
+                let mut new_metadata = field.metadata().clone();
+                new_metadata.insert("ARROW:FLIGHT:SQL:REMARKS".to_string(), desc.clone());
+                new_metadata.insert("description".to_string(), desc.clone());
+                new_metadata.insert("comment".to_string(), desc.clone());
+                new_metadata.insert("remarks".to_string(), desc.clone());
+                let new_field = field.as_ref().clone().with_metadata(new_metadata);
+                new_fields.push(Arc::new(new_field));
+            } else {
+                new_fields.push(field.clone());
+            }
+        }
+
+        let mut schema_metadata = existing_schema.metadata().clone();
+        if let Some(table_desc) = metadata.table_description {
+            schema_metadata.insert("ARROW:FLIGHT:SQL:REMARKS".to_string(), table_desc.clone());
+            schema_metadata.insert("description".to_string(), table_desc.clone());
+            schema_metadata.insert("comment".to_string(), table_desc.clone());
+            schema_metadata.insert("remarks".to_string(), table_desc.clone());
+        }
+
+        let new_schema = Arc::new(Schema::new_with_metadata(new_fields, schema_metadata));
+
+        Self {
+            inner: provider,
+            schema: new_schema,
+        }
+    }
 }
 
 #[async_trait]

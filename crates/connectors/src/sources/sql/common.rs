@@ -24,6 +24,8 @@ pub trait SqlProviderFactory: Send + Sync {
     async fn create_table_provider(
         &self,
         table_ref: TableReference,
+        metadata: FetchedMetadata,
+        cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
     ) -> Result<Arc<dyn TableProvider>>;
 }
 

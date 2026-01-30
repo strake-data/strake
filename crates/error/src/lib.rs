@@ -30,7 +30,7 @@ pub struct StrakeError {
 
     /// Structured context for programmatic handling
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub context: Option<ErrorContext>,
+    pub context: Option<Box<ErrorContext>>,
 
     /// AI-actionable suggestion for self-correction
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,7 +55,7 @@ impl StrakeError {
 
     /// Add structured context
     pub fn with_context(mut self, context: ErrorContext) -> Self {
-        self.context = Some(context);
+        self.context = Some(Box::new(context));
         self
     }
 

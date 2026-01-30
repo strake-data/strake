@@ -8,5 +8,11 @@
 pub mod dialect_router;
 pub mod dialects;
 pub mod optimizer;
+pub mod relation_scope;
+pub mod schema_adapter;
+pub mod scope_analyzer;
 pub mod sql_gen;
 pub mod substrait_producer;
+
+pub use datafusion::physical_planner::{ExtensionPlanner, PhysicalPlanner};
+pub use datafusion_federation::FederatedPlanner;

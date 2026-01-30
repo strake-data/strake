@@ -31,10 +31,16 @@ impl SqlProviderFactory for ClickHouseTableFactory {
     async fn create_table_provider(
         &self,
         table_ref: TableReference,
+        metadata: FetchedMetadata,
+        cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
     ) -> Result<Arc<dyn TableProvider>> {
-        self.table_provider(table_ref, None)
+        let inner = self
+            .table_provider(table_ref, None)
             .await
-            .map_err(|e| anyhow::anyhow!(e))
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        // Wrap with metadata and circuit breaker
+        Ok(super::wrappers::wrap_provider(inner, cb, metadata))
     }
 }
 
@@ -106,7 +112,7 @@ async fn try_register_clickhouse(
             .collect()
     };
 
-    let fetcher: Option<Box<dyn SqlMetadataFetcher>> = Some(Box::new(ClickHouseMetadataFetcher));
+    let fetcher: Option<Box<dyn SqlMetadataFetcher>> = Some(Box::new(ClickHouseMetadataFetcher {}));
 
     register_tables(
         context,
