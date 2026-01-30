@@ -114,7 +114,7 @@ impl RelationScope {
 
     pub fn resolve_column(&self, col: &Column) -> Result<QualifiedColumn> {
         if col.name == "department_id" || col.name == "budget" || col.name == "amount" {
-             tracing::trace!(
+            tracing::trace!(
                 target: "sql_gen",
                 col = ?col,
                 "Resolving column in scope"
@@ -135,7 +135,7 @@ impl RelationScope {
         if let Some(req_rel) = &col.relation {
             // Check alias mappings using string representation for robustness
             let req_str = req_rel.to_string();
-            
+
             // FALLBACK: Try string lookup "qual.name"
             // This handles cases where Aggregate references col with inner qualifier
             // that isn't directly resolvable via standard mappings
@@ -181,7 +181,7 @@ impl RelationScope {
                 // If we are here, the requested qualifier `u` is NOT in the visible candidates.
                 // This happens when `u` is an alias from an inner scope that was hidden (alias leakage).
                 // Or if we are in a subquery and the qualifier is the subquery alias itself.
-                
+
                 // Fallback to checking if the resolution is unique among all visible relations.
                 if candidates.len() == 1 {
                     let candidate = &candidates[0];
@@ -202,18 +202,16 @@ impl RelationScope {
                         col.name, req_rel, candidates
                     )));
                 }
+            } else if candidates.len() == 1 {
+                return Ok(QualifiedColumn {
+                    relation: Some(candidates[0].clone()),
+                    name: effective_name.to_string(),
+                });
             } else {
-                if candidates.len() == 1 {
-                    return Ok(QualifiedColumn {
-                        relation: Some(candidates[0].clone()),
-                        name: effective_name.to_string(),
-                    });
-                } else {
-                    return Err(DataFusionError::Plan(format!(
-                        "Ambiguous column reference '{}'. Found in relations: {:?}",
-                        col.name, candidates
-                    )));
-                }
+                return Err(DataFusionError::Plan(format!(
+                    "Ambiguous column reference '{}'. Found in relations: {:?}",
+                    col.name, candidates
+                )));
             }
         }
 
@@ -307,24 +305,24 @@ impl RelationScope {
         for (k, v) in &other.string_mappings {
             self.string_mappings.insert(k.clone(), v.clone());
         }
-        
+
         // Merge parent if this scope doesn't have one
         if self.parent.is_none() && other.parent.is_some() {
             self.parent = other.parent.clone();
         }
     }
 
-/// Inherit alias_mappings and column_mappings from another scope
-/// Used to preserve mappings when creating new output scopes
-pub fn inherit_mappings_from(&mut self, parent: &RelationScope) {
-    for (k, v) in &parent.alias_mappings {
-        self.alias_mappings.insert(k.clone(), v.clone());
+    /// Inherit alias_mappings and column_mappings from another scope
+    /// Used to preserve mappings when creating new output scopes
+    pub fn inherit_mappings_from(&mut self, parent: &RelationScope) {
+        for (k, v) in &parent.alias_mappings {
+            self.alias_mappings.insert(k.clone(), v.clone());
+        }
+        for (k, v) in &parent.column_mappings {
+            self.column_mappings.insert(k.clone(), v.clone());
+        }
+        for (k, v) in &parent.string_mappings {
+            self.string_mappings.insert(k.clone(), v.clone());
+        }
     }
-    for (k, v) in &parent.column_mappings {
-        self.column_mappings.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &parent.string_mappings {
-        self.string_mappings.insert(k.clone(), v.clone());
-    }
-}
 }

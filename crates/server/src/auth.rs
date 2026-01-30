@@ -17,7 +17,7 @@ use axum::{
 use moka::future::Cache;
 use std::time::Duration;
 use strake_common::auth::AuthenticatedUser;
- 
+
 pub const API_KEY_PREFIX_LENGTH: usize = 8;
 
 #[async_trait]
@@ -140,7 +140,7 @@ pub async fn verify_api_key_credentials(
                     "Failed to update API key last_used_at timestamp"
                 );
             }
- 
+
             return Ok((user_id, permissions));
         }
     }
@@ -251,8 +251,6 @@ pub async fn axum_auth_middleware(
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,7 +263,7 @@ mod tests {
         cfg.host = Some("localhost".to_string());
         cfg.dbname = Some("strake".to_string());
         let pool = cfg.create_pool(None, tokio_postgres::NoTls).unwrap();
-        
+
         let res = verify_api_key_credentials(&pool, "short").await;
         assert!(res.is_err());
         assert_eq!(res.unwrap_err().message(), "Invalid API Key format");

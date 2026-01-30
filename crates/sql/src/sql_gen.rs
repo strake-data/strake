@@ -4,11 +4,7 @@
 //! to select the appropriate rendering strategy per source type.
 
 use anyhow::{Context, Result};
-use datafusion::common::{
-    internal_err, plan_err,
-    tree_node::{Transformed, TreeNode},
-    Column, Result as DFResult, ScalarValue,
-};
+use datafusion::common::Column;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::unparser::Unparser;
@@ -119,457 +115,457 @@ pub fn remap_plan_for_federation(plan: LogicalPlan) -> datafusion::error::Result
     Ok(remapped_plan)
 }
 
-
-
 struct PlanScopeRemapper {
-        alias_counter: std::cell::RefCell<usize>,
+    alias_counter: std::cell::RefCell<usize>,
+}
+
+/// Feature flag for aggressive join aliasing (disabled post-fix).
+/// Set to `true` only for emergency rollback if ambiguity issues resurface.
+/// See: https://github.com/apache/datafusion/issues/13272
+#[cfg(feature = "aggressive-join-aliasing")]
+const AGGRESSIVE_JOIN_ALIASING: bool = true;
+#[cfg(not(feature = "aggressive-join-aliasing"))]
+const AGGRESSIVE_JOIN_ALIASING: bool = false;
+
+impl PlanScopeRemapper {
+    fn new() -> Self {
+        Self {
+            alias_counter: std::cell::RefCell::new(0),
+        }
     }
 
-    /// Feature flag for aggressive join aliasing (disabled post-fix).
-    /// Set to `true` only for emergency rollback if ambiguity issues resurface.
-    /// See: https://github.com/apache/datafusion/issues/13272
-    #[cfg(feature = "aggressive-join-aliasing")]
-    const AGGRESSIVE_JOIN_ALIASING: bool = true;
-    #[cfg(not(feature = "aggressive-join-aliasing"))]
-    const AGGRESSIVE_JOIN_ALIASING: bool = false;
+    fn next_alias(&self) -> String {
+        let mut c = self.alias_counter.borrow_mut();
+        *c += 1;
+        format!("derived_sq_{}", *c)
+    }
 
-    impl PlanScopeRemapper {
-        fn new() -> Self {
-            Self {
-                alias_counter: std::cell::RefCell::new(0),
-            }
-        }
+    /// Wraps a plan in a SubqueryAlias with uniquely renamed columns.
+    /// Used for Join inputs to avoid column name collisions.
+    ///
+    /// DEPRECATED: Disabled due to datafusion-contrib/datafusion-federation#13272
+    /// The Unparser doesn't rewrite outer column references to match wrapped aliases.
+    #[allow(dead_code)]
+    fn ensure_aliased_with_unique_columns(
+        &self,
+        plan: LogicalPlan,
+        scope: RelationScope,
+        source_alias: Option<&str>, // Original alias like "u" or "d"
+    ) -> datafusion::error::Result<(LogicalPlan, RelationScope)> {
+        use datafusion::logical_expr::SubqueryAlias;
 
-        fn next_alias(&self) -> String {
-            let mut c = self.alias_counter.borrow_mut();
-            *c += 1;
-            format!("derived_sq_{}", *c)
-        }
+        // Wrap in SubqueryAlias
+        let alias = self.next_alias();
+        let prefix = source_alias.unwrap_or(&alias);
 
-        /// Wraps a plan in a SubqueryAlias with uniquely renamed columns.
-        /// Used for Join inputs to avoid column name collisions.
-        ///
-        /// DEPRECATED: Disabled due to datafusion-contrib/datafusion-federation#13272
-        /// The Unparser doesn't rewrite outer column references to match wrapped aliases.
-        #[allow(dead_code)]
-        fn ensure_aliased_with_unique_columns(
-            &self,
-            plan: LogicalPlan,
-            scope: RelationScope,
-            source_alias: Option<&str>, // Original alias like "u" or "d"
-        ) -> datafusion::error::Result<(LogicalPlan, RelationScope)> {
-            use datafusion::logical_expr::SubqueryAlias;
+        tracing::debug!(
+            target: "sql_gen::aliasing",
+            ?alias,
+            ?source_alias,
+            "Starting smart aliasing"
+        );
 
-            // Wrap in SubqueryAlias
-            let alias = self.next_alias();
-            let prefix = source_alias.unwrap_or(&alias);
-            
-            tracing::debug!(
-                target: "sql_gen::aliasing",
-                ?alias,
-                ?source_alias,
-                "Starting smart aliasing"
-            );
+        // Build renaming projection: SELECT col AS prefix_col, ...
+        let schema = plan.schema().clone();
+        let mut rename_exprs = Vec::new();
+        let mut new_column_names = Vec::new();
 
-            // Build renaming projection: SELECT col AS prefix_col, ...
-            let schema = plan.schema().clone();
-            let mut rename_exprs = Vec::new();
-            let mut new_column_names = Vec::new();
-            
-            use datafusion::common::Column;
-            
-            for (qualifier, field) in schema.iter() {
-                let col_name = field.name();
+        for (qualifier, field) in schema.iter() {
+            let col_name = field.name();
 
-                // SMART ALIASING: Detect if column is already aliased from previous wrapping
-                // Pattern: derived_sq_N_something (e.g., derived_sq_1_d_name)
-                let (base_qualifier, base_name) = if col_name.contains("derived_sq_") {
-                    // Extract base components: derived_sq_1_d_name -> ("d", "name")
-                    // Format in col_name is: derived_sq_{num}_{qual}_{name} or derived_sq_{num}_{name}
-                    let parts: Vec<&str> = col_name.split("derived_sq_").collect();
-                    if parts.len() >= 2 {
-                        let after_prefix = parts.last().unwrap(); // "1_d_name"
-                        let name_parts: Vec<&str> = after_prefix.splitn(2, '_').collect(); // ["1", "d_name"]
-                        if name_parts.len() == 2 {
-                            let base_col = name_parts[1]; // "d_name"
-                            // Try to extract qualifier from base_col (format: qual_name) (heuristic)
-                            let base_split: Vec<&str> = base_col.rsplitn(2, '_').collect();
-                            if base_split.len() == 2 && base_split[1].len() == 1 { // Heuristic: single char qualifier like u, d or simple qual
-                                (Some(TableReference::bare(base_split[1])), base_split[0].to_string())
-                            } else {
-                                (None, base_col.to_string())
-                            }
+            // SMART ALIASING: Detect if column is already aliased from previous wrapping
+            // Pattern: derived_sq_N_something (e.g., derived_sq_1_d_name)
+            let (base_qualifier, base_name) = if col_name.contains("derived_sq_") {
+                // Extract base components: derived_sq_1_d_name -> ("d", "name")
+                // Format in col_name is: derived_sq_{num}_{qual}_{name} or derived_sq_{num}_{name}
+                let parts: Vec<&str> = col_name.split("derived_sq_").collect();
+                if parts.len() >= 2 {
+                    let after_prefix = parts.last().unwrap(); // "1_d_name"
+                    let name_parts: Vec<&str> = after_prefix.splitn(2, '_').collect(); // ["1", "d_name"]
+                    if name_parts.len() == 2 {
+                        let base_col = name_parts[1]; // "d_name"
+                                                      // Try to extract qualifier from base_col (format: qual_name) (heuristic)
+                        let base_split: Vec<&str> = base_col.rsplitn(2, '_').collect();
+                        if base_split.len() == 2 && base_split[1].len() == 1 {
+                            // Heuristic: single char qualifier like u, d or simple qual
+                            (
+                                Some(TableReference::bare(base_split[1])),
+                                base_split[0].to_string(),
+                            )
                         } else {
-                            (qualifier.cloned(), col_name.clone())
+                            (None, base_col.to_string())
                         }
                     } else {
                         (qualifier.cloned(), col_name.clone())
                     }
-                } else if let Some(q) = qualifier {
-                    (Some(q.clone()), col_name.clone())
                 } else {
-                    (None, col_name.clone())
-                };
-
-                // Create FLAT name: prefix + base_qual + base_name
-                // e.g., derived_sq_2 + d + name = derived_sq_2_d_name (NOT derived_sq_2_derived_sq_1_d_name)
-                let new_name = if let Some(q) = &base_qualifier {
-                    let q_str = q.to_string().replace('.', "_").replace('"', "");
-                    format!("{}_{}_{}", prefix, q_str, base_name)
-                } else {
-                    format!("{}_{}", prefix, base_name)
-                };
-                
-                new_column_names.push(new_name.clone());
-
-                tracing::trace!(
-                    target: "sql_gen::aliasing",
-                    ?col_name,
-                    ?qualifier,
-                    ?base_qualifier,
-                    ?base_name,
-                    ?new_name,
-                    "Transformed column name"
-                );
-                
-                let col_expr = Expr::Column(Column::new(qualifier.cloned(), col_name.clone()));
-                rename_exprs.push(col_expr.alias(new_name));
-            }
-            
-            // Create: Projection(renames) -> SubqueryAlias
-            let proj_plan = LogicalPlanBuilder::from(plan)
-                .project(rename_exprs)?
-                .build()?;
-            
-            let new_plan = LogicalPlan::SubqueryAlias(SubqueryAlias::try_new(
-                std::sync::Arc::new(proj_plan),
-                alias.clone(),
-            )?);
-
-            // Create new scope for the alias
-            let mut output_scope = RelationScope::new();
-            let alias_ref = TableReference::bare(alias.clone());
-            output_scope.register_relation(alias_ref.clone(), new_column_names.clone());
-            
-            // Map original qualified names to new names
-            for (i, (qualifier, field)) in schema.iter().enumerate() {
-                 let original_name = field.name();
-                 let new_name = &new_column_names[i];
-                
-                // Determine the ORIGINAL logical qualifier:name before any wrapping
-                // Re-use logic or re-derive (simpler to re-derive here for clarity matching plan)
-                 let (orig_qual, orig_name) = if original_name.contains("derived_sq_") {
-                    let base = original_name.split("derived_sq_")
-                        .last()
-                        .and_then(|s| s.splitn(2, '_').nth(1))
-                        .unwrap_or(original_name);
-                    
-                    let parts: Vec<&str> = base.rsplitn(2, '_').collect();
-                    if parts.len() == 2 && parts[1].len() == 1 {
-                        (Some(TableReference::bare(parts[1])), parts[0].to_string())
-                    } else {
-                        (None, base.to_string())
-                    }
-                } else if let Some(q) = qualifier {
-                    (Some(q.clone()), original_name.clone())
-                } else {
-                    (None, original_name.clone())
-                };
-
-                if let Some(ref qual) = orig_qual {
-                    // 1. Standard mapping
-                    output_scope.add_column_mapping(
-                        Some(qual.clone()),
-                        orig_name.clone(),
-                        new_name.clone(),
-                    );
-                    
-                    // 2. STRING FALLBACK: "qual.name" -> new_name
-                    output_scope.add_string_mapping(
-                         format!("{}.{}", qual, orig_name),
-                         new_name.clone()
-                    );
-                } else {
-                    output_scope.add_column_mapping(
-                        None,
-                        orig_name.clone(),
-                        new_name.clone(),
-                    );
+                    (qualifier.cloned(), col_name.clone())
                 }
-            }
-            
-            // Map inner relations to outer alias
-            for inner_rels in scope.visible_relations().values() {
-                for inner_rel in inner_rels {
-                    output_scope.add_mapping(inner_rel.clone(), alias_ref.clone());
-                }
-            }
+            } else if let Some(q) = qualifier {
+                (Some(q.clone()), col_name.clone())
+            } else {
+                (None, col_name.clone())
+            };
 
-            tracing::debug!(
+            // Create FLAT name: prefix + base_qual + base_name
+            // e.g., derived_sq_2 + d + name = derived_sq_2_d_name (NOT derived_sq_2_derived_sq_1_d_name)
+            let new_name = if let Some(q) = &base_qualifier {
+                let q_str = q.to_string().replace('.', "_").replace('"', "");
+                format!("{}_{}_{}", prefix, q_str, base_name)
+            } else {
+                format!("{}_{}", prefix, base_name)
+            };
+
+            new_column_names.push(new_name.clone());
+
+            tracing::trace!(
                 target: "sql_gen::aliasing",
-                ?alias,
-                new_columns = ?new_column_names,
-                "Completed aliasing"
+                ?col_name,
+                ?qualifier,
+                ?base_qualifier,
+                ?base_name,
+                ?new_name,
+                "Transformed column name"
             );
 
-            Ok((new_plan, output_scope))
+            let col_expr = Expr::Column(Column::new(qualifier.cloned(), col_name.clone()));
+            rename_exprs.push(col_expr.alias(new_name));
         }
 
-        #[allow(dead_code)]
-        fn ensure_aliased(
-            &self,
-            plan: LogicalPlan,
-            scope: RelationScope,
-        ) -> datafusion::error::Result<(LogicalPlan, RelationScope)> {
-             self.ensure_aliased_with_unique_columns(plan, scope, None)
-        }
+        // Create: Projection(renames) -> SubqueryAlias
+        let proj_plan = LogicalPlanBuilder::from(plan)
+            .project(rename_exprs)?
+            .build()?;
 
-        /// Recursively remap the plan.
-        /// Returns: (Remapped Plan, Scope Exported by this plan)
-        fn remap_plan(
-            &self,
-            plan: &LogicalPlan,
-            parent_scope: &Option<Box<RelationScope>>,
-        ) -> datafusion::error::Result<(LogicalPlan, RelationScope)> {
-            use datafusion::error::DataFusionError;
+        let new_plan = LogicalPlan::SubqueryAlias(SubqueryAlias::try_new(
+            std::sync::Arc::new(proj_plan),
+            alias.clone(),
+        )?);
 
-            match plan {
-                LogicalPlan::Projection(proj) => {
-                    let (new_input, input_scope) = self.remap_plan(&proj.input, parent_scope)?;
-                    // Removed: ensure_aliased call
-                    let combined_scope = self.combine_scopes(&input_scope, parent_scope);
+        // Create new scope for the alias
+        let mut output_scope = RelationScope::new();
+        let alias_ref = TableReference::bare(alias.clone());
+        output_scope.register_relation(alias_ref.clone(), new_column_names.clone());
 
-                    let initial_exprs = proj
-                        .expr
-                        .iter()
-                        .map(|e| self.remap_expr(e, &combined_scope))
-                        .collect::<datafusion::error::Result<Vec<_>>>()?;
+        // Map original qualified names to new names
+        for (i, (qualifier, field)) in schema.iter().enumerate() {
+            let original_name = field.name();
+            let new_name = &new_column_names[i];
 
-                    let proj_plan = LogicalPlanBuilder::from(new_input)
-                        .project(initial_exprs)?
-                        .build()?;
+            // Determine the ORIGINAL logical qualifier:name before any wrapping
+            // Re-use logic or re-derive (simpler to re-derive here for clarity matching plan)
+            let (orig_qual, orig_name) = if original_name.contains("derived_sq_") {
+                let base = original_name
+                    .split("derived_sq_")
+                    .last()
+                    .and_then(|s| s.split_once('_').map(|x| x.1))
+                    .unwrap_or(original_name);
 
-                    // Use the resulting schema to populate the output scope.
-                    // This ensures that outer nodes see exactly what this projection exports.
-                    let mut new_output_scope = RelationScope::new();
-                    new_output_scope.set_parent(input_scope.parent().clone());
-
-                    // CRITICAL: Preserve mappings from input scope
-                    // This ensures that column_mappings and alias_mappings created by
-                    // wrapped join inputs are not lost when traversing through this Projection
-                    new_output_scope.inherit_mappings_from(&input_scope);
-
-                    for (qualifier, field) in proj_plan.schema().iter() {
-                        let field_name = field.name().clone();
-                        if let Some(rel) = qualifier {
-                            new_output_scope.register_relation(rel.clone(), vec![field_name]);
-                        } else {
-                            new_output_scope.register_unqualified_column(field_name);
-                        }
-                    }
-
-                    Ok((proj_plan, new_output_scope))
+                let parts: Vec<&str> = base.rsplitn(2, '_').collect();
+                if parts.len() == 2 && parts[1].len() == 1 {
+                    (Some(TableReference::bare(parts[1])), parts[0].to_string())
+                } else {
+                    (None, base.to_string())
                 }
-                LogicalPlan::SubqueryAlias(sq) => {
-                    // Pass parent_scope for correlated subqueries, but isolation is naturally handled
-                    // by the fact that child builds its own scope from TableScans.
-                    let (new_input, _child_scope) = self.remap_plan(&sq.input, parent_scope)?;
+            } else if let Some(q) = qualifier {
+                (Some(q.clone()), original_name.clone())
+            } else {
+                (None, original_name.clone())
+            };
 
-                    // Capture fields before moving new_input into SubqueryAlias
-                    let new_fields = new_input.schema().fields().clone();
+            if let Some(ref qual) = orig_qual {
+                // 1. Standard mapping
+                output_scope.add_column_mapping(
+                    Some(qual.clone()),
+                    orig_name.clone(),
+                    new_name.clone(),
+                );
 
-                    let new_plan = LogicalPlan::SubqueryAlias(datafusion::logical_expr::SubqueryAlias::try_new(
+                // 2. STRING FALLBACK: "qual.name" -> new_name
+                output_scope
+                    .add_string_mapping(format!("{}.{}", qual, orig_name), new_name.clone());
+            } else {
+                output_scope.add_column_mapping(None, orig_name.clone(), new_name.clone());
+            }
+        }
+
+        // Map inner relations to outer alias
+        for inner_rels in scope.visible_relations().values() {
+            for inner_rel in inner_rels {
+                output_scope.add_mapping(inner_rel.clone(), alias_ref.clone());
+            }
+        }
+
+        tracing::debug!(
+            target: "sql_gen::aliasing",
+            ?alias,
+            new_columns = ?new_column_names,
+            "Completed aliasing"
+        );
+
+        Ok((new_plan, output_scope))
+    }
+
+    #[allow(dead_code)]
+    fn ensure_aliased(
+        &self,
+        plan: LogicalPlan,
+        scope: RelationScope,
+    ) -> datafusion::error::Result<(LogicalPlan, RelationScope)> {
+        self.ensure_aliased_with_unique_columns(plan, scope, None)
+    }
+
+    /// Recursively remap the plan.
+    /// Returns: (Remapped Plan, Scope Exported by this plan)
+    fn remap_plan(
+        &self,
+        plan: &LogicalPlan,
+        parent_scope: &Option<Box<RelationScope>>,
+    ) -> datafusion::error::Result<(LogicalPlan, RelationScope)> {
+        use datafusion::error::DataFusionError;
+
+        match plan {
+            LogicalPlan::Projection(proj) => {
+                let (new_input, input_scope) = self.remap_plan(&proj.input, parent_scope)?;
+                // Removed: ensure_aliased call
+                let combined_scope = self.combine_scopes(&input_scope, parent_scope);
+
+                let initial_exprs = proj
+                    .expr
+                    .iter()
+                    .map(|e| self.remap_expr(e, &combined_scope))
+                    .collect::<datafusion::error::Result<Vec<_>>>()?;
+
+                let proj_plan = LogicalPlanBuilder::from(new_input)
+                    .project(initial_exprs)?
+                    .build()?;
+
+                // Use the resulting schema to populate the output scope.
+                // This ensures that outer nodes see exactly what this projection exports.
+                let mut new_output_scope = RelationScope::new();
+                new_output_scope.set_parent(input_scope.parent().clone());
+
+                // CRITICAL: Preserve mappings from input scope
+                // This ensures that column_mappings and alias_mappings created by
+                // wrapped join inputs are not lost when traversing through this Projection
+                new_output_scope.inherit_mappings_from(&input_scope);
+
+                for (qualifier, field) in proj_plan.schema().iter() {
+                    let field_name = field.name().clone();
+                    if let Some(rel) = qualifier {
+                        new_output_scope.register_relation(rel.clone(), vec![field_name]);
+                    } else {
+                        new_output_scope.register_unqualified_column(field_name);
+                    }
+                }
+
+                Ok((proj_plan, new_output_scope))
+            }
+            LogicalPlan::SubqueryAlias(sq) => {
+                // Pass parent_scope for correlated subqueries, but isolation is naturally handled
+                // by the fact that child builds its own scope from TableScans.
+                let (new_input, _child_scope) = self.remap_plan(&sq.input, parent_scope)?;
+
+                // Capture fields before moving new_input into SubqueryAlias
+                let new_fields = new_input.schema().fields().clone();
+
+                let new_plan =
+                    LogicalPlan::SubqueryAlias(datafusion::logical_expr::SubqueryAlias::try_new(
                         std::sync::Arc::new(new_input),
                         sq.alias.clone(),
                     )?);
 
-                    let mut output_scope = RelationScope::new();
-                    let alias_ref = sq.alias.clone();
-                    
-                    // Logic to map original column names to potentially renamed input columns (Smart Aliasing)
-                    let original_fields = sq.input.schema().fields();
-                    
-                    // Register NEW (physical) names as the visible targets in the scope
-                    // This ensures that when we resolve to 'derived_sq_X_col', it is valid in the scope
-                    let columns: Vec<String> = new_fields.iter().map(|f| f.name().clone()).collect();
-                    output_scope.register_relation(alias_ref.clone(), columns);
+                let mut output_scope = RelationScope::new();
+                let alias_ref = sq.alias.clone();
 
-                    if new_fields.len() == original_fields.len() {
-                        for (i, orig_field) in original_fields.iter().enumerate() {
-                            let new_name = new_fields[i].name();
-                            let orig_name = orig_field.name();
-                            
-                            if new_name != orig_name {
-                                tracing::trace!(
-                                    target: "sql_gen::scope",
-                                    alias = %sq.alias,
-                                    orig = %orig_name,
-                                    new = %new_name,
-                                    "Mapping subquery column"
-                                );
-                                // Map qualified reference: sub.user_id -> derived_user_id
-                                output_scope.add_column_mapping(
-                                    Some(sq.alias.clone()),
-                                    orig_name.clone(),
-                                    new_name.clone(),
-                                );
-                                // Map unqualified reference: user_id -> derived_user_id
-                                output_scope.add_column_mapping(
-                                    None,
-                                    orig_name.clone(),
-                                    new_name.clone(),
-                                );
-                            }
+                // Logic to map original column names to potentially renamed input columns (Smart Aliasing)
+                let original_fields = sq.input.schema().fields();
+
+                // Register NEW (physical) names as the visible targets in the scope
+                // This ensures that when we resolve to 'derived_sq_X_col', it is valid in the scope
+                let columns: Vec<String> = new_fields.iter().map(|f| f.name().clone()).collect();
+                output_scope.register_relation(alias_ref.clone(), columns);
+
+                if new_fields.len() == original_fields.len() {
+                    for (i, orig_field) in original_fields.iter().enumerate() {
+                        let new_name = new_fields[i].name();
+                        let orig_name = orig_field.name();
+
+                        if new_name != orig_name {
+                            tracing::trace!(
+                                target: "sql_gen::scope",
+                                alias = %sq.alias,
+                                orig = %orig_name,
+                                new = %new_name,
+                                "Mapping subquery column"
+                            );
+                            // Map qualified reference: sub.user_id -> derived_user_id
+                            output_scope.add_column_mapping(
+                                Some(sq.alias.clone()),
+                                orig_name.clone(),
+                                new_name.clone(),
+                            );
+                            // Map unqualified reference: user_id -> derived_user_id
+                            output_scope.add_column_mapping(
+                                None,
+                                orig_name.clone(),
+                                new_name.clone(),
+                            );
                         }
                     }
+                }
 
-                    // Map all relations visible in the child scope to this new alias.
-                    // This allows outer nodes to resolve "leaked" qualifiers (like inner table names)
-                    // to this subquery alias.
-                    for inner_rels in _child_scope.visible_relations().values() {
-                        for inner_rel in inner_rels {
-                            output_scope.add_mapping(inner_rel.clone(), alias_ref.clone());
+                // Map all relations visible in the child scope to this new alias.
+                // This allows outer nodes to resolve "leaked" qualifiers (like inner table names)
+                // to this subquery alias.
+                for inner_rels in _child_scope.visible_relations().values() {
+                    for inner_rel in inner_rels {
+                        output_scope.add_mapping(inner_rel.clone(), alias_ref.clone());
+                    }
+                }
+
+                Ok((new_plan, output_scope))
+            }
+            LogicalPlan::TableScan(scan) => {
+                let mut filter_remap_scope = RelationScope::new();
+                // When remapping filters inside the TableScan, we should enable them to
+                // see ALL columns from the table, not just the projected ones.
+                let all_columns = scan
+                    .source
+                    .schema()
+                    .fields()
+                    .iter()
+                    .map(|f| f.name().clone())
+                    .collect();
+                filter_remap_scope.register_relation(scan.table_name.clone(), all_columns);
+
+                let mut remapped_filters = Vec::new();
+                for filter in &scan.filters {
+                    remapped_filters.push(self.remap_expr(filter, &filter_remap_scope)?);
+                }
+
+                let mut new_scan = scan.clone();
+                new_scan.filters = remapped_filters;
+
+                // For the output scope (visible to parent nodes), we ONLY export projected columns.
+                let mut output_scope = RelationScope::new();
+                let projected_columns = scan
+                    .projected_schema
+                    .fields()
+                    .iter()
+                    .map(|f| f.name().clone())
+                    .collect();
+                output_scope.register_relation(scan.table_name.clone(), projected_columns);
+
+                Ok((LogicalPlan::TableScan(new_scan), output_scope))
+            }
+            LogicalPlan::Join(join) => {
+                tracing::debug!(
+                    target: "sql_gen::join",
+                    join_type = ?join.join_type,
+                    "Processing join"
+                );
+
+                let (new_left, left_scope) = self.remap_plan(&join.left, parent_scope)?;
+                let (new_right, right_scope) = self.remap_plan(&join.right, parent_scope)?;
+
+                tracing::trace!(
+                    target: "sql_gen::join",
+                    left_scope = ?left_scope.visible_relations(),
+                    right_scope = ?right_scope.visible_relations(),
+                    "Join inputs remapped"
+                );
+
+                #[cfg(feature = "aggressive-join-aliasing")]
+                let needs_alias_left = should_alias_join_input(&new_left);
+                #[cfg(not(feature = "aggressive-join-aliasing"))]
+                let needs_alias_left = matches!(new_left, LogicalPlan::Projection(_));
+
+                let (aliased_left, final_left_scope) = if needs_alias_left {
+                    let hint = extract_alias_hint(&new_left);
+                    self.ensure_aliased_with_unique_columns(new_left, left_scope, hint.as_deref())?
+                } else {
+                    (new_left, left_scope)
+                };
+
+                #[cfg(feature = "aggressive-join-aliasing")]
+                let needs_alias_right = should_alias_join_input(&new_right);
+                #[cfg(not(feature = "aggressive-join-aliasing"))]
+                let needs_alias_right = matches!(new_right, LogicalPlan::Projection(_));
+
+                let (aliased_right, final_right_scope) = if needs_alias_right {
+                    let hint = extract_alias_hint(&new_right);
+                    self.ensure_aliased_with_unique_columns(
+                        new_right,
+                        right_scope,
+                        hint.as_deref(),
+                    )?
+                } else {
+                    (new_right, right_scope)
+                };
+
+                let mut combined_scope = final_left_scope.clone();
+                combined_scope.merge(&final_right_scope);
+                let full_scope = self.combine_scopes(&combined_scope, parent_scope);
+
+                let new_filter = match &join.filter {
+                    Some(expr) => Some(self.remap_expr(expr, &full_scope)?),
+                    None => None,
+                };
+
+                let new_on: Vec<(Expr, Expr)> = join
+                    .on
+                    .iter()
+                    .map(|(l, r)| {
+                        Ok((
+                            self.remap_expr(l, &full_scope)?,
+                            self.remap_expr(r, &full_scope)?,
+                        ))
+                    })
+                    .collect::<datafusion::error::Result<Vec<_>>>()?;
+
+                let (left_keys, right_keys): (Vec<Expr>, Vec<Expr>) = new_on.into_iter().unzip();
+                let left_cols = left_keys
+                    .into_iter()
+                    .map(|e| {
+                        if let Expr::Column(c) = e {
+                            Ok(c)
+                        } else {
+                            Err(DataFusionError::Plan("Join key not a column".to_string()))
                         }
-                    }
+                    })
+                    .collect::<datafusion::error::Result<Vec<_>>>()?;
 
-                    Ok((new_plan, output_scope))
-                }
-                LogicalPlan::TableScan(scan) => {
-                    let mut filter_remap_scope = RelationScope::new();
-                    // When remapping filters inside the TableScan, we should enable them to
-                    // see ALL columns from the table, not just the projected ones.
-                    let all_columns = scan
-                        .source
-                        .schema()
-                        .fields()
-                        .iter()
-                        .map(|f| f.name().clone())
-                        .collect();
-                    filter_remap_scope.register_relation(scan.table_name.clone(), all_columns);
+                let right_cols = right_keys
+                    .into_iter()
+                    .map(|e| {
+                        if let Expr::Column(c) = e {
+                            Ok(c)
+                        } else {
+                            Err(DataFusionError::Plan("Join key not a column".to_string()))
+                        }
+                    })
+                    .collect::<datafusion::error::Result<Vec<_>>>()?;
 
-                    let mut remapped_filters = Vec::new();
-                    for filter in &scan.filters {
-                        remapped_filters.push(self.remap_expr(filter, &filter_remap_scope)?);
-                    }
+                tracing::debug!(
+                    target: "sql_gen::join",
+                    on = ?join.on,
+                    left_keys = ?left_cols,
+                    right_keys = ?right_cols,
+                    "Join construction starting"
+                );
 
-                    let mut new_scan = scan.clone();
-                    new_scan.filters = remapped_filters;
+                let new_plan = LogicalPlanBuilder::from(aliased_left)
+                    .join(
+                        aliased_right,
+                        join.join_type,
+                        (left_cols, right_cols),
+                        new_filter,
+                    )?
+                    .build()?;
 
-                    // For the output scope (visible to parent nodes), we ONLY export projected columns.
-                    let mut output_scope = RelationScope::new();
-                    let projected_columns = scan
-                        .projected_schema
-                        .fields()
-                        .iter()
-                        .map(|f| f.name().clone())
-                        .collect();
-                    output_scope.register_relation(scan.table_name.clone(), projected_columns);
-
-                    Ok((LogicalPlan::TableScan(new_scan), output_scope))
-                }
-                LogicalPlan::Join(join) => {
-                    tracing::debug!(
-                        target: "sql_gen::join",
-                        join_type = ?join.join_type,
-                        "Processing join"
-                    );
-
-                    let (new_left, left_scope) = self.remap_plan(&join.left, parent_scope)?;
-                    let (new_right, right_scope) = self.remap_plan(&join.right, parent_scope)?;
-
-                    tracing::trace!(
-                        target: "sql_gen::join",
-                        left_scope = ?left_scope.visible_relations(),
-                        right_scope = ?right_scope.visible_relations(),
-                        "Join inputs remapped"
-                    );
-
-                    #[cfg(feature = "aggressive-join-aliasing")]
-                    let needs_alias_left = should_alias_join_input(&new_left);
-                    #[cfg(not(feature = "aggressive-join-aliasing"))]
-                    let needs_alias_left = matches!(new_left, LogicalPlan::Projection(_));
-
-                    let (aliased_left, final_left_scope) = if needs_alias_left {
-                        let hint = extract_alias_hint(&new_left);
-                        self.ensure_aliased_with_unique_columns(new_left, left_scope, hint.as_deref())?
-                    } else {
-                        (new_left, left_scope)
-                    };
-
-                    #[cfg(feature = "aggressive-join-aliasing")]
-                    let needs_alias_right = should_alias_join_input(&new_right);
-                    #[cfg(not(feature = "aggressive-join-aliasing"))]
-                    let needs_alias_right = matches!(new_right, LogicalPlan::Projection(_));
-
-                    let (aliased_right, final_right_scope) = if needs_alias_right {
-                        let hint = extract_alias_hint(&new_right);
-                        self.ensure_aliased_with_unique_columns(new_right, right_scope, hint.as_deref())?
-                    } else {
-                        (new_right, right_scope)
-                    };
-
-                    let mut combined_scope = final_left_scope.clone();
-                    combined_scope.merge(&final_right_scope);
-                    let full_scope = self.combine_scopes(&combined_scope, parent_scope);
-
-                    let new_filter = match &join.filter {
-                        Some(expr) => Some(self.remap_expr(expr, &full_scope)?),
-                        None => None,
-                    };
-
-                    let new_on: Vec<(Expr, Expr)> = join
-                        .on
-                        .iter()
-                        .map(|(l, r)| {
-                            Ok((
-                                self.remap_expr(l, &full_scope)?,
-                                self.remap_expr(r, &full_scope)?,
-                            ))
-                        })
-                        .collect::<datafusion::error::Result<Vec<_>>>()?;
-
-                    let (left_keys, right_keys): (Vec<Expr>, Vec<Expr>) = new_on.into_iter().unzip();
-                    let left_cols = left_keys
-                        .into_iter()
-                        .map(|e| {
-                            if let Expr::Column(c) = e {
-                                Ok(c)
-                            } else {
-                                Err(DataFusionError::Plan("Join key not a column".to_string()))
-                            }
-                        })
-                        .collect::<datafusion::error::Result<Vec<_>>>()?;
-
-                    let right_cols = right_keys
-                        .into_iter()
-                        .map(|e| {
-                            if let Expr::Column(c) = e {
-                                Ok(c)
-                            } else {
-                                Err(DataFusionError::Plan("Join key not a column".to_string()))
-                            }
-                        })
-                        .collect::<datafusion::error::Result<Vec<_>>>()?;
-
-                    tracing::debug!(
-                        target: "sql_gen::join",
-                        on = ?join.on,
-                        left_keys = ?left_cols,
-                        right_keys = ?right_cols,
-                        "Join construction starting"
-                    );
-
-                    let new_plan = LogicalPlanBuilder::from(aliased_left)
-                        .join(
-                            aliased_right,
-                            join.join_type,
-                            (left_cols, right_cols),
-                            new_filter,
-                        )?
-                        .build()?;
-
-                    Ok((new_plan, combined_scope))
-                }
+                Ok((new_plan, combined_scope))
+            }
             LogicalPlan::Filter(f) => {
                 let (new_input, input_scope) = self.remap_plan(&f.input, parent_scope)?;
                 let combined_scope = self.combine_scopes(&input_scope, parent_scope);
@@ -619,22 +615,30 @@ struct PlanScopeRemapper {
                     input_string_mappings = ?input_scope.string_mappings,
                     "Aggregate input scope"
                 );
-                
+
                 // Fix for Unparser derived_projection issue: Wrap Projection inputs
                 #[cfg(not(feature = "aggressive-join-aliasing"))]
                 let (new_input, input_scope) = if matches!(new_input, LogicalPlan::Projection(_)) {
-                     let hint = extract_alias_hint(&new_input);
-                     self.ensure_aliased_with_unique_columns(new_input, input_scope, hint.as_deref())?
+                    let hint = extract_alias_hint(&new_input);
+                    self.ensure_aliased_with_unique_columns(
+                        new_input,
+                        input_scope,
+                        hint.as_deref(),
+                    )?
                 } else {
-                     (new_input, input_scope)
+                    (new_input, input_scope)
                 };
 
                 #[cfg(feature = "aggressive-join-aliasing")]
                 let (new_input, input_scope) = if should_alias_join_input(&new_input) {
-                     let hint = extract_alias_hint(&new_input);
-                     self.ensure_aliased_with_unique_columns(new_input, input_scope, hint.as_deref())?
+                    let hint = extract_alias_hint(&new_input);
+                    self.ensure_aliased_with_unique_columns(
+                        new_input,
+                        input_scope,
+                        hint.as_deref(),
+                    )?
                 } else {
-                     (new_input, input_scope)
+                    (new_input, input_scope)
                 };
 
                 let combined_scope = self.combine_scopes(&input_scope, parent_scope);
@@ -685,26 +689,28 @@ struct PlanScopeRemapper {
                     .build()?;
 
                 let mut output_scope = RelationScope::new();
-                
+
                 // CRITICAL: Inherit mappings from input scope
                 // This ensures that alias_mappings from wrapped join inputs are preserved
                 output_scope.inherit_mappings_from(&input_scope);
-                
+
                 for (qualifier, field) in agg_plan.schema().iter() {
                     let field_name = field.name().clone();
                     if let Some(rel) = qualifier {
-                         output_scope.register_relation(rel.clone(), vec![field_name]);
+                        output_scope.register_relation(rel.clone(), vec![field_name]);
                     } else {
-                         output_scope.register_unqualified_column(field_name);
+                        output_scope.register_unqualified_column(field_name);
                     }
                 }
-
-
 
                 // Register column mappings for flattened group expressions
                 // This allows outer nodes to resolve qualified references like `d.name` -> `d_name`
                 for (rel, old_name, new_name) in valid_mappings {
-                    output_scope.add_column_mapping(rel, old_name.to_string(), new_name.to_string());
+                    output_scope.add_column_mapping(
+                        rel,
+                        old_name.to_string(),
+                        new_name.to_string(),
+                    );
                 }
 
                 Ok((agg_plan, output_scope))
@@ -735,15 +741,13 @@ struct PlanScopeRemapper {
                     };
 
                     Ok((LogicalPlan::Extension(new_ext), inner_scope))
+                } else if plan.inputs().len() == 1 {
+                    let (new_input, input_scope) =
+                        self.remap_plan(plan.inputs()[0], parent_scope)?;
+                    let new_plan = plan.with_new_exprs(plan.expressions(), vec![new_input])?;
+                    Ok((new_plan, input_scope))
                 } else {
-                    if plan.inputs().len() == 1 {
-                        let (new_input, input_scope) =
-                            self.remap_plan(plan.inputs()[0], parent_scope)?;
-                        let new_plan = plan.with_new_exprs(plan.expressions(), vec![new_input])?;
-                        Ok((new_plan, input_scope))
-                    } else {
-                        Ok((plan.clone(), RelationScope::new()))
-                    }
+                    Ok((plan.clone(), RelationScope::new()))
                 }
             }
             _ => {
@@ -752,8 +756,6 @@ struct PlanScopeRemapper {
                         self.remap_plan(plan.inputs()[0], parent_scope)?;
                     let new_plan = plan.with_new_exprs(plan.expressions(), vec![new_input])?;
                     Ok((new_plan, input_scope))
-                } else if plan.inputs().is_empty() {
-                    Ok((plan.clone(), RelationScope::new()))
                 } else {
                     Ok((plan.clone(), RelationScope::new()))
                 }
@@ -787,14 +789,12 @@ struct PlanScopeRemapper {
     }
 }
 
-
-
 fn flatten_alias(rel: &TableReference, col_name: &str) -> String {
     let rel_str = rel.to_string().replace('.', "_").replace('"', "");
-    
+
     // Prevent recursive aliasing for already-wrapped relations
     if rel_str.starts_with("derived_sq") || rel_str.contains("derived") {
-         return col_name.to_string(); 
+        return col_name.to_string();
     }
 
     if col_name.starts_with(&rel_str) {
@@ -821,18 +821,18 @@ fn should_alias_join_input(plan: &LogicalPlan) -> bool {
     if !AGGRESSIVE_JOIN_ALIASING {
         return false;
     }
-    
+
     match plan {
         // Never wrap simple table scans or existing subquery aliases
         LogicalPlan::TableScan(_) | LogicalPlan::SubqueryAlias(_) => false,
-        
+
         // Don't wrap Projections - their schema is already explicit
         // and wrapping breaks the scope chain by hiding column_mappings
         LogicalPlan::Projection(_) => false,
-        
+
         // Wrap aggregates to avoid ambiguity
         LogicalPlan::Aggregate(_) => true,
-        
+
         // For other complex nodes, generally don't wrap to avoid scope issues
         _ => false,
     }
@@ -881,8 +881,6 @@ impl<'a> ScopedUnparser<'a> {
 mod tests {
     use super::*;
     use datafusion::prelude::*;
-    use std::sync::Arc;
-
 
     #[tokio::test]
     async fn test_postgres_quoting() {
@@ -971,7 +969,9 @@ mod tests {
             arrow::datatypes::Field::new("name", arrow::datatypes::DataType::Utf8, false),
             arrow::datatypes::Field::new("dept_id", arrow::datatypes::DataType::Int32, false),
         ]);
-        let table = std::sync::Arc::new(datafusion::datasource::empty::EmptyTable::new(std::sync::Arc::new(schema)));
+        let table = std::sync::Arc::new(datafusion::datasource::empty::EmptyTable::new(
+            std::sync::Arc::new(schema),
+        ));
         ctx.register_table("users", table.clone())?;
         ctx.register_table("depts", table.clone())?;
 
@@ -980,15 +980,23 @@ mod tests {
 
         let join = u.join(d, JoinType::Inner, &["dept_id"], &["id"], None)?;
         let proj = join.select(vec![col("u.name"), col("d.name")])?;
-        let agg = proj.aggregate(vec![col("d.name")], vec![datafusion::functions_aggregate::expr_fn::count(col("u.name"))])?;
+        let agg = proj.aggregate(
+            vec![col("d.name")],
+            vec![datafusion::functions_aggregate::expr_fn::count(col(
+                "u.name",
+            ))],
+        )?;
 
         let plan = agg.into_optimized_plan()?;
         let sql = get_sql_for_plan(&plan, "postgres")?.expect("sql generated");
         println!("Generated SQL:\n{}", sql);
 
         assert!(sql.contains("GROUP BY"));
-        assert!(!sql.contains("derived_sq_2_derived_sq_1"), "Found recursively nested alias!");
-        
+        assert!(
+            !sql.contains("derived_sq_2_derived_sq_1"),
+            "Found recursively nested alias!"
+        );
+
         Ok(())
     }
 
@@ -1035,9 +1043,4 @@ mod tests {
 
         Ok(())
     }
-
-
 }
-
-
-

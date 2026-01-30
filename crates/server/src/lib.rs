@@ -22,7 +22,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 // Global metrics registry
 pub static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
- 
+
 pub const METRICS_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
 // Example metrics
