@@ -145,6 +145,25 @@ impl StrakeServer {
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
+        // Critical Security Check: Governance Rules vs Authentication
+        // If governance rules (RLS/Contracts) are present, we MUST have an Enterprise-capable authenticator.
+        // The default OSS ApiKeyAuthenticator does not support RLS rules, leading to a fail-open scenario.
+        if self.authenticator.is_none() {
+            let has_enterprise_rules = self.extra_optimizer_rules.iter().any(|r| {
+                let name = r.name();
+                name == "policy_rewriter" || name == "contract_optimizer"
+            });
+
+            if has_enterprise_rules {
+                panic!(
+                    "Enterprise governance rules detected but no enterprise authenticator provided. \
+                     The OSS ApiKeyAuthenticator doesn't support RLS/Masking rules. \
+                     Ensure you're running via strake-enterprise main.rs which calls with_authenticator() \
+                     with EnterpriseApiKeyAuthenticator or OidcAuthenticator."
+                );
+            }
+        }
+
         // 0. Initialize Telemetry (OpenTelemetry) if enabled
         use strake_common::config::AppConfig;
         let app_config = AppConfig::from_file(&self.app_config_path)?;

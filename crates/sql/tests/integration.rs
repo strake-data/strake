@@ -1,7 +1,6 @@
 mod common;
 
 use anyhow::Result;
-use datafusion::logical_expr::{JoinType, LogicalPlan};
 use datafusion::prelude::*;
 use strake_sql::sql_gen::{get_sql_for_plan, is_substrait_source};
 
