@@ -10,18 +10,37 @@ use strake_common::models::{
 };
 use strake_runtime::federation::FederationEngine;
 
-pub fn create_api_router(engine: Arc<FederationEngine>) -> Router {
+use crate::license::{LicenseCache, LicenseState};
+
+#[derive(Clone)]
+pub struct QueryState {
+    pub engine: Arc<FederationEngine>,
+    pub license_cache: Arc<LicenseCache>,
+}
+
+pub fn create_api_router(
+    engine: Arc<FederationEngine>,
+    license_cache: Arc<LicenseCache>,
+) -> Router {
     Router::new()
         .merge(create_validation_router(engine.clone()))
         .merge(create_introspection_router(engine.clone()))
-        .merge(create_query_router(engine.clone()))
+        .merge(create_query_router(engine, license_cache))
 }
 
-pub fn create_query_router(engine: Arc<FederationEngine>) -> Router {
+pub fn create_query_router(
+    engine: Arc<FederationEngine>,
+    license_cache: Arc<LicenseCache>,
+) -> Router {
+    let state = Arc::new(QueryState {
+        engine,
+        license_cache,
+    });
+
     Router::new()
         .route("/sources", get(list_sources))
         .route("/query", post(execute_query))
-        .with_state(engine)
+        .with_state(state)
 }
 
 pub fn create_validation_router(engine: Arc<FederationEngine>) -> Router {
@@ -176,8 +195,8 @@ async fn introspect_tables(
     Json(config)
 }
 
-async fn list_sources(State(engine): State<Arc<FederationEngine>>) -> Json<SourcesConfig> {
-    let sources = engine.list_sources();
+async fn list_sources(State(state): State<Arc<QueryState>>) -> Json<SourcesConfig> {
+    let sources = state.engine.list_sources();
 
     // Map internal config::SourceConfig to models::SourceConfig
     let api_sources = sources
@@ -202,18 +221,27 @@ async fn list_sources(State(engine): State<Arc<FederationEngine>>) -> Json<Sourc
         .collect();
 
     Json(SourcesConfig {
-        domain: Some(engine.catalog_name.clone()),
+        domain: Some(state.engine.catalog_name.clone()),
         sources: api_sources,
     })
 }
 
 async fn execute_query(
-    State(engine): State<Arc<FederationEngine>>,
+    State(state): State<Arc<QueryState>>,
     Json(payload): Json<QueryRequest>,
 ) -> Json<QueryResponse> {
+    // License Check
+    if state.license_cache.current_state() == LicenseState::Invalid {
+        return Json(QueryResponse {
+            status: "error".to_string(),
+            message: Some("License invalid. Please renew subscription.".to_string()),
+            data: None,
+        });
+    }
+
     tracing::info!("Executing query: {}", payload.sql);
 
-    match engine.execute_query(&payload.sql, None).await {
+    match state.engine.execute_query(&payload.sql, None).await {
         Ok((_schema, batches, _warnings)) => {
             // Convert RecordBatches to JSON using ArrayWriter
             let mut buf = Vec::new();

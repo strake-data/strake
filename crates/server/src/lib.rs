@@ -54,6 +54,9 @@ pub use concurrency::{ConcurrencyLayer, ConnectionSlotManager};
 use flight_sql::StrakeFlightSqlService;
 pub use strake_common::auth::AuthenticatedUser;
 
+pub mod license;
+use license::{LicenseCache, LicenseValidator};
+
 pub struct StrakeServer {
     config_path: String,
     app_config_path: String,
@@ -65,6 +68,8 @@ pub struct StrakeServer {
     extra_optimizer_rules:
         Vec<Arc<dyn datafusion::optimizer::optimizer::OptimizerRule + Send + Sync>>,
     api_router: Router,
+    license_validator: Option<Arc<dyn LicenseValidator>>,
+    license_cache: Arc<LicenseCache>,
 }
 
 impl Default for StrakeServer {
@@ -79,6 +84,8 @@ impl Default for StrakeServer {
             extra_sources: vec![],
             extra_optimizer_rules: vec![],
             api_router: Router::new(),
+            license_validator: None,
+            license_cache: Arc::new(LicenseCache::new()),
         }
     }
 }
@@ -141,6 +148,11 @@ impl StrakeServer {
 
     pub fn with_config_path(mut self, path: impl Into<String>) -> Self {
         self.config_path = path.into();
+        self
+    }
+
+    pub fn with_license_validator(mut self, validator: Arc<dyn LicenseValidator>) -> Self {
+        self.license_validator = Some(validator);
         self
     }
 
@@ -282,7 +294,7 @@ impl StrakeServer {
             health_app = health_app.route("/metrics", get(metrics_handler));
         }
 
-        let base_api_router = api::create_api_router(engine.clone());
+        let base_api_router = api::create_api_router(engine.clone(), self.license_cache.clone());
         let mut final_v1 = base_api_router.merge(self.api_router);
 
         if let Some(auth) = &final_authenticator {
@@ -362,6 +374,7 @@ impl StrakeServer {
         let service = StrakeFlightSqlService {
             engine,
             server_name: app_config.server.name.clone(),
+            license_cache: self.license_cache.clone(),
         };
         let addr = app_config.server.listen_addr.parse()?;
 
@@ -396,6 +409,29 @@ impl StrakeServer {
         }
         let mut builder = builder.layer(ConcurrencyLayer::new(self.concurrency_manager));
 
+        // Spawn License Monitor if validator provided
+        // Must spawn BEFORE blocking on serve()
+        if let Some(validator) = &self.license_validator {
+            // Perform initial validation synchronously (well, await it) to ensure state is correct on startup
+            // Note: validator.validate() is async.
+            match validator.validate().await {
+                Ok(initial_state) => self.license_cache.update_state(initial_state),
+                Err(e) => {
+                    tracing::error!("Initial license validation failed during startup: {}", e);
+                    panic!(
+                        "Strake Server cannot start without valid license verification: {}",
+                        e
+                    );
+                }
+            }
+
+            license::spawn_license_monitor(
+                validator.clone(),
+                self.license_cache.clone(),
+                Duration::from_secs(60),
+            );
+        }
+
         if let Some(auth) = final_authenticator {
             let auth_layer = AuthLayer::new(auth);
             builder
@@ -411,6 +447,7 @@ impl StrakeServer {
         }
 
         strake_common::telemetry::shutdown_telemetry();
+
         Ok(())
     }
 }

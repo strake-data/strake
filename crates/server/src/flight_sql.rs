@@ -1,3 +1,4 @@
+use crate::license::{LicenseCache, LicenseState};
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -46,6 +47,7 @@ const DRIVER_VERSION: &str = "17.0.0";
 pub struct StrakeFlightSqlService {
     pub engine: Arc<FederationEngine>,
     pub server_name: String,
+    pub license_cache: Arc<LicenseCache>,
 }
 
 impl StrakeFlightSqlService {
@@ -117,6 +119,20 @@ impl StrakeFlightSqlService {
         sql: &str,
         request: &Request<T>,
     ) -> Result<Response<<Self as gRPCFlightService>::DoGetStream>, Status> {
+        // Atomic license check
+        match self.license_cache.current_state() {
+            LicenseState::Invalid => {
+                return Err(Status::permission_denied(
+                    "License invalid or expired. Please contact support.",
+                ));
+            }
+            LicenseState::Degraded => {
+                // TODO: Insert warning header
+                tracing::warn!("Executing query in degraded license state");
+            }
+            LicenseState::Valid => {}
+        }
+
         tracing::info!(sql = %sql, "Executing Flight SQL query");
 
         let user = self.get_user(request);
