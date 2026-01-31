@@ -169,7 +169,9 @@ async fn register_object_store(
             }
             "sftp" => {
                 #[cfg(not(unix))]
-                return Err(anyhow::anyhow!("SFTP is only supported on Unix systems"));
+                {
+                    anyhow::bail!("SFTP is only supported on Unix systems");
+                }
 
                 #[cfg(unix)]
                 {
@@ -398,12 +400,27 @@ pub fn ensure_schema(
     ctx: &SessionContext,
     catalog: &str,
     schema: &str,
-) -> Result<Arc<dyn SchemaProvider>> {
-    let cat = ctx
-        .catalog(catalog)
-        .ok_or(anyhow::anyhow!("Catalog not found"))?;
+) -> std::result::Result<Arc<dyn SchemaProvider>, strake_error::StrakeError> {
+    use strake_error::{ErrorCode, StrakeError};
+    let cat = ctx.catalog(catalog).ok_or_else(|| {
+        StrakeError::new(
+            ErrorCode::SourceNotFound,
+            format!("Catalog '{}' not found", catalog),
+        )
+    })?;
     if cat.schema(schema).is_none() {
-        cat.register_schema(schema, Arc::new(MemorySchemaProvider::new()))?;
+        cat.register_schema(schema, Arc::new(MemorySchemaProvider::new()))
+            .map_err(|e| {
+                StrakeError::new(
+                    ErrorCode::InternalPanic,
+                    format!("Failed to register schema: {}", e),
+                )
+            })?;
     }
-    Ok(cat.schema(schema).unwrap())
+    cat.schema(schema).ok_or_else(|| {
+        StrakeError::new(
+            ErrorCode::InternalPanic,
+            format!("Schema '{}' not found after registration", schema),
+        )
+    })
 }

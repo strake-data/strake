@@ -9,11 +9,10 @@ use datafusion_table_providers::sqlite::SqliteTableFactory;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::common::{
-    next_retry_delay, FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams,
-};
+use super::common::{FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams};
 use super::wrappers::register_tables;
 use strake_common::config::TableConfig;
+use strake_common::retry::retry_async;
 
 pub struct SqliteMetadataFetcher {
     #[allow(dead_code)]
@@ -29,44 +28,33 @@ impl SqlMetadataFetcher for SqliteMetadataFetcher {
 }
 
 pub async fn register_sqlite(params: SqlSourceParams<'_>) -> Result<()> {
-    let mut attempt = 0;
-    let retry = params.retry;
-    loop {
-        match try_register_sqlite(
-            params.context,
-            params.catalog_name,
-            params.name,
-            params.connection_string,
-            params.cb.clone(),
-            params.explicit_tables,
-        )
-        .await
-        {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                attempt += 1;
-                if attempt >= retry.max_attempts {
-                    tracing::error!(
-                        "Failed to register SQLite source '{}' after {} attempts: {}",
-                        params.name,
-                        retry.max_attempts,
-                        e
-                    );
-                    return Err(e);
-                }
-                let delay = next_retry_delay(attempt, retry.base_delay_ms, retry.max_delay_ms);
-                tracing::warn!(
-                    "Connection failed for source '{}'. Retrying in {:?} (Attempt {}/{}): {}",
-                    params.name,
-                    delay,
-                    attempt,
-                    retry.max_attempts,
-                    e
-                );
-                tokio::time::sleep(delay).await;
+    let context = params.context;
+    let catalog_name = params.catalog_name;
+    let name = params.name;
+    let connection_string = params.connection_string;
+    let cb = params.cb.clone();
+    let explicit_tables = params.explicit_tables;
+    let retry_settings = params.retry;
+
+    retry_async(
+        &format!("register_sqlite({})", name),
+        retry_settings,
+        move || {
+            let cb = cb.clone();
+            async move {
+                try_register_sqlite(
+                    context,
+                    catalog_name,
+                    name,
+                    connection_string,
+                    cb,
+                    explicit_tables,
+                )
+                .await
             }
-        }
-    }
+        },
+    )
+    .await
 }
 
 async fn try_register_sqlite(
@@ -178,18 +166,25 @@ impl SqlProviderFactory for FederatedSqliteTableFactory {
 }
 
 pub async fn introspect_sqlite_tables(db_path: &str) -> Result<Vec<String>> {
-    let conn = rusqlite::Connection::open(db_path)
-        .context("Failed to open SQLite database for introspection")?;
+    let db_path = db_path.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = rusqlite::Connection::open(&db_path)
+            .context("Failed to open SQLite database for introspection")?;
 
-    let mut stmt = conn
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-        .context("Failed to prepare SQLite introspection query")?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            )
+            .context("Failed to prepare SQLite introspection query")?;
 
-    let rows = stmt
-        .query_map([], |row| row.get(0))
-        .context("Failed to execute SQLite introspection query")?
-        .collect::<std::result::Result<Vec<String>, _>>()
-        .context("Failed to collect SQLite table names")?;
+        let rows = stmt
+            .query_map([], |row| row.get(0))
+            .context("Failed to execute SQLite introspection query")?
+            .collect::<std::result::Result<Vec<String>, _>>()
+            .context("Failed to collect SQLite table names")?;
 
-    Ok(rows)
+        Ok(rows)
+    })
+    .await
+    .context("Join error during introspection")?
 }

@@ -118,16 +118,12 @@ pub async fn register_flight_sql_source(
 
     // Ensure schema exists
     use datafusion::catalog::MemorySchemaProvider;
-    if context
+    let catalog = context
         .catalog("datafusion")
-        .unwrap()
-        .schema(name)
-        .is_none()
-    {
-        context
-            .catalog("datafusion")
-            .unwrap()
-            .register_schema(name, Arc::new(MemorySchemaProvider::new()))?;
+        .context("Catalog 'datafusion' not found")?;
+
+    if catalog.schema(name).is_none() {
+        catalog.register_schema(name, Arc::new(MemorySchemaProvider::new()))?;
     }
 
     for (_s_name, t_name) in discovered_tables {

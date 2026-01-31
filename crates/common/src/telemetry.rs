@@ -9,8 +9,7 @@ use anyhow::Result;
 #[cfg(feature = "telemetry")]
 use {
     opentelemetry::trace::TracerProvider, opentelemetry::KeyValue,
-    opentelemetry_otlp::WithExportConfig,
-    opentelemetry_sdk::metrics::PeriodicReader,
+    opentelemetry_otlp::WithExportConfig, opentelemetry_sdk::metrics::PeriodicReader,
     opentelemetry_sdk::trace::SdkTracerProvider, opentelemetry_sdk::Resource,
     tracing_opentelemetry::OpenTelemetryLayer,
 };
@@ -34,7 +33,10 @@ where
             .build()?;
 
         let resource = Resource::builder()
-            .with_attributes(vec![KeyValue::new("service.name", service_name.to_string())])
+            .with_attributes(vec![KeyValue::new(
+                "service.name",
+                service_name.to_string(),
+            )])
             .build();
 
         let provider = SdkTracerProvider::builder()
@@ -75,7 +77,10 @@ fn init_metrics(service_name: &str, endpoint: &str) -> Result<()> {
         .with_reader(reader)
         .with_resource(
             Resource::builder()
-                .with_attributes(vec![KeyValue::new("service.name", service_name.to_string())])
+                .with_attributes(vec![KeyValue::new(
+                    "service.name",
+                    service_name.to_string(),
+                )])
                 .build(),
         )
         .build();

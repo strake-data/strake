@@ -11,5 +11,6 @@ pub mod circuit_breaker;
 pub mod config;
 pub mod error;
 pub mod models;
+pub mod retry;
 pub mod scrubber;
 pub mod telemetry;

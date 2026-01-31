@@ -6,6 +6,7 @@ edition = "2021"
 
 [dependencies]
 strake-common = { path = "../common" }
+strake-error = { path = "../error" }
 strake-sql = { path = "../sql" }
 datafusion = { workspace = true }
 datafusion-table-providers = { workspace = true }

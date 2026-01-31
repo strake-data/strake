@@ -73,7 +73,7 @@ impl SQLExecutor for PostgresExecutor {
         let query = query.to_string();
         let schema_for_task = schema.clone();
 
-        tracing::info!(target: "federation", db = %connection_string, "PostgreSQL executing federated query: {}", query);
+        tracing::debug!(target: "federation", db = "[REDACTED]", "PostgreSQL executing federated query: {}", query);
 
         let batch_stream = futures::stream::once(async move {
             let (client, connection) =

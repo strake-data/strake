@@ -345,14 +345,14 @@ impl TableProvider for RestTableProvider {
         _limit: Option<usize>,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
         // Return a custom ExecutionPlan that iterates pages
-        Ok(Arc::new(RestExec::new(
+        Ok(Arc::new(RestExec::try_new(
             self.client.clone(),
             self.config.clone(),
             self.schema.clone(),
             _projection.cloned(),
             _limit,
             _filters.to_vec(),
-        )))
+        )?))
     }
 }
 
@@ -376,16 +376,21 @@ struct RestExec {
 }
 
 impl RestExec {
-    fn new(
+    fn try_new(
         client: Arc<reqwest::Client>,
         config: RestSourceConfig,
         schema: arrow::datatypes::SchemaRef,
         projection: Option<Vec<usize>>,
         limit: Option<usize>,
         filters: Vec<datafusion::logical_expr::Expr>,
-    ) -> Self {
+    ) -> datafusion::error::Result<Self> {
         let projected_schema = if let Some(proj) = &projection {
-            Arc::new(schema.project(proj).unwrap())
+            Arc::new(schema.project(proj).map_err(|e| {
+                datafusion::error::DataFusionError::Execution(format!(
+                    "Invalid projection for REST source: {}",
+                    e
+                ))
+            })?)
         } else {
             schema.clone()
         };
@@ -397,7 +402,7 @@ impl RestExec {
             Boundedness::Bounded,
         );
 
-        Self {
+        Ok(Self {
             client,
             config,
             schema: projected_schema,
@@ -405,7 +410,7 @@ impl RestExec {
             limit,
             filters,
             cache,
-        }
+        })
     }
 }
 
@@ -699,13 +704,6 @@ async fn fetch_page(
             new_offset,
         ));
     }
-    if records.is_empty() {
-        return Ok((
-            arrow::record_batch::RecordBatch::new_empty(schema.clone()),
-            None,
-            new_offset,
-        ));
-    }
     tracing::debug!(
         "RestExec: Sent request to {}, got {} records",
         url,
@@ -914,13 +912,15 @@ mod tests {
         use datafusion::logical_expr::{col, lit};
         let filter = col("id").eq(lit(123i64));
 
-        let exec = RestExec::new(client, config, schema, None, None, vec![filter]);
+        let exec = RestExec::try_new(client, config, schema, None, None, vec![filter])
+            .expect("Failed to create execution plan");
 
         let stream = exec
             .execute(0, Arc::new(datafusion::execution::TaskContext::default()))
             .expect("Execution failed");
 
-        let batches: Vec<_> = futures::StreamExt::collect(stream).await;
+        let batches: Vec<datafusion::common::Result<arrow::record_batch::RecordBatch>> =
+            futures::StreamExt::collect(stream).await;
         // Check results
         assert!(!batches.is_empty());
         match &batches[0] {

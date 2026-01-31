@@ -59,7 +59,8 @@ impl Authenticator for ApiKeyAuthenticator {
         }
 
         // 2. Verify Credentials
-        let (user_id, _key_id, permissions) = verify_api_key_credentials(&self.pool, token_str).await?;
+        let (user_id, _key_id, permissions) =
+            verify_api_key_credentials(&self.pool, token_str).await?;
 
         let user = AuthenticatedUser {
             id: user_id,

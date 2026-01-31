@@ -6,11 +6,10 @@ use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
 use std::sync::Arc;
 
-use super::common::{
-    next_retry_delay, FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams,
-};
+use super::common::{FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams};
 use super::wrappers::register_tables;
 use strake_common::config::TableConfig;
+use strake_common::retry::retry_async;
 
 /// DuckDB Metadata Fetcher
 pub struct DuckDBMetadataFetcher {
@@ -44,17 +43,15 @@ pub struct DuckDBTableProvider {
 
 impl DuckDBTableProvider {
     pub async fn new(connection_string: String, table_name: String) -> Result<Self> {
-        // Infer schema using PRAGMA table_info
+        let conn_str = connection_string.clone();
+        let tbl_name = table_name.clone();
 
-        let connection_string = connection_string.clone();
-        let table_name = table_name.clone();
-
-        let (fields, _conn) = {
-            let conn = duckdb::Connection::open(&connection_string)
+        let fields = tokio::task::spawn_blocking(move || {
+            let conn = duckdb::Connection::open(&conn_str)
                 .context("Failed to open DuckDB for schema inference")?;
 
             let mut stmt = conn
-                .prepare(&format!("PRAGMA table_info('{}')", table_name))
+                .prepare(&format!("PRAGMA table_info('{}')", tbl_name))
                 .context("Failed to prepare table_info query")?;
 
             let rows = stmt
@@ -72,8 +69,10 @@ impl DuckDBTableProvider {
                 let dt = map_duckdb_type(&type_str);
                 fields.push(Field::new(name, dt, !notnull));
             }
-            (fields, conn)
-        };
+            Ok::<_, anyhow::Error>(fields)
+        })
+        .await
+        .context("Join error during schema inference")??;
 
         Ok(Self {
             connection_string,
@@ -84,9 +83,9 @@ impl DuckDBTableProvider {
     pub async fn execute_substrait_plan(&self, plan_bytes: Vec<u8>) -> Result<RecordBatch> {
         // Isolate DuckDB interaction
         let connection_string = self.connection_string.clone();
+        let schema = self.schema.clone();
 
-        // TODO: Use spawn_blocking to avoid blocking async executor
-        let batch = {
+        let batch = tokio::task::spawn_blocking(move || {
             let conn = duckdb::Connection::open(&connection_string)?;
 
             // Enable Substrait extension
@@ -105,8 +104,10 @@ impl DuckDBTableProvider {
                 .context("Failed to execute substrait query")?;
 
             // Convert to RecordBatch
-            convert_duckdb_rows_to_arrow(&mut rows, self.schema.clone())?
-        };
+            convert_duckdb_rows_to_arrow(&mut rows, schema)
+        })
+        .await
+        .context("Join error during substrait execution")??;
 
         Ok(batch)
     }
@@ -172,31 +173,30 @@ impl TableProvider for DuckDBTableProvider {
         limit: Option<usize>,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
         // Isolate DuckDB interaction to ensure no non-Send types cross await points
-        let batch = {
-            let conn = duckdb::Connection::open(&self.connection_string)
-                .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?;
+        let connection_string = self.connection_string.clone();
+        let table_name = self.table_name.clone();
 
-            let target_schema = if let Some(proj) = projection {
-                self.schema.project(proj)?
-            } else {
-                self.schema.as_ref().clone()
-            };
+        let target_schema = if let Some(proj) = projection {
+            self.schema.project(proj)?
+        } else {
+            self.schema.as_ref().clone()
+        };
+        let target_schema = Arc::new(target_schema);
 
-            let col_names: Vec<String> = target_schema
-                .fields()
-                .iter()
-                .map(|f| format!("\"{}\"", f.name()))
-                .collect();
+        // Generate SQL Query outside blocking task
+        let col_names: Vec<String> = target_schema
+            .fields()
+            .iter()
+            .map(|f| format!("\"{}\"", f.name()))
+            .collect();
 
-            // Build Query with Pushdown
-            let mut query = format!("SELECT {} FROM {}", col_names.join(", "), self.table_name);
+        let mut query = format!("SELECT {} FROM {}", col_names.join(", "), table_name);
 
-            // Filters
-            // Use Postgres dialect as it's compatible with DuckDB quote style
+        let mut where_clauses = Vec::new();
+        {
             let dialect = datafusion::sql::unparser::dialect::PostgreSqlDialect {};
             let unparser = datafusion::sql::unparser::Unparser::new(&dialect);
 
-            let mut where_clauses = Vec::new();
             for filter in filters {
                 if let Ok(sql) = unparser.expr_to_sql(filter) {
                     where_clauses.push(sql.to_string());
@@ -204,18 +204,22 @@ impl TableProvider for DuckDBTableProvider {
                     tracing::warn!("Failed to unparse filter for pushdown: {:?}", filter);
                 }
             }
+        }
 
-            if !where_clauses.is_empty() {
-                query.push_str(" WHERE ");
-                query.push_str(&where_clauses.join(" AND "));
-            }
+        if !where_clauses.is_empty() {
+            query.push_str(" WHERE ");
+            query.push_str(&where_clauses.join(" AND "));
+        }
 
-            // Limit
-            if let Some(n) = limit {
-                query.push_str(&format!(" LIMIT {}", n));
-            }
+        if let Some(n) = limit {
+            query.push_str(&format!(" LIMIT {}", n));
+        }
 
-            tracing::info!(query = %query, "Executing DuckDB Pushdown Query");
+        tracing::info!(query = %query, "Executing DuckDB Pushdown Query");
+
+        let batch = tokio::task::spawn_blocking(move || {
+            let conn = duckdb::Connection::open(&connection_string)
+                .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?;
 
             let mut stmt = conn
                 .prepare(&query)
@@ -225,9 +229,13 @@ impl TableProvider for DuckDBTableProvider {
                 .query([])
                 .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?;
 
-            convert_duckdb_rows_to_arrow(&mut rows, Arc::new(target_schema))
-                .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?
-        };
+            convert_duckdb_rows_to_arrow(&mut rows, target_schema)
+                .map_err(|e| datafusion::error::DataFusionError::External(e.into()))
+        })
+        .await
+        .map_err(|e| {
+            datafusion::error::DataFusionError::Execution(format!("Join Error: {}", e))
+        })??;
 
         let mem_table = MemTable::try_new(batch.schema(), vec![vec![batch]])?;
 
@@ -260,7 +268,7 @@ fn convert_duckdb_rows_to_arrow(rows: &mut duckdb::Rows, schema: SchemaRef) -> R
             if i >= row.as_ref().column_count() {
                 continue; // or error
             }
-            let val_ref = row.get_ref(i).unwrap();
+            let val_ref = row.get_ref(i)?;
             let scalar = duck_val_to_scalar(val_ref, schema.field(i).data_type());
             buffer.push(scalar);
         }
@@ -336,44 +344,33 @@ impl SqlProviderFactory for DuckDBTableFactory {
 }
 
 pub async fn register_duckdb(params: SqlSourceParams<'_>) -> Result<()> {
-    let mut attempt = 0;
-    let retry = params.retry;
-    loop {
-        match try_register_duckdb(
-            params.context,
-            params.catalog_name,
-            params.name,
-            params.connection_string,
-            params.cb.clone(),
-            params.explicit_tables,
-        )
-        .await
-        {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                attempt += 1;
-                if attempt >= retry.max_attempts {
-                    tracing::error!(
-                        "Failed to register DuckDB source '{}' after {} attempts: {}",
-                        params.name,
-                        retry.max_attempts,
-                        e
-                    );
-                    return Err(e);
-                }
-                let delay = next_retry_delay(attempt, retry.base_delay_ms, retry.max_delay_ms);
-                tracing::warn!(
-                    "Connection failed for source '{}'. Retrying in {:?} (Attempt {}/{}): {}",
-                    params.name,
-                    delay,
-                    attempt,
-                    retry.max_attempts,
-                    e
-                );
-                tokio::time::sleep(delay).await;
+    let context = params.context;
+    let catalog_name = params.catalog_name;
+    let name = params.name;
+    let connection_string = params.connection_string;
+    let cb = params.cb.clone();
+    let explicit_tables = params.explicit_tables;
+    let retry_settings = params.retry;
+
+    retry_async(
+        &format!("register_duckdb({})", name),
+        retry_settings,
+        move || {
+            let cb = cb.clone();
+            async move {
+                try_register_duckdb(
+                    context,
+                    catalog_name,
+                    name,
+                    connection_string,
+                    cb,
+                    explicit_tables,
+                )
+                .await
             }
-        }
-    }
+        },
+    )
+    .await
 }
 
 async fn try_register_duckdb(
@@ -426,20 +423,25 @@ async fn try_register_duckdb(
 }
 
 pub async fn introspect_duckdb_tables(db_path: &str) -> Result<Vec<String>> {
-    let conn = duckdb::Connection::open(db_path)
-        .context("Failed to open DuckDB database for introspection")?;
+    let db_path = db_path.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = duckdb::Connection::open(&db_path)
+            .context("Failed to open DuckDB database for introspection")?;
 
-    let mut stmt = conn
-        .prepare("SELECT table_name FROM information_schema.tables WHERE table_schema='main'")
-        .context("Failed to prepare DuckDB introspection query")?;
+        let mut stmt = conn
+            .prepare("SELECT table_name FROM information_schema.tables WHERE table_schema='main'")
+            .context("Failed to prepare DuckDB introspection query")?;
 
-    let rows = stmt
-        .query_map([], |row| row.get(0))
-        .context("Failed to execute DuckDB introspection query")?
-        .collect::<std::result::Result<Vec<String>, _>>()
-        .context("Failed to collect DuckDB table names")?;
+        let rows = stmt
+            .query_map([], |row| row.get(0))
+            .context("Failed to execute DuckDB introspection query")?
+            .collect::<std::result::Result<Vec<String>, _>>()
+            .context("Failed to collect DuckDB table names")?;
 
-    Ok(rows)
+        Ok(rows)
+    })
+    .await
+    .context("Join error during introspection")?
 }
 
 #[cfg(test)]

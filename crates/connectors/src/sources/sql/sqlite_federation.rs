@@ -57,14 +57,15 @@ impl SQLExecutor for SqliteExecutor {
         let query = query.to_string();
         let schema_for_task = schema.clone();
 
-        tracing::info!(target: "federation", db = %connection_string, "SQLite executing federated query: {}", query);
+        tracing::debug!(target: "federation", db = "[REDACTED]", "SQLite executing federated query: {}", query);
 
         let batch_stream = futures::stream::once(async move {
             tokio::task::spawn_blocking(move || {
                 let conn = rusqlite::Connection::open(&connection_string)
                     .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
 
-                let mut stmt = conn.prepare(&query)
+                let mut stmt = conn
+                    .prepare(&query)
                     .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
 
                 let column_count = schema_for_task.fields().len();
@@ -74,52 +75,89 @@ impl SQLExecutor for SqliteExecutor {
                     match field.data_type() {
                         DataType::Int64 => builders.push(Box::new(Int64Builder::new())),
                         DataType::Float64 => builders.push(Box::new(Float64Builder::new())),
-                        DataType::Utf8 | DataType::LargeUtf8 => builders.push(Box::new(StringBuilder::new())),
-                        dt => return Err(datafusion::error::DataFusionError::NotImplemented(
-                            format!("SQLite federation: Unsupported data type: {:?}", dt)
-                        )),
+                        DataType::Utf8 | DataType::LargeUtf8 => {
+                            builders.push(Box::new(StringBuilder::new()))
+                        }
+                        dt => {
+                            return Err(datafusion::error::DataFusionError::NotImplemented(
+                                format!("SQLite federation: Unsupported data type: {:?}", dt),
+                            ))
+                        }
                     }
                 }
 
                 // Let's use simpler rows iterator
-                let mut rows = stmt.query([])
+                let mut rows = stmt
+                    .query([])
                     .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
 
                 // Iterate over rows
-                while let Some(row) = rows.next().map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))? {
+                while let Some(row) = rows
+                    .next()
+                    .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?
+                {
                     for (i, builder) in builders.iter_mut().enumerate() {
-                        let val_ref = row.get_ref(i).unwrap(); // Index check should be safe based on schema
+                        let val_ref = row.get_ref(i).map_err(|e| {
+                            datafusion::error::DataFusionError::External(Box::new(e))
+                        })?;
+
                         match builder.as_any_mut().downcast_mut::<Int64Builder>() {
-                            Some(b) => {
-                                match val_ref {
-                                    ValueRef::Integer(v) => b.append_value(v),
-                                    ValueRef::Null => b.append_null(),
-                                    _ => return Err(datafusion::error::DataFusionError::Execution(format!("Expected Int64 at col {}", i))),
+                            Some(b) => match val_ref {
+                                ValueRef::Integer(v) => b.append_value(v),
+                                ValueRef::Null => b.append_null(),
+                                _ => {
+                                    return Err(datafusion::error::DataFusionError::Execution(
+                                        format!("Expected Int64 at col {}", i),
+                                    ))
                                 }
-                            }
+                            },
                             None => match builder.as_any_mut().downcast_mut::<Float64Builder>() {
-                                Some(b) => {
-                                    match val_ref {
-                                        ValueRef::Real(v) => b.append_value(v),
-                                        ValueRef::Integer(v) => b.append_value(v as f64),
-                                        ValueRef::Null => b.append_null(),
-                                        _ => return Err(datafusion::error::DataFusionError::Execution(format!("Expected Float64 at col {}", i))),
+                                Some(b) => match val_ref {
+                                    ValueRef::Real(v) => b.append_value(v),
+                                    ValueRef::Integer(v) => b.append_value(v as f64),
+                                    ValueRef::Null => b.append_null(),
+                                    _ => {
+                                        return Err(datafusion::error::DataFusionError::Execution(
+                                            format!("Expected Float64 at col {}", i),
+                                        ))
                                     }
-                                }
-                                None => match builder.as_any_mut().downcast_mut::<StringBuilder>() {
-                                    Some(b) => {
-                                        match val_ref {
-                                            ValueRef::Text(v) => b.append_value(std::str::from_utf8(v).unwrap()),
-                                            ValueRef::Null => b.append_null(),
-                                            // Auto-cast other types to string if needed?
-                                            ValueRef::Integer(v) => b.append_value(v.to_string()),
-                                            ValueRef::Real(v) => b.append_value(v.to_string()),
-                                            _ => return Err(datafusion::error::DataFusionError::Execution(format!("Expected String at col {}", i))),
+                                },
+                                None => {
+                                    match builder.as_any_mut().downcast_mut::<StringBuilder>() {
+                                        Some(b) => {
+                                            match val_ref {
+                                                ValueRef::Text(v) => {
+                                                    let s = std::str::from_utf8(v).map_err(|e| {
+                                            datafusion::error::DataFusionError::Execution(format!(
+                                                "Invalid UTF-8 at col {}: {}",
+                                                i, e
+                                            ))
+                                        })?;
+                                                    b.append_value(s)
+                                                }
+                                                ValueRef::Null => b.append_null(),
+                                                // Auto-cast other types to string if needed?
+                                                ValueRef::Integer(v) => {
+                                                    b.append_value(v.to_string())
+                                                }
+                                                ValueRef::Real(v) => b.append_value(v.to_string()),
+                                                _ => return Err(
+                                                    datafusion::error::DataFusionError::Execution(
+                                                        format!("Expected String at col {}", i),
+                                                    ),
+                                                ),
+                                            }
+                                        }
+                                        None => {
+                                            return Err(
+                                                datafusion::error::DataFusionError::Internal(
+                                                    "Builder type mismatch".to_string(),
+                                                ),
+                                            )
                                         }
                                     }
-                                    None => return Err(datafusion::error::DataFusionError::Internal("Builder type mismatch".to_string())),
                                 }
-                            }
+                            },
                         }
                     }
                 }
@@ -131,7 +169,9 @@ impl SQLExecutor for SqliteExecutor {
                 Ok(batch)
             })
             .await
-            .map_err(|e| datafusion::error::DataFusionError::Execution(format!("Join error: {}", e)))?
+            .map_err(|e| {
+                datafusion::error::DataFusionError::Execution(format!("Join error: {}", e))
+            })?
         });
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(

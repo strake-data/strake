@@ -10,11 +10,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use url::Url;
 
-use super::common::{
-    next_retry_delay, FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams,
-};
+use super::common::{FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams};
 use super::wrappers::register_tables;
 use strake_common::config::TableConfig;
+use strake_common::retry::retry_async;
 
 pub struct ClickHouseMetadataFetcher;
 
@@ -45,44 +44,33 @@ impl SqlProviderFactory for ClickHouseTableFactory {
 }
 
 pub async fn register_clickhouse(params: SqlSourceParams<'_>) -> Result<()> {
-    let mut attempt = 0;
-    let retry = params.retry;
-    loop {
-        match try_register_clickhouse(
-            params.context,
-            params.catalog_name,
-            params.name,
-            params.connection_string,
-            params.cb.clone(),
-            params.explicit_tables,
-        )
-        .await
-        {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                attempt += 1;
-                if attempt >= retry.max_attempts {
-                    tracing::error!(
-                        "Failed to register ClickHouse source '{}' after {} attempts: {}",
-                        params.name,
-                        retry.max_attempts,
-                        e
-                    );
-                    return Err(e);
-                }
-                let delay = next_retry_delay(attempt, retry.base_delay_ms, retry.max_delay_ms);
-                tracing::warn!(
-                    "Connection failed for ClickHouse source '{}'. Retrying in {:?} (Attempt {}/{}): {}",
-                    params.name,
-                    delay,
-                    attempt,
-                    retry.max_attempts,
-                    e
-                );
-                tokio::time::sleep(delay).await;
+    let context = params.context;
+    let catalog_name = params.catalog_name;
+    let name = params.name;
+    let connection_string = params.connection_string;
+    let cb = params.cb.clone();
+    let explicit_tables = params.explicit_tables;
+    let retry_settings = params.retry;
+
+    retry_async(
+        &format!("register_clickhouse({})", name),
+        retry_settings,
+        move || {
+            let cb = cb.clone();
+            async move {
+                try_register_clickhouse(
+                    context,
+                    catalog_name,
+                    name,
+                    connection_string,
+                    cb,
+                    explicit_tables,
+                )
+                .await
             }
-        }
-    }
+        },
+    )
+    .await
 }
 
 async fn try_register_clickhouse(

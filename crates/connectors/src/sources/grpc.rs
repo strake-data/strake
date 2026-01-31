@@ -187,12 +187,12 @@ impl TableProvider for GrpcTableProvider {
         _filters: &[datafusion::prelude::Expr],
         _limit: Option<usize>,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        let exec = GrpcExec::new(
+        let exec = GrpcExec::try_new(
             self.config.clone(),
             self.schema.clone(),
             _projection.cloned(),
             _limit,
-        );
+        )?;
         Ok(Arc::new(exec))
     }
 }
@@ -209,14 +209,19 @@ struct GrpcExec {
 }
 
 impl GrpcExec {
-    fn new(
+    fn try_new(
         config: GrpcSourceConfig,
         schema: arrow::datatypes::SchemaRef,
         projection: Option<Vec<usize>>,
         limit: Option<usize>,
-    ) -> Self {
+    ) -> datafusion::error::Result<Self> {
         let projected_schema = if let Some(proj) = &projection {
-            Arc::new(schema.project(proj).unwrap())
+            Arc::new(schema.project(proj).map_err(|e| {
+                datafusion::error::DataFusionError::Execution(format!(
+                    "Invalid projection for gRPC source: {}",
+                    e
+                ))
+            })?)
         } else {
             schema.clone()
         };
@@ -228,13 +233,13 @@ impl GrpcExec {
             Boundedness::Bounded,
         );
 
-        Self {
+        Ok(Self {
             config,
             schema: projected_schema,
             projection,
             limit,
             cache,
-        }
+        })
     }
 }
 
@@ -286,25 +291,37 @@ impl ExecutionPlan for GrpcExec {
         // Return a stream that executes gRPC in background
         let stream = futures::stream::once(async move {
             // 1. Load Descriptor Pool
-            let descriptor_path = config.descriptor_set.ok_or_else(|| {
-                datafusion::error::DataFusionError::Execution(
-                    "No descriptor_set provided. Reflection not yet supported.".to_string(),
-                )
-            })?;
+            // File I/O offloaded to blocking pool
+            let descriptor_path = config
+                .descriptor_set
+                .as_ref()
+                .ok_or_else(|| {
+                    datafusion::error::DataFusionError::Execution(
+                        "No descriptor_set provided. Reflection not yet supported.".to_string(),
+                    )
+                })?
+                .clone();
 
-            let bytes = std::fs::read(&descriptor_path).map_err(|e| {
-                datafusion::error::DataFusionError::Execution(format!(
-                    "Failed to read descriptor file: {}",
-                    e
-                ))
-            })?;
+            let pool = tokio::task::spawn_blocking(move || {
+                let bytes = std::fs::read(&descriptor_path).map_err(|e| {
+                    datafusion::error::DataFusionError::Execution(format!(
+                        "Failed to read descriptor file: {}",
+                        e
+                    ))
+                })?;
 
-            let pool = DescriptorPool::decode(bytes.as_slice()).map_err(|e| {
-                datafusion::error::DataFusionError::Execution(format!(
-                    "Failed to decode descriptor pool: {}",
-                    e
-                ))
-            })?;
+                let pool = DescriptorPool::decode(bytes.as_slice()).map_err(|e| {
+                    datafusion::error::DataFusionError::Execution(format!(
+                        "Failed to decode descriptor pool: {}",
+                        e
+                    ))
+                })?;
+                Ok::<_, datafusion::error::DataFusionError>(pool)
+            })
+            .await
+            .map_err(|join_err| {
+                datafusion::error::DataFusionError::Execution(format!("Join error: {}", join_err))
+            })??;
 
             // 2. Resolve Service and Method
             let service_name = &config.service;
@@ -340,11 +357,7 @@ impl ExecutionPlan for GrpcExec {
                     ))
                 })?;
 
-                // Need to convert JSON to DynamicMessage.
-                // prost-reflect has `transcode_key_to_descriptor` helper? No.
-                // It has `deserialize` for `DynamicMessage` via serde if `serde` feature is enabled.
-                // Currently `strake-connectors` relies on `prost-reflect`. Let's assume serde integration is active or we manually map.
-                // Use serde::de::DeserializeSeed trait implemented by MessageDescriptor
+                // Convert JSON body to DynamicMessage using serde integration provided by prost-reflect
                 use serde::de::DeserializeSeed;
                 use serde::de::IntoDeserializer;
 

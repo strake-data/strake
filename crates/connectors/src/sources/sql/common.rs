@@ -6,7 +6,6 @@ use datafusion::sql::TableReference;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 #[derive(Debug, Default)]
 pub struct FetchedMetadata {
@@ -38,14 +37,6 @@ pub enum SqlDialect {
     Clickhouse,
     #[serde(alias = "duckdb")]
     DuckDB,
-}
-
-pub fn next_retry_delay(attempt: u32, base_ms: u64, max_ms: u64) -> Duration {
-    let multiplier = 2_u64.saturating_pow(attempt);
-    let delay = base_ms.saturating_mul(multiplier);
-    let jitter = rand::random::<u64>() % 1000; // 1s jitter max
-    let total = delay.saturating_add(jitter);
-    Duration::from_millis(total.min(max_ms))
 }
 
 pub struct SqlSourceParams<'a> {

@@ -27,6 +27,7 @@ url = { workspace = true }
 arrow = { workspace = true }
 regex = "1.10"
 once_cell = { workspace = true }
+rand = "0.9"
 
 [features]
 default = []
