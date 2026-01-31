@@ -88,7 +88,7 @@ pub async fn describe(
                 if col.unique {
                     attribs.push("UNIQUE".yellow().to_string());
                 }
-                if col.is_not_null {
+                if col.not_null {
                     attribs.push("NOT NULL".dimmed().to_string());
                 }
 

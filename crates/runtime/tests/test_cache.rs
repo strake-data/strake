@@ -32,7 +32,7 @@ async fn test_cache_speeds_up_repeated_query() -> anyhow::Result<()> {
     // Create authenticated user for cache key generation
     let user = AuthenticatedUser {
         id: "test_user".to_string(),
-        permissions: vec!["read".to_string()],
+        permissions: vec!["read".to_string()].into(),
         rules: HashMap::new(),
     };
 
@@ -128,13 +128,13 @@ async fn test_cache_isolation_by_user() -> anyhow::Result<()> {
 
     let user1 = AuthenticatedUser {
         id: "user1".to_string(),
-        permissions: vec!["read".to_string()],
+        permissions: vec!["read".to_string()].into(),
         rules: HashMap::new(),
     };
 
     let user2 = AuthenticatedUser {
         id: "user2".to_string(),
-        permissions: vec!["read".to_string()],
+        permissions: vec!["read".to_string()].into(),
         rules: HashMap::new(),
     };
 
@@ -194,7 +194,7 @@ async fn test_cache_disabled() -> anyhow::Result<()> {
 
     let user = AuthenticatedUser {
         id: "test_user".to_string(),
-        permissions: vec!["read".to_string()],
+        permissions: vec!["read".to_string()].into(),
         rules: HashMap::new(),
     };
 
@@ -249,7 +249,7 @@ async fn test_cache_performance_improvement() -> anyhow::Result<()> {
 
     let user = AuthenticatedUser {
         id: "perf_test_user".to_string(),
-        permissions: vec!["read".to_string()],
+        permissions: vec!["read".to_string()].into(),
         rules: HashMap::new(),
     };
 
@@ -347,7 +347,7 @@ async fn test_cache_large_dataset() -> anyhow::Result<()> {
 
     let user = AuthenticatedUser {
         id: "large_dataset_user".to_string(),
-        permissions: vec!["read".to_string()],
+        permissions: vec!["read".to_string()].into(),
         rules: HashMap::new(),
     };
 
@@ -509,7 +509,7 @@ async fn test_metadata_persistence() -> anyhow::Result<()> {
 
     let user = AuthenticatedUser {
         id: "persist_user".to_string(),
-        permissions: vec!["read".to_string()],
+        permissions: vec!["read".to_string()].into(),
         rules: HashMap::new(),
     };
 
@@ -593,28 +593,36 @@ async fn test_per_datasource_cache_config() -> anyhow::Result<()> {
     // Define sources
     let source_enabled = SourceConfig {
         name: "cached_source".to_string(),
-        r#type: "mock".to_string(),
+        source_type: "mock".to_string(),
+        url: None,
         default_limit: None,
-        config: serde_yaml::Value::Null,
+        config: serde_json::Value::Null,
         cache: Some(QueryCacheConfig {
             enabled: true,
             directory: "/tmp".to_string(),
             max_size_mb: 100,
             ttl_seconds: 3600,
         }),
+        username: None,
+        password: None,
+        tables: vec![],
     };
 
     let source_disabled = SourceConfig {
         name: "uncached_source".to_string(),
-        r#type: "mock".to_string(),
+        source_type: "mock".to_string(),
+        url: None,
         default_limit: None,
-        config: serde_yaml::Value::Null,
+        config: serde_json::Value::Null,
         cache: Some(QueryCacheConfig {
             enabled: false, // EXPLICITLY DISABLED
             directory: "/tmp".to_string(),
             max_size_mb: 100,
             ttl_seconds: 3600,
         }),
+        username: None,
+        password: None,
+        tables: vec![],
     };
 
     let config = Config {
@@ -642,7 +650,7 @@ async fn test_per_datasource_cache_config() -> anyhow::Result<()> {
 
     let user = AuthenticatedUser {
         id: "config_user".to_string(),
-        permissions: vec!["read".to_string()],
+        permissions: vec!["read".to_string()].into(),
         rules: HashMap::new(),
     };
 

@@ -59,10 +59,31 @@ impl SourceProvider for SqlSourceProvider {
             10
         }
 
-        let sql_config: SqlConfig = serde_yaml::from_value(config.config.clone())
+        let sql_config: SqlConfig = serde_json::from_value(config.config.clone())
             .context("Failed to parse SQL source configuration")?;
 
         let effective_retry = sql_config.retry.unwrap_or(self.global_retry);
+
+        let mut tables = if !config.tables.is_empty() {
+            config.tables.clone()
+        } else {
+            sql_config.tables.unwrap_or_default()
+        };
+
+        // Refined Schema Rule for SQL:
+        // If schema is empty or "public", use the source name as the schema namespace.
+        for table in &mut tables {
+            if table.schema.is_empty() || table.schema == "public" {
+                table.schema = config.name.clone();
+            }
+        }
+
+        let explicit_tables = if !tables.is_empty() {
+            Some(tables)
+        } else {
+            None
+        };
+
         register_sql_source(common::SqlRegistrationOptions {
             context,
             catalog_name,
@@ -70,7 +91,7 @@ impl SourceProvider for SqlSourceProvider {
             dialect: sql_config.dialect,
             connection_string: &sql_config.connection,
             pool_size: sql_config.pool_size,
-            explicit_tables: &sql_config.tables,
+            explicit_tables: &explicit_tables,
             retry: effective_retry,
         })
         .await

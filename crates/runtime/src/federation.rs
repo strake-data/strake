@@ -575,7 +575,7 @@ mod tests {
 
         let user = AuthenticatedUser {
             id: "test_user".to_string(),
-            permissions: vec!["admin".to_string()],
+            permissions: vec!["admin".to_string()].into(),
             rules: std::collections::HashMap::new(),
         };
 

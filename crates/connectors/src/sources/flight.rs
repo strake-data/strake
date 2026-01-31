@@ -38,7 +38,7 @@ impl SourceProvider for FlightSqlSourceProvider {
         struct FlightSqlConfig {
             url: String,
         }
-        let cfg: FlightSqlConfig = serde_yaml::from_value(config.config.clone())
+        let cfg: FlightSqlConfig = serde_json::from_value(config.config.clone())
             .context("Failed to parse Flight SQL source configuration")?;
 
         register_flight_sql_source(context, &config.name, &cfg.url).await

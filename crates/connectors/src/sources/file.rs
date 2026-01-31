@@ -34,7 +34,7 @@ impl SourceProvider for FileSourceProvider {
         catalog_name: &str,
         config: &SourceConfig,
     ) -> Result<()> {
-        match config.r#type.as_str() {
+        match config.source_type.as_str() {
             "parquet" => {
                 #[derive(serde::Deserialize)]
                 struct ParquetConfig {
@@ -44,11 +44,20 @@ impl SourceProvider for FileSourceProvider {
                     #[serde(default)]
                     tables: Option<Vec<TableConfig>>,
                 }
-                let cfg: ParquetConfig = serde_yaml::from_value(config.config.clone())
+                // NOTE: config.config is a serde_json::Value because it's stored that way in SourceConfig.
+                // Even if the source is YAML, it's converted to JSON Value on load.
+                // We use serde_json::from_value to unpack it.
+                let cfg: ParquetConfig = serde_json::from_value(config.config.clone())
                     .context("Failed to parse Parquet source configuration")?;
 
+                let tables = if !config.tables.is_empty() {
+                    Some(config.tables.clone())
+                } else {
+                    cfg.tables
+                };
+
                 register_object_store(context, &cfg.path, cfg.options).await?;
-                register_parquet(context, catalog_name, &config.name, &cfg.path, &cfg.tables).await
+                register_parquet(context, catalog_name, &config.name, &cfg.path, &tables).await
             }
             "csv" => {
                 #[derive(serde::Deserialize)]
@@ -62,8 +71,14 @@ impl SourceProvider for FileSourceProvider {
                     #[serde(default)]
                     tables: Option<Vec<TableConfig>>,
                 }
-                let cfg: CsvConfig = serde_yaml::from_value(config.config.clone())
+                let cfg: CsvConfig = serde_json::from_value(config.config.clone())
                     .context("Failed to parse CSV source configuration")?;
+
+                let tables = if !config.tables.is_empty() {
+                    Some(config.tables.clone())
+                } else {
+                    cfg.tables
+                };
 
                 register_object_store(context, &cfg.path, cfg.options).await?;
                 register_csv(
@@ -73,7 +88,7 @@ impl SourceProvider for FileSourceProvider {
                     &cfg.path,
                     cfg.has_header,
                     cfg.delimiter,
-                    &cfg.tables,
+                    &tables,
                 )
                 .await
             }
@@ -86,13 +101,22 @@ impl SourceProvider for FileSourceProvider {
                     #[serde(default)]
                     tables: Option<Vec<TableConfig>>,
                 }
-                let cfg: JsonConfig = serde_yaml::from_value(config.config.clone())
+                let cfg: JsonConfig = serde_json::from_value(config.config.clone())
                     .context("Failed to parse JSON source configuration")?;
 
+                let tables = if !config.tables.is_empty() {
+                    Some(config.tables.clone())
+                } else {
+                    cfg.tables
+                };
+
                 register_object_store(context, &cfg.path, cfg.options).await?;
-                register_json(context, catalog_name, &config.name, &cfg.path, &cfg.tables).await
+                register_json(context, catalog_name, &config.name, &cfg.path, &tables).await
             }
-            _ => anyhow::bail!("Invalid type for FileSourceProvider: {}", config.r#type),
+            _ => anyhow::bail!(
+                "Invalid type for FileSourceProvider: {}",
+                config.source_type
+            ),
         }
     }
 }
@@ -201,8 +225,8 @@ pub async fn register_csv(
 
     if let Some(tables) = tables_config {
         for table_cfg in tables {
-            let resolved_schema = if let Some(columns) = &table_cfg.columns {
-                build_schema_from_config(columns)?
+            let resolved_schema = if !table_cfg.columns.is_empty() {
+                build_schema_from_config(&table_cfg.columns)?
             } else {
                 listing_options
                     .infer_schema(&context.state(), &start_url)
@@ -214,7 +238,11 @@ pub async fn register_csv(
                 .with_schema(resolved_schema);
             let provider = ListingTable::try_new(config)?;
 
-            let schema_name = table_cfg.schema.as_deref().unwrap_or("public");
+            let schema_name = if table_cfg.schema.is_empty() {
+                "public"
+            } else {
+                &table_cfg.schema
+            };
             let schema_provider = ensure_schema(context, catalog, schema_name)?;
             schema_provider.register_table(table_cfg.name.to_string(), Arc::new(provider))?;
         }
@@ -247,8 +275,8 @@ pub async fn register_parquet(
 
     if let Some(tables) = tables_config {
         for table_cfg in tables {
-            let resolved_schema = if let Some(columns) = &table_cfg.columns {
-                build_schema_from_config(columns)?
+            let resolved_schema = if !table_cfg.columns.is_empty() {
+                build_schema_from_config(&table_cfg.columns)?
             } else {
                 listing_options
                     .infer_schema(&context.state(), &start_url)
@@ -260,7 +288,11 @@ pub async fn register_parquet(
                 .with_schema(resolved_schema);
             let provider = ListingTable::try_new(config)?;
 
-            let schema_name = table_cfg.schema.as_deref().unwrap_or("public");
+            let schema_name = if table_cfg.schema.is_empty() {
+                "public"
+            } else {
+                &table_cfg.schema
+            };
             let schema_provider = ensure_schema(context, catalog, schema_name)?;
             schema_provider.register_table(table_cfg.name.to_string(), Arc::new(provider))?;
         }
@@ -291,33 +323,41 @@ pub async fn register_json(
     let file_format = JsonFormat::default();
     let listing_options = ListingOptions::new(Arc::new(file_format));
 
-    let resolved_schema = if let Some(tables) = tables_config {
-        if let Some(table_cfg) = tables.first() {
-            if let Some(columns) = &table_cfg.columns {
-                build_schema_from_config(columns)?
+    if let Some(tables) = tables_config {
+        for table_cfg in tables {
+            let resolved_schema = if !table_cfg.columns.is_empty() {
+                build_schema_from_config(&table_cfg.columns)?
             } else {
                 listing_options
                     .infer_schema(&context.state(), &start_url)
                     .await?
-            }
-        } else {
-            listing_options
-                .infer_schema(&context.state(), &start_url)
-                .await?
+            };
+
+            let config = ListingTableConfig::new(start_url.clone())
+                .with_listing_options(listing_options.clone())
+                .with_schema(resolved_schema);
+            let provider = ListingTable::try_new(config)?;
+
+            let schema_name = if table_cfg.schema.is_empty() {
+                "public"
+            } else {
+                &table_cfg.schema
+            };
+            let schema_provider = ensure_schema(context, catalog, schema_name)?;
+            schema_provider.register_table(table_cfg.name.to_string(), Arc::new(provider))?;
         }
     } else {
-        listing_options
+        let resolved_schema = listing_options
             .infer_schema(&context.state(), &start_url)
-            .await?
-    };
+            .await?;
+        let config = ListingTableConfig::new(start_url)
+            .with_listing_options(listing_options)
+            .with_schema(resolved_schema);
+        let provider = ListingTable::try_new(config)?;
 
-    let config = ListingTableConfig::new(start_url)
-        .with_listing_options(listing_options)
-        .with_schema(resolved_schema);
-    let provider = ListingTable::try_new(config)?;
-
-    let schema_provider = ensure_schema(context, catalog, "public")?;
-    schema_provider.register_table(name.to_string(), Arc::new(provider))?;
+        let schema_provider = ensure_schema(context, catalog, "public")?;
+        schema_provider.register_table(name.to_string(), Arc::new(provider))?;
+    }
     Ok(())
 }
 
@@ -338,9 +378,9 @@ fn build_schema_from_config(columns: &[ColumnConfig]) -> Result<arrow::datatypes
                 "decimal" => DataType::Decimal128(15, 2),
                 _ => DataType::Utf8,
             };
-            let nullable = !c.not_null.unwrap_or(false);
+            let nullable = !c.not_null;
 
-            let mut metadata = HashMap::new();
+            let mut metadata: HashMap<String, String> = HashMap::new();
             if let Some(len) = c.length {
                 metadata.insert("precision".to_string(), len.to_string());
                 metadata.insert("characterMaximumLength".to_string(), len.to_string());

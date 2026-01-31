@@ -103,7 +103,7 @@ async fn introspect_tables(
         name: source_name.clone(),
         source_type: engine_source
             .as_ref()
-            .map(|s| s.r#type.clone())
+            .map(|s| s.source_type.clone())
             .unwrap_or_else(|| "sql".to_string()),
         url: engine_source.as_ref().and_then(|s| {
             // Internal config stores the connection string in the 'config' field for SQL sources
@@ -114,7 +114,10 @@ async fn introspect_tables(
         }),
         username: None,
         password: None,
+        default_limit: None,
+        cache: None,
         tables: vec![],
+        config: serde_json::Value::Null,
     };
 
     for table_full in tables {
@@ -143,7 +146,7 @@ async fn introspect_tables(
                         length: None, // DataFusion doesn't easily expose this as a simple i32
                         primary_key: false, // Metadata doesn't expose PK directly
                         unique: false,
-                        is_not_null: !field.is_nullable(),
+                        not_null: !field.is_nullable(),
                     });
                 }
             }
@@ -156,7 +159,7 @@ async fn introspect_tables(
                     length: None,
                     primary_key: true,
                     unique: false,
-                    is_not_null: true,
+                    not_null: true,
                 });
             }
         }
@@ -182,7 +185,7 @@ async fn list_sources(State(engine): State<Arc<FederationEngine>>) -> Json<Sourc
         .map(|s| {
             strake_common::models::SourceConfig {
                 name: s.name,
-                source_type: s.r#type,
+                source_type: s.source_type,
                 url: s
                     .config
                     .get("connection")
@@ -190,7 +193,10 @@ async fn list_sources(State(engine): State<Arc<FederationEngine>>) -> Json<Sourc
                     .map(|s| s.to_string()),
                 username: None,
                 password: None,
+                default_limit: None,
+                cache: None,
                 tables: vec![], // Details fetched via introspection
+                config: serde_json::Value::Null,
             }
         })
         .collect();

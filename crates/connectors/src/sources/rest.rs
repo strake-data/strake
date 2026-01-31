@@ -5,6 +5,7 @@
 use crate::sources::SourceProvider;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use datafusion::catalog::MemorySchemaProvider;
 use datafusion::prelude::SessionContext;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -129,7 +130,19 @@ impl SourceProvider for RestSourceProvider {
         config: &SourceConfig,
     ) -> Result<()> {
         // ... existing config parsing ...
-        let rest_config: RestSourceConfig = serde_yaml::from_value(config.config.clone())
+        let mut raw_config = config.config.clone();
+        if let Some(url) = &config.url {
+            if let Some(obj) = raw_config.as_object_mut() {
+                if !obj.contains_key("url") && !obj.contains_key("base_url") {
+                    obj.insert(
+                        "base_url".to_string(),
+                        serde_json::Value::String(url.clone()),
+                    );
+                }
+            }
+        }
+
+        let rest_config: RestSourceConfig = serde_json::from_value(raw_config)
             .context("Failed to parse REST source configuration")?;
 
         let mut client_builder = reqwest::Client::builder();
@@ -212,37 +225,76 @@ impl SourceProvider for RestSourceProvider {
             }
         }
 
-        let client = client_builder
-            .build()
-            .context("Failed to build HTTP client")?;
+        let client = Arc::new(
+            client_builder
+                .build()
+                .context("Failed to build HTTP client")?,
+        );
 
-        // Simple registration for now - assuming 1 table matching the endpoint
-        // TODO: Support multiple tables if list provided
+        let tables = if !config.tables.is_empty() {
+            config.tables.clone()
+        } else {
+            rest_config.tables.clone().unwrap_or_default()
+        };
 
-        let schema = infer_schema(&client, &rest_config).await?;
+        if tables.is_empty() {
+            // Fallback to single table matching source name
+            let schema = infer_schema(&client, &rest_config).await?;
+            let provider = Arc::new(RestTableProvider::new(client.clone(), rest_config, schema));
 
-        // Create Provider
-        use datafusion::catalog::MemorySchemaProvider;
-        let catalog = context
-            .catalog(catalog_name)
-            .ok_or(anyhow::anyhow!("Catalog not found"))?;
+            let catalog = context
+                .catalog(catalog_name)
+                .ok_or(anyhow::anyhow!("Catalog not found"))?;
 
-        if catalog.schema("public").is_none() {
-            catalog.register_schema("public", Arc::new(MemorySchemaProvider::new()))?;
+            if catalog.schema("public").is_none() {
+                catalog.register_schema("public", Arc::new(MemorySchemaProvider::new()))?;
+            }
+
+            context.register_table(
+                datafusion::sql::TableReference::full(catalog_name, "public", config.name.clone()),
+                provider,
+            )?;
+        } else {
+            for table_cfg in tables {
+                let schema = if !table_cfg.columns.is_empty() {
+                    // TODO: Build schema from config if provided
+                    // For now, still infer or use what's there
+                    infer_schema(&client, &rest_config).await?
+                } else {
+                    infer_schema(&client, &rest_config).await?
+                };
+
+                let provider = Arc::new(RestTableProvider::new(
+                    client.clone(),
+                    rest_config.clone(),
+                    schema,
+                ));
+
+                let schema_name = if table_cfg.schema.is_empty() {
+                    "public"
+                } else {
+                    &table_cfg.schema
+                };
+
+                // Ensure schema exists
+                let catalog = context
+                    .catalog(catalog_name)
+                    .ok_or(anyhow::anyhow!("Catalog not found"))?;
+
+                if catalog.schema(schema_name).is_none() {
+                    catalog.register_schema(schema_name, Arc::new(MemorySchemaProvider::new()))?;
+                }
+
+                context.register_table(
+                    datafusion::sql::TableReference::full(
+                        catalog_name,
+                        schema_name,
+                        table_cfg.name.clone(),
+                    ),
+                    provider,
+                )?;
+            }
         }
-
-        let provider = Arc::new(RestTableProvider::new(
-            Arc::new(client),
-            rest_config,
-            schema,
-        ));
-
-        // Assuming single table "api_response" if not named in config
-        // In real usage, this should come from config.name or explicit table list
-        context.register_table(
-            datafusion::sql::TableReference::full(catalog_name, "public", &*config.name),
-            provider,
-        )?;
 
         Ok(())
     }

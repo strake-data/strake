@@ -16,7 +16,7 @@ use axum::{
 };
 use moka::future::Cache;
 use std::time::Duration;
-use strake_common::auth::AuthenticatedUser;
+use strake_common::auth::{AuthenticatedUser, PermissionSet};
 
 pub const API_KEY_PREFIX_LENGTH: usize = 8;
 
@@ -63,7 +63,7 @@ impl Authenticator for ApiKeyAuthenticator {
 
         let user = AuthenticatedUser {
             id: user_id,
-            permissions,
+            permissions: PermissionSet::from(permissions),
             ..Default::default()
         };
 

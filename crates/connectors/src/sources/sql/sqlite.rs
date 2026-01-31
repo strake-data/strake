@@ -102,7 +102,13 @@ async fn try_register_sqlite(
         config_tables
             .iter()
             .map(|t| {
-                let target_schema = t.schema.clone().unwrap_or_else(|| name.to_string());
+                // FIX: Transform schema - use source name if empty, "public", or "main"
+                let target_schema =
+                    if t.schema.is_empty() || t.schema == "public" || t.schema == "main" {
+                        name.to_string()
+                    } else {
+                        t.schema.clone()
+                    };
                 (t.name.clone(), target_schema)
             })
             .collect()

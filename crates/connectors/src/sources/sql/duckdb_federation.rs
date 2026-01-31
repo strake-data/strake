@@ -54,6 +54,12 @@ impl SQLExecutor for DuckDBExecutor {
         Arc::new(datafusion::sql::unparser::dialect::PostgreSqlDialect {})
     }
 
+    fn logical_optimizer(&self) -> Option<datafusion_federation::sql::LogicalOptimizer> {
+        Some(Box::new(|plan| {
+            strake_sql::sql_gen::remap_plan_for_federation(plan)
+        }))
+    }
+
     fn execute(
         &self,
         query: &str,

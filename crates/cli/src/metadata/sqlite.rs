@@ -6,6 +6,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use futures::future::BoxFuture;
 use rusqlite::{params, Connection, Row, ToSql};
+use secrecy::ExposeSecret;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use strake_common::models::{ColumnConfig, SourceConfig, SourcesConfig, TableConfig};
@@ -129,8 +130,15 @@ impl MetadataStore for SqliteStore {
                     ).unwrap_or(false);
 
                     let source_id: i64 = stmt.query_row(
-                        params![source.name, source.source_type, source.url, source.username, source.password, domain],
-                        |row| row.get(0)
+                        params![
+                            source.name,
+                            source.source_type,
+                            source.url,
+                            source.username,
+                            source.password.as_ref().map(|s| s.expose_secret()),
+                            domain
+                        ],
+                        |row| row.get(0),
                     )?;
 
                     active_source_ids.push(source_id);
@@ -165,7 +173,7 @@ impl MetadataStore for SqliteStore {
                                  DO UPDATE SET data_type=excluded.data_type, length=excluded.length,
                                                is_primary_key=excluded.is_primary_key, is_unique=excluded.is_unique,
                                                is_not_null=excluded.is_not_null, position=excluded.position",
-                                params![table_id, col.name, col.data_type, col.length, col.primary_key, col.unique, col.is_not_null, idx as i32]
+                                params![table_id, col.name, col.data_type, col.length, col.primary_key, col.unique, col.not_null, idx as i32]
                             )?;
                             active_column_names.push(col.name.clone());
                         }
@@ -409,7 +417,7 @@ impl MetadataStore for SqliteStore {
                                 length: row.get("length")?,
                                 primary_key: row.get("is_primary_key")?,
                                 unique: row.get("is_unique")?,
-                                is_not_null: row.get("is_not_null")?,
+                                not_null: row.get("is_not_null")?,
                              })
                          })?;
 
@@ -431,7 +439,10 @@ impl MetadataStore for SqliteStore {
                          url,
                          username: None,
                          password: None,
-                         tables
+                         default_limit: None,
+                         cache: None,
+                         tables,
+                         config: serde_json::Value::Null,
                     });
                 }
 

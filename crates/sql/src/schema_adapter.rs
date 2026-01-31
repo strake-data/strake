@@ -23,6 +23,33 @@ impl SchemaAdapter {
     pub fn new(input: LogicalPlan, schema: DFSchemaRef) -> Self {
         Self { input, schema }
     }
+
+    /// Converts this adapter to a standard DataFusion Projection plan.
+    /// This is useful for the Unparser which doesn't know how to handle Extension nodes.
+    pub fn to_projection(&self) -> Result<LogicalPlan> {
+        use datafusion::logical_expr::LogicalPlanBuilder;
+        let input_schema = self.input.schema();
+        let mut exprs = Vec::new();
+
+        for (i, (qualifier, _field)) in input_schema.iter().enumerate() {
+            if i >= self.schema.fields().len() {
+                break;
+            }
+            let target_field = self.schema.field(i);
+            let input_field = input_schema.field(i);
+
+            let expr = Expr::Column(datafusion::common::Column::new(
+                qualifier.cloned(),
+                input_field.name().clone(),
+            ))
+            .alias(target_field.name().clone());
+            exprs.push(expr);
+        }
+
+        LogicalPlanBuilder::from(self.input.clone())
+            .project(exprs)?
+            .build()
+    }
 }
 
 impl UserDefinedLogicalNode for SchemaAdapter {

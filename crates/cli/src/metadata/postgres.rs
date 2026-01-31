@@ -4,6 +4,7 @@ use super::{
 };
 use anyhow::{anyhow, Context, Result};
 use futures::future::BoxFuture;
+use secrecy::ExposeSecret;
 use strake_common::models::{ColumnConfig, SourceConfig, SourcesConfig, TableConfig};
 use tokio_postgres::{Client, NoTls};
 
@@ -117,7 +118,7 @@ impl MetadataStore for PostgresStore {
                      VALUES ($1, $2, $3, $4, $5, $6) 
                      ON CONFLICT (domain_name, name) DO UPDATE SET type=$2, url=$3, username=$4, password=$5
                      RETURNING id, (xmax = 0) as is_new",
-                    &[&source.name, &source.source_type, &source.url, &source.username, &source.password, &domain],
+                    &[&source.name, &source.source_type, &source.url, &source.username, &source.password.as_ref().map(|s| s.expose_secret()), &domain],
                 ).await.context("Failed to upsert source")?;
 
                 let source_id: i32 = source_rows[0].get(0);
@@ -161,7 +162,7 @@ impl MetadataStore for PostgresStore {
                              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                              ON CONFLICT (table_id, name)
                              DO UPDATE SET data_type=$3, length=$4, is_primary_key=$5, is_unique=$6, is_not_null=$7, position=$8",
-                            &[&table_id, &col.name, &col.data_type, &col.length, &col.primary_key, &col.unique, &col.is_not_null, &(idx as i32)],
+                            &[&table_id, &col.name, &col.data_type, &col.length, &col.primary_key, &col.unique, &col.not_null, &(idx as i32)],
                         ).await.context("Failed to upsert column")?;
                         active_column_names.push(col.name.clone());
                     }
@@ -380,7 +381,7 @@ impl MetadataStore for PostgresStore {
                             length: col_row.get("length"),
                             primary_key: col_row.get("is_primary_key"),
                             unique: col_row.get("is_unique"),
-                            is_not_null: col_row.get("is_not_null"),
+                            not_null: col_row.get("is_not_null"),
                         });
                     }
 
@@ -398,7 +399,10 @@ impl MetadataStore for PostgresStore {
                     url,
                     username: None,
                     password: None,
+                    default_limit: None,
+                    cache: None,
                     tables,
+                    config: serde_json::Value::Null,
                 });
             }
 

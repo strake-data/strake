@@ -93,7 +93,12 @@ async fn try_register_postgres(
         config_tables
             .iter()
             .map(|t| {
-                let target_schema = t.schema.clone().unwrap_or_else(|| name.to_string());
+                // FIX: Transform schema - use source name if empty or "public"
+                let target_schema = if t.schema.is_empty() || t.schema == "public" {
+                    name.to_string()
+                } else {
+                    t.schema.clone()
+                };
                 (t.name.clone(), target_schema)
             })
             .collect()

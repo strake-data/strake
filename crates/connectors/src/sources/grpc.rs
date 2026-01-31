@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crate::sources::SourceProvider;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use datafusion::catalog::MemorySchemaProvider;
 use datafusion::prelude::SessionContext;
 use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor};
 use serde::Deserialize;
@@ -58,35 +59,90 @@ impl SourceProvider for GrpcSourceProvider {
         catalog_name: &str,
         config: &SourceConfig,
     ) -> Result<()> {
-        let grpc_config: GrpcSourceConfig = serde_yaml::from_value(config.config.clone())
-            .context("Failed to parse gRPC source configuration")?;
-
-        // Registration Logic
-        // 1. Connect using tonic
-        // 2. Reflect service/method to get output schema
-        // 3. Register GrpcTableProvider
-
-        // let url = grpc_config.url.clone();
-
-        // MVP: Validation that we can parse config
-        // In real impl: fetch schema via reflection
-        let schema = create_schema_from_config(&grpc_config)?;
-
-        use datafusion::catalog::MemorySchemaProvider;
-        let catalog = context
-            .catalog(catalog_name)
-            .ok_or(anyhow::anyhow!("Catalog not found"))?;
-
-        if catalog.schema("public").is_none() {
-            catalog.register_schema("public", Arc::new(MemorySchemaProvider::new()))?;
+        let mut raw_config = config.config.clone();
+        if let Some(url) = &config.url {
+            if let Some(obj) = raw_config.as_object_mut() {
+                if !obj.contains_key("url") {
+                    obj.insert("url".to_string(), serde_json::Value::String(url.clone()));
+                }
+            }
         }
 
-        let provider = Arc::new(GrpcTableProvider::new(grpc_config, schema));
+        let grpc_config: GrpcSourceConfig = serde_json::from_value(raw_config)
+            .context("Failed to parse gRPC source configuration")?;
 
-        context.register_table(
-            datafusion::sql::TableReference::full(catalog_name, "public", &*config.name),
-            provider,
-        )?;
+        let tables = if !config.tables.is_empty() {
+            config.tables.clone()
+        } else {
+            grpc_config.tables.clone().unwrap_or_default()
+        };
+
+        if tables.is_empty() {
+            // MVP: Validation that we can parse config
+            // In real impl: fetch schema via reflection
+            let schema = create_schema_from_config(&grpc_config)?;
+
+            let catalog = context
+                .catalog(catalog_name)
+                .ok_or(anyhow::anyhow!("Catalog not found"))?;
+            if catalog.schema("public").is_none() {
+                catalog.register_schema("public", Arc::new(MemorySchemaProvider::new()))?;
+            }
+
+            let provider = Arc::new(GrpcTableProvider::new(grpc_config, schema));
+
+            context.register_table(
+                datafusion::sql::TableReference::full(catalog_name, "public", config.name.clone()),
+                provider,
+            )?;
+        } else {
+            for table_cfg in tables {
+                let schema = if !table_cfg.columns.is_empty() {
+                    // Convert TableConfig columns to GrpcSourceConfig columns
+                    let grpc_cols: Vec<ColumnConfig> = table_cfg
+                        .columns
+                        .iter()
+                        .map(|c| ColumnConfig {
+                            name: c.name.clone(),
+                            data_type: c.data_type.clone(),
+                            nullable: !c.not_null,
+                        })
+                        .collect();
+                    let mut temp_cfg = grpc_config.clone();
+                    temp_cfg.columns = Some(grpc_cols);
+                    create_schema_from_config(&temp_cfg)?
+                } else {
+                    create_schema_from_config(&grpc_config)?
+                };
+
+                let provider = Arc::new(GrpcTableProvider::new(grpc_config.clone(), schema));
+
+                let schema_name = if table_cfg.schema.is_empty() {
+                    "public"
+                } else {
+                    &table_cfg.schema
+                };
+
+                // Ensure schema exists
+                use datafusion::catalog::MemorySchemaProvider;
+                let catalog = context
+                    .catalog(catalog_name)
+                    .ok_or(anyhow::anyhow!("Catalog not found"))?;
+
+                if catalog.schema(schema_name).is_none() {
+                    catalog.register_schema(schema_name, Arc::new(MemorySchemaProvider::new()))?;
+                }
+
+                context.register_table(
+                    datafusion::sql::TableReference::full(
+                        catalog_name,
+                        schema_name,
+                        table_cfg.name.clone(),
+                    ),
+                    provider,
+                )?;
+            }
+        }
 
         Ok(())
     }

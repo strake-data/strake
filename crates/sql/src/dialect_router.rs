@@ -62,6 +62,16 @@ pub fn default_dialect() -> Arc<dyn UnparserDialect + Send + Sync> {
     Arc::new(DefaultDialect {})
 }
 
+/// Check if a source uses Substrait for plan pushdown
+pub fn is_substrait_source(source_type: &str) -> bool {
+    matches!(route_dialect(source_type), DialectPath::Substrait)
+}
+
+/// Check if a source requires local execution (no pushdown)
+pub fn is_local_execution(source_type: &str) -> bool {
+    matches!(route_dialect(source_type), DialectPath::LocalExecution)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

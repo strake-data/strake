@@ -10,11 +10,43 @@ use std::sync::Arc;
 use datafusion::common::{Column, Result, TableReference};
 use datafusion::error::DataFusionError;
 
+/// Normalizes a TableReference to a consistent string representation (table name only for bare/partial)
+pub fn normalize_relation(rel: &TableReference) -> String {
+    rel.table().to_string()
+}
+
 /// Represents a fully qualified column reference resolved to a specific relation
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QualifiedColumn {
     pub relation: Option<TableReference>,
     pub name: String,
+}
+
+/// Utility for parsing and identifying derived column names injected by the remapper.
+pub struct DerivedNameParser;
+
+impl DerivedNameParser {
+    /// Parse "derived_sq_1_d_name" -> (Some("d"), "name")
+    pub fn parse(col_name: &str) -> Option<(Option<TableReference>, String)> {
+        if !col_name.contains("derived_sq_") {
+            return None;
+        }
+
+        let after_prefix = col_name.split("derived_sq_").last()?;
+        let (_, rest) = after_prefix.split_once('_')?; // Skip the number
+
+        // Try to split qualifier_name
+        let parts: Vec<&str> = rest.rsplitn(2, '_').collect();
+        if parts.len() == 2 && parts[1].len() == 1 {
+            Some((Some(TableReference::bare(parts[1])), parts[0].to_string()))
+        } else {
+            Some((None, rest.to_string()))
+        }
+    }
+
+    pub fn is_derived(name: &str) -> bool {
+        name.contains("derived_sq_")
+    }
 }
 
 impl From<QualifiedColumn> for Column {
@@ -37,11 +69,11 @@ pub struct RelationScope {
     /// Unqualified columns that exist without table qualifiers.
     unqualified_columns: HashSet<Arc<str>>,
 
-    /// Mappings from hidden inner relations to their outer aliases.
-    pub alias_mappings: HashMap<TableReference, TableReference>,
+    /// Mappings from hidden inner relations to their outer aliases (normalized string -> normalized string)
+    pub alias_mappings: HashMap<String, String>,
 
-    /// Mappings for specific columns (relation, col_name) -> new_col_name
-    pub column_mappings: HashMap<(Option<TableReference>, Arc<str>), Arc<str>>,
+    /// Mappings for specific columns (relation_name, col_name) -> new_col_name
+    pub column_mappings: HashMap<(Option<String>, String), String>,
 
     /// String-based mappings for fallback resolution "qual.name" -> new_name
     pub string_mappings: HashMap<String, String>,
@@ -58,7 +90,8 @@ impl RelationScope {
 
     /// Register a mapping from an inner relation to an outer alias
     pub fn add_mapping(&mut self, inner: TableReference, outer: TableReference) {
-        self.alias_mappings.insert(inner, outer);
+        self.alias_mappings
+            .insert(normalize_relation(&inner), normalize_relation(&outer));
     }
 
     /// Register a column mapping
@@ -68,8 +101,8 @@ impl RelationScope {
         old_name: String,
         new_name: String,
     ) {
-        self.column_mappings
-            .insert((relation, Arc::from(old_name)), Arc::from(new_name));
+        let rel_key = relation.as_ref().map(normalize_relation);
+        self.column_mappings.insert((rel_key, old_name), new_name);
     }
 
     /// Register a string-based mapping (e.g. "d.name" -> "derived_sq_1_d_name")
@@ -113,7 +146,11 @@ impl RelationScope {
     }
 
     pub fn resolve_column(&self, col: &Column) -> Result<QualifiedColumn> {
-        if col.name == "department_id" || col.name == "budget" || col.name == "amount" {
+        if col.name == "department_id"
+            || col.name == "budget"
+            || col.name == "amount"
+            || col.name == "total_amount"
+        {
             tracing::trace!(
                 target: "sql_gen",
                 col = ?col,
@@ -121,127 +158,99 @@ impl RelationScope {
             );
         }
 
+        let name = col.name.to_string();
         let name_arc: Arc<str> = Arc::from(col.name.as_str());
+        let req_rel = col.relation.clone();
+        let rel_key = col.relation.as_ref().map(normalize_relation);
 
-        let effective_name = if let Some(mapped_name) = self
-            .column_mappings
-            .get(&(col.relation.clone(), name_arc.clone()))
-        {
-            mapped_name.clone()
-        } else {
-            name_arc.clone()
-        };
+        // 1. Try a direct mapping lookup (this should handle most cases after ensure_aliased)
+        if let Some(mapped_name) = self.column_mappings.get(&(rel_key.clone(), name.clone())) {
+            return Ok(QualifiedColumn {
+                relation: None, // Column is now renamed, likely flat or in subquery
+                name: mapped_name.clone(),
+            });
+        }
 
-        if let Some(req_rel) = &col.relation {
-            // Check alias mappings using string representation for robustness
-            let req_str = req_rel.to_string();
-
-            // FALLBACK: Try string lookup "qual.name"
-            // This handles cases where Aggregate references col with inner qualifier
-            // that isn't directly resolvable via standard mappings
-            let key = format!("{}.{}", req_str, col.name);
+        // 2. Check string mappings for fallback "qual.name"
+        if let Some(ref rel) = req_rel {
+            let key = format!("{}.{}", rel, col.name);
             if let Some(mapped) = self.string_mappings.get(&key) {
-                tracing::debug!(
-                    target: "sql_gen::scope",
-                    ?col,
-                    ?key,
-                    ?mapped,
-                    "Resolved column via string fallback"
-                );
-                // Return as resolved to current alias (or just the mapped name if we don't know the alias here)
-                // Ususally mapped name includes the alias prefix if done by ensure_aliased
                 return Ok(QualifiedColumn {
-                    relation: None, // The mapped name should be sufficient or we might need context
+                    relation: None,
                     name: mapped.clone(),
                 });
             }
 
-            for (inner, outer) in &self.alias_mappings {
-                if inner == req_rel || inner.to_string() == req_str {
-                    return Ok(QualifiedColumn {
-                        relation: Some(outer.clone()),
-                        name: effective_name.to_string(),
-                    });
-                }
+            // Check alias mappings (e.g. "users" -> "derived_sq_1")
+            let rel_str = normalize_relation(rel);
+            if let Some(outer_alias) = self.alias_mappings.get(&rel_str) {
+                return Ok(QualifiedColumn {
+                    relation: Some(TableReference::bare(outer_alias.clone())),
+                    name: name.clone(),
+                });
+            }
+        } else {
+            // Unqualified lookup in column mappings
+            if let Some(mapped_name) = self.column_mappings.get(&(None, name.clone())) {
+                return Ok(QualifiedColumn {
+                    relation: None,
+                    name: mapped_name.clone(),
+                });
             }
         }
 
-        if let Some(candidates) = self.visible_relations.get(&effective_name) {
-            if let Some(req_rel) = &col.relation {
+        // 3. Try to find a strict match in the CURRENT scope
+        if let Some(candidates) = self.visible_relations.get(&name_arc) {
+            if let Some(ref rel) = req_rel {
+                let req_str = normalize_relation(rel);
                 for candidate in candidates {
-                    // Check for exact match or canonical string match to handle Bare vs Partial variants
-                    if req_rel == candidate || req_rel.to_string() == candidate.to_string() {
+                    if normalize_relation(candidate) == req_str {
                         return Ok(QualifiedColumn {
                             relation: Some(candidate.clone()),
-                            name: effective_name.to_string(),
+                            name: name.clone(),
                         });
                     }
-                }
-
-                // If we are here, the requested qualifier `u` is NOT in the visible candidates.
-                // This happens when `u` is an alias from an inner scope that was hidden (alias leakage).
-                // Or if we are in a subquery and the qualifier is the subquery alias itself.
-
-                // Fallback to checking if the resolution is unique among all visible relations.
-                if candidates.len() == 1 {
-                    let candidate = &candidates[0];
-                    tracing::debug!(
-                        target: "sql_gen",
-                        col_name = %col.name,
-                        req_rel = ?req_rel,
-                        visible_rel = ?candidate,
-                        "Auto-correcting hidden qualifier to visible unique candidate"
-                    );
-                    return Ok(QualifiedColumn {
-                        relation: Some(candidate.clone()),
-                        name: effective_name.to_string(),
-                    });
-                } else {
-                    return Err(DataFusionError::Plan(format!(
-                        "Ambiguous column reference '{}'. The qualifier '{:?}' is not visible, and the column exists in multiple visible relations: {:?}",
-                        col.name, req_rel, candidates
-                    )));
                 }
             } else if candidates.len() == 1 {
                 return Ok(QualifiedColumn {
                     relation: Some(candidates[0].clone()),
-                    name: effective_name.to_string(),
+                    name: name.clone(),
                 });
-            } else {
+            }
+        }
+
+        // 4. Check if it's a known unqualified column
+        if self.unqualified_columns.contains(&name_arc) {
+            return Ok(QualifiedColumn {
+                relation: None,
+                name: name.clone(),
+            });
+        }
+
+        // 5. Check parent scopes (correlation)
+        if let Some(parent) = &self.parent {
+            if let Ok(resolved) = parent.resolve_column(col) {
+                return Ok(resolved);
+            }
+        }
+
+        // 6. Fallback to unique local candidate
+        if let Some(candidates) = self.visible_relations.get(&name_arc) {
+            if req_rel.is_some() && candidates.len() == 1 {
+                return Ok(QualifiedColumn {
+                    relation: Some(candidates[0].clone()),
+                    name: name.clone(),
+                });
+            } else if candidates.len() > 1 {
                 return Err(DataFusionError::Plan(format!(
-                    "Ambiguous column reference '{}'. Found in relations: {:?}",
+                    "Ambiguous column reference '{}'. Match found in multiple relations: {:?}",
                     col.name, candidates
                 )));
             }
         }
 
-        // 2. Check if this is a known unqualified column (like aggregate outputs or aliases)
-        // This only applies if the column wasn't found in qualified form above.
-        if self.unqualified_columns.contains(&effective_name) {
-            return Ok(QualifiedColumn {
-                relation: None,
-                name: effective_name.to_string(),
-            });
-        }
-
-        // 3. Check parent scopes (outer references)
-        if let Some(parent) = &self.parent {
-            return parent.resolve_column(col);
-        }
-
-        // 4. Not found
-
         let mappings_debug: Vec<_> = self.alias_mappings.keys().map(|k| k.to_string()).collect();
         let visible_debug: Vec<_> = self.visible_relations.keys().cloned().collect();
-
-        tracing::error!(
-            target: "sql_gen",
-            col = ?col,
-            mappings = ?mappings_debug,
-            visible = ?visible_debug,
-            unqualified = ?self.unqualified_columns,
-            "Failed to resolve column in scope"
-        );
 
         Err(DataFusionError::Plan(format!(
             "Unresolved column '{}' in current scope. Relation: {:?}. Mappings: {:?}. Visible: {:?}",

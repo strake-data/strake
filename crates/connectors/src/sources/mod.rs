@@ -68,7 +68,7 @@ impl SourceRegistry {
         catalog_name: &str,
         config: &SourceConfig,
     ) -> Result<()> {
-        let type_name = match config.r#type.as_str() {
+        let type_name = match config.source_type.as_str() {
             "parquet" | "csv" | "json" => "file",
             other => other,
         };

@@ -391,7 +391,14 @@ async fn try_register_duckdb(
     let tables_to_register: Vec<(String, String)> = if let Some(config_tables) = explicit_tables {
         config_tables
             .iter()
-            .map(|t| (t.name.clone(), name.to_string()))
+            .map(|t| {
+                let schema = if t.schema.is_empty() || t.schema == "public" {
+                    name.to_string()
+                } else {
+                    t.schema.clone()
+                };
+                (t.name.clone(), schema)
+            })
             .collect()
     } else {
         introspect_duckdb_tables(connection_string)

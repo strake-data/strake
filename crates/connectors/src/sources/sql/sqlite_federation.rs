@@ -42,6 +42,12 @@ impl SQLExecutor for SqliteExecutor {
         Arc::new(datafusion::sql::unparser::dialect::SqliteDialect {})
     }
 
+    fn logical_optimizer(&self) -> Option<datafusion_federation::sql::LogicalOptimizer> {
+        Some(Box::new(|plan| {
+            strake_sql::sql_gen::remap_plan_for_federation(plan)
+        }))
+    }
+
     fn execute(
         &self,
         query: &str,

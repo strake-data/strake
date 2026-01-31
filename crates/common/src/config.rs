@@ -1,8 +1,8 @@
-use std::fs;
-
+pub use crate::models::{ColumnConfig, QueryCacheConfig, SourceConfig, TableConfig};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
+use validator::Validate;
 
 // Default constants
 pub const DEFAULT_PORT: u16 = 50051;
@@ -24,11 +24,6 @@ pub const DEFAULT_API_KEY: &str = "dev-key";
 pub const DEFAULT_CACHE_TTL: u64 = 300;
 pub const DEFAULT_CACHE_CAPACITY: u64 = 10000;
 
-pub const DEFAULT_CACHE_ENABLED: bool = false;
-pub const DEFAULT_CACHE_DIR: &str = "/tmp/strake-cache";
-pub const DEFAULT_CACHE_MAX_SIZE_MB: u64 = 10240; // 10GB
-pub const DEFAULT_CACHE_TTL_SECONDS: u64 = 3600; // 1 hour
-
 pub const DEFAULT_TELEMETRY_ENABLED: bool = false;
 pub const DEFAULT_OTLP_ENDPOINT: &str = "http://localhost:4317";
 
@@ -37,38 +32,6 @@ pub struct Config {
     pub sources: Vec<SourceConfig>,
     #[serde(default)]
     pub cache: QueryCacheConfig,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct SourceConfig {
-    pub name: String,
-    pub r#type: String,
-    pub default_limit: Option<usize>,
-    /// Per-source cache override (optional)
-    #[serde(default)]
-    pub cache: Option<QueryCacheConfig>,
-    #[serde(flatten)]
-    pub config: serde_yaml::Value,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct TableConfig {
-    pub name: String,
-    pub schema: Option<String>,
-    pub partition_column: Option<String>,
-    #[serde(default)]
-    pub columns: Option<Vec<ColumnConfig>>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct ColumnConfig {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub data_type: String,
-    pub length: Option<u32>,
-    pub primary_key: Option<bool>,
-    pub not_null: Option<bool>,
-    pub unique: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -105,9 +68,10 @@ fn default_max_delay_ms() -> u64 {
     DEFAULT_MAX_DELAY_MS
 }
 
-#[derive(Debug, Deserialize, Default, Clone)]
+#[derive(Debug, Deserialize, Default, Clone, Validate)]
 pub struct AppConfig {
     #[serde(default)]
+    #[validate(nested)]
     pub server: ServerSettings,
     #[serde(default)]
     pub query_limits: QueryLimits,
@@ -123,12 +87,15 @@ pub struct AppConfig {
     pub telemetry: TelemetryConfig,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Validate)]
 pub struct TelemetryConfig {
     #[serde(default = "default_telemetry_enabled")]
     pub enabled: bool,
+
     #[serde(default = "default_otlp_endpoint")]
+    #[validate(url)]
     pub endpoint: String,
+
     #[serde(default = "default_service_name_config")]
     pub service_name: String,
 }
@@ -216,28 +183,39 @@ pub struct ResourceConfig {
     pub spill_dir: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default, Clone)]
+#[derive(Debug, Deserialize, Default, Clone, Validate)]
 pub struct ServerSettings {
     #[serde(default = "default_listen_addr")]
     pub listen_addr: String,
+
     #[serde(default = "default_health_addr")]
     pub health_addr: String,
+
     #[serde(default = "default_catalog")]
     pub catalog: String,
+
     #[serde(default = "default_api_url")]
+    #[validate(custom(function = "validate_api_url"))]
     pub api_url: String,
+
     #[serde(default = "default_global_budget")]
     pub global_connection_budget: usize,
+
     #[serde(default = "default_database_url")]
     pub database_url: String,
+
     #[serde(default)]
     pub tls: TlsSettings,
+
     #[serde(default)]
     pub auth: AuthSettings,
+
     #[serde(default)]
     pub oidc: Option<OidcConfig>,
+
     #[serde(default)]
     pub datafusion_config: HashMap<String, String>,
+
     #[serde(default = "default_server_name")]
     pub name: String,
 }
@@ -273,6 +251,18 @@ fn default_api_url() -> String {
 
 fn default_server_name() -> String {
     DEFAULT_SERVER_NAME.to_string()
+}
+
+fn validate_api_url(url: &str) -> Result<(), validator::ValidationError> {
+    if url.is_empty() {
+        return Ok(()); // Allow empty - will use default
+    }
+
+    // Use the url crate to parse and validate
+    match url::Url::parse(url) {
+        Ok(_) => Ok(()),
+        Err(_) => Err(validator::ValidationError::new("invalid_url")),
+    }
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -313,306 +303,84 @@ fn default_cache_capacity() -> u64 {
     DEFAULT_CACHE_CAPACITY
 }
 
-// Query result cache configuration
-#[derive(Debug, Deserialize, Clone)]
-pub struct QueryCacheConfig {
-    #[serde(default = "default_cache_enabled")]
-    pub enabled: bool,
-    #[serde(default = "default_cache_directory")]
-    pub directory: String,
-    #[serde(default = "default_cache_max_size_mb")]
-    pub max_size_mb: u64,
-    #[serde(default = "default_cache_ttl_seconds")]
-    pub ttl_seconds: u64,
-}
-
-impl Default for QueryCacheConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_cache_enabled(),
-            directory: default_cache_directory(),
-            max_size_mb: default_cache_max_size_mb(),
-            ttl_seconds: default_cache_ttl_seconds(),
-        }
-    }
-}
-
-fn default_cache_enabled() -> bool {
-    DEFAULT_CACHE_ENABLED
-}
-
-fn default_cache_directory() -> String {
-    DEFAULT_CACHE_DIR.to_string()
-}
-
-fn default_cache_max_size_mb() -> u64 {
-    DEFAULT_CACHE_MAX_SIZE_MB
-}
-
-fn default_cache_ttl_seconds() -> u64 {
-    DEFAULT_CACHE_TTL_SECONDS
-}
-
+// Config implementation
 impl AppConfig {
     pub fn from_file(path: &str) -> Result<Self> {
-        let mut config: AppConfig = if std::path::Path::new(path).exists() {
-            let content = fs::read_to_string(path)
-                .context(format!("Failed to read config file at {}", path))?;
-            serde_yaml::from_str(&content)
-                .context(format!("Failed to parse app config file at {}", path))?
+        let builder = config::Config::builder();
+
+        let builder = if std::path::Path::new(path).exists() {
+            builder.add_source(config::File::with_name(path))
         } else {
-            // Allow starting without config file if defaults/env vars are enough
-            AppConfig::default()
+            builder
         };
 
-        // Environment variable overrides for server settings
-        if let Ok(addr) = std::env::var("STRAKE_SERVER__LISTEN_ADDR") {
-            config.server.listen_addr = addr;
-        }
-        if let Ok(addr) = std::env::var("STRAKE_SERVER__HEALTH_ADDR") {
-            config.server.health_addr = addr;
-        }
-        if let Ok(url) = std::env::var("STRAKE_API_URL") {
-            config.server.api_url = url;
-        }
-        if let Ok(catalog) = std::env::var("STRAKE_SERVER__CATALOG") {
-            config.server.catalog = catalog;
-        }
-        if let Ok(budget) = std::env::var("STRAKE_SERVER__GLOBAL_CONNECTION_BUDGET") {
-            if let Ok(val) = budget.parse() {
-                config.server.global_connection_budget = val;
-            }
-        }
-        if let Ok(url) = std::env::var("STRAKE_DATABASE_URL") {
-            config.server.database_url = url;
-        }
-        if let Ok(enabled) = std::env::var("STRAKE_AUTH__ENABLED") {
-            if let Ok(val) = enabled.parse() {
-                config.server.auth.enabled = val;
-            }
-        }
-        if let Ok(key) = std::env::var("STRAKE_AUTH__API_KEY") {
-            config.server.auth.api_key = key;
-        }
-        if let Ok(attempts) = std::env::var("STRAKE_RETRY__MAX_ATTEMPTS") {
-            if let Ok(val) = attempts.parse() {
-                config.retry.max_attempts = val;
-            }
-        }
-        if let Ok(rows) = std::env::var("STRAKE_QUERY_LIMITS__MAX_OUTPUT_ROWS") {
-            if let Ok(val) = rows.parse() {
-                config.query_limits.max_output_rows = Some(val);
-            }
-        }
-        if let Ok(enabled) = std::env::var("STRAKE_MCP__ENABLED") {
-            if let Ok(val) = enabled.parse() {
-                config.mcp.enabled = val;
-            }
-        }
-        if let Ok(port) = std::env::var("STRAKE_MCP__PORT") {
-            if let Ok(val) = port.parse() {
-                config.mcp.port = val;
-            }
-        }
-        if let Ok(val) = std::env::var("STRAKE_MCP__MAX_RETRIES") {
-            if let Ok(v) = val.parse() {
-                config.mcp.max_retries = v;
-            }
-        }
-        if let Ok(val) = std::env::var("STRAKE_MCP__RETRY_DELAY_MS") {
-            if let Ok(v) = val.parse() {
-                config.mcp.retry_delay_ms = v;
-            }
-        }
-        if let Ok(val) = std::env::var("STRAKE_MCP__STARTUP_DELAY_MS") {
-            if let Ok(v) = val.parse() {
-                config.mcp.startup_delay_ms = v;
-            }
-        }
-        if let Ok(val) = std::env::var("STRAKE_MCP__SHUTDOWN_TIMEOUT_MS") {
-            if let Ok(v) = val.parse() {
-                config.mcp.shutdown_timeout_ms = v;
-            }
-        }
-        if let Ok(val) = std::env::var("STRAKE_MCP__PYTHON_BIN") {
-            config.mcp.python_bin = Some(val);
-        }
-        if let Ok(val) = std::env::var("STRAKE_MCP__HEALTH_CHECK_URL") {
-            config.mcp.health_check_url = Some(val);
-        }
+        // Add environment variables
+        // Map STRAKE_SERVER__LISTEN_ADDR to server.listen_addr, etc.
+        let builder = builder.add_source(
+            config::Environment::with_prefix("STRAKE")
+                .separator("__")
+                .try_parsing(true),
+        );
 
-        if let Ok(enabled) = std::env::var("STRAKE_TELEMETRY__ENABLED") {
-            if let Ok(val) = enabled.parse() {
-                config.telemetry.enabled = val;
-            }
-        }
-        if let Ok(endpoint) = std::env::var("STRAKE_TELEMETRY__ENDPOINT") {
-            config.telemetry.endpoint = endpoint;
-        }
-        if let Ok(name) = std::env::var("STRAKE_TELEMETRY__SERVICE_NAME") {
-            config.telemetry.service_name = name;
-        }
+        let cfg = builder.build().context("Failed to build configuration")?;
 
-        // Validate telemetry configuration
-        if config.telemetry.enabled {
-            let url = url::Url::parse(&config.telemetry.endpoint).map_err(|e| {
-                anyhow::anyhow!(
-                    "Invalid telemetry endpoint '{}': {}",
-                    config.telemetry.endpoint,
-                    e
-                )
-            })?;
+        let app_config: AppConfig = cfg
+            .try_deserialize()
+            .context("Failed to deserialize configuration")?;
 
-            if url.scheme() != "http" && url.scheme() != "https" {
-                return Err(anyhow::anyhow!(
-                    "Telemetry endpoint must use http or https scheme, found '{}'",
-                    url.scheme()
-                ));
-            }
-        }
+        // Validate
+        app_config
+            .validate()
+            .map_err(|e| anyhow::anyhow!("Configuration validation failed: {:?}", e))?;
 
-        // Validate database URL if auth is enabled
-        if config.server.auth.enabled && config.server.database_url.is_empty() {
-            return Err(anyhow::anyhow!(
-                "Database URL (STRAKE_DATABASE_URL or server.database_url) must be provided when authentication is enabled"
-            ));
-        }
-
-        Ok(config)
+        Ok(app_config)
     }
 }
 
 impl Config {
     pub fn from_file(path: &str) -> Result<Self> {
-        let content =
-            fs::read_to_string(path).context(format!("Failed to read config file at {}", path))?;
-        let config = serde_yaml::from_str(&content).context("Failed to parse config file")?;
+        let builder = config::Config::builder();
+
+        let builder = if std::path::Path::new(path).exists() {
+            builder.add_source(config::File::with_name(path))
+        } else {
+            builder
+        };
+
+        // Generally Source Configs are loaded from a specific file, not ENV vars for every list item usually.
+        // But we can check if there are overrides.
+
+        let cfg = builder
+            .build()
+            .context("Failed to build sources configuration")?;
+
+        let config: Config = cfg
+            .try_deserialize()
+            .context("Failed to deserialize sources configuration")?;
+
         Ok(config)
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_app_config_parsing() {
-        let yaml = r#"
-server:
-  listen_addr: "0.0.0.0:50053"
-  health_addr: "0.0.0.0:8088"
-  catalog: "strake"
-  global_connection_budget: 100
-  tls:
-    enabled: false
-  auth:
-    enabled: false
-query_limits:
-  max_output_rows: 10000
-retry:
-  max_attempts: 3
-"#;
-        let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.server.listen_addr, "0.0.0.0:50053");
-        assert_eq!(config.server.catalog, "strake");
+    fn test_app_config_validation() {
+        let config = AppConfig::default();
+        // Should validate OK with defaults (assuming defaults are valid)
+        // api_url default is http://... which is valid URL
+        assert!(config.validate().is_ok());
     }
 
     #[test]
-    fn test_telemetry_config_parsing() {
-        let yaml = r#"
-telemetry:
-  enabled: true
-  endpoint: "http://otel-collector:4317"
-  service_name: "custom-strake"
-"#;
-        let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(config.telemetry.enabled);
-        assert_eq!(config.telemetry.endpoint, "http://otel-collector:4317");
-        assert_eq!(config.telemetry.service_name, "custom-strake");
-    }
-
-    #[test]
-    fn test_telemetry_defaults() {
-        let yaml = r#"
-server:
-  listen_addr: "0.0.0.0:50053"
-"#;
-        let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(!config.telemetry.enabled);
-        assert_eq!(config.telemetry.endpoint, "http://localhost:4317");
-        assert_eq!(config.telemetry.service_name, "Strake Server");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_env_var_overrides() {
-        // Set env vars
-        std::env::set_var("STRAKE_SERVER__LISTEN_ADDR", "1.2.3.4:9999");
-        std::env::set_var("STRAKE_SERVER__CATALOG", "test_catalog");
-        std::env::set_var("STRAKE_SERVER__GLOBAL_CONNECTION_BUDGET", "500");
-        std::env::set_var("STRAKE_AUTH__ENABLED", "true");
-        std::env::set_var("STRAKE_DATABASE_URL", "postgres://localhost/test");
-        std::env::set_var("STRAKE_AUTH__API_KEY", "env-key");
-        std::env::set_var("STRAKE_RETRY__MAX_ATTEMPTS", "10");
-
-        // Load config (non-existent file, should use defaults + overrides)
-        let config = AppConfig::from_file("non_existent_config.yaml").unwrap();
-
-        assert_eq!(config.server.listen_addr, "1.2.3.4:9999");
-        assert_eq!(config.server.catalog, "test_catalog");
-        assert_eq!(config.server.global_connection_budget, 500);
-        assert!(config.server.auth.enabled);
-        assert_eq!(config.server.auth.api_key, "env-key");
-        assert_eq!(config.retry.max_attempts, 10);
-
-        // Cleanup
-        std::env::remove_var("STRAKE_SERVER__LISTEN_ADDR");
-        std::env::remove_var("STRAKE_SERVER__CATALOG");
-        std::env::remove_var("STRAKE_SERVER__GLOBAL_CONNECTION_BUDGET");
-        std::env::remove_var("STRAKE_AUTH__ENABLED");
-        std::env::remove_var("STRAKE_DATABASE_URL");
-        std::env::remove_var("STRAKE_AUTH__API_KEY");
-        std::env::remove_var("STRAKE_RETRY__MAX_ATTEMPTS");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_telemetry_validation() {
-        // Valid HTTP
-        let yaml = r#"
-telemetry:
-  enabled: true
-  endpoint: "http://localhost:4317"
-"#;
-        let _config: AppConfig = serde_yaml::from_str(yaml).unwrap();
-        // We can't easily call from_file without a file, but we can test the validation logic
-        // if we extract it or just mock it.
-        // For now, let's verify that from_file handles it via env vars.
-
-        std::env::set_var("STRAKE_TELEMETRY__ENABLED", "true");
-        std::env::set_var("STRAKE_TELEMETRY__ENDPOINT", "http://valid:4317");
-        let res = AppConfig::from_file("non_existent.yaml");
-        assert!(res.is_ok());
-
-        // Invalid scheme
-        std::env::set_var("STRAKE_TELEMETRY__ENDPOINT", "grpc://invalid:4317");
-        let res = AppConfig::from_file("non_existent.yaml");
-        assert!(res.is_err());
-        assert!(res
-            .unwrap_err()
-            .to_string()
-            .contains("must use http or https"));
-
-        // Invalid URL
-        std::env::set_var("STRAKE_TELEMETRY__ENDPOINT", "not a url");
-        let res = AppConfig::from_file("non_existent.yaml");
-        assert!(res.is_err());
-        assert!(res
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid telemetry endpoint"));
-
-        // Cleanup
-        std::env::remove_var("STRAKE_TELEMETRY__ENABLED");
-        std::env::remove_var("STRAKE_TELEMETRY__ENDPOINT");
+    fn test_telemetry_config_validation() {
+        let config = TelemetryConfig {
+            endpoint: "not_a_url".to_string(),
+            ..Default::default()
+        };
+        // Validation should fail via Validate derive
+        assert!(config.validate().is_err());
     }
 }

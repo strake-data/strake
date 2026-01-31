@@ -59,7 +59,7 @@ impl CacheKey {
         // Extract user context
         let (user_id, permissions_hash) = if let Some(u) = user {
             let mut perm_hasher = Sha256::new();
-            let mut sorted_perms = u.permissions.clone();
+            let mut sorted_perms = u.permissions.raw.clone();
             sorted_perms.sort();
             perm_hasher.update(sorted_perms.join(",").as_bytes());
             (u.id.clone(), format!("{:x}", perm_hasher.finalize()))

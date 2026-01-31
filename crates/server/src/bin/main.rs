@@ -46,9 +46,12 @@ async fn main() -> anyhow::Result<()> {
     println!("   Server Addr: {}", app_config.server.listen_addr);
     println!("--------------------------------------------------");
 
+    // Load sources path from environment or CLI argument
+    let sources_path = std::env::var("SOURCES_YAML").unwrap_or(args.sources);
+
     StrakeServer::new()
         .with_app_config(&args.config)
-        .with_config(&args.sources)
+        .with_config(&sources_path)
         .run()
         .await
 }

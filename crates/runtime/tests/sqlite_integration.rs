@@ -22,14 +22,18 @@ async fn test_sqlite_integration() -> Result<()> {
     let config = Config {
         sources: vec![SourceConfig {
             name: "my_sqlite".to_string(),
-            r#type: "sql".to_string(),
+            source_type: "sql".to_string(),
+            url: Some(db_path.clone()),
             default_limit: None,
             cache: None,
-            config: serde_yaml::to_value(HashMap::from([
+            config: serde_json::to_value(HashMap::from([
                 ("dialect".to_string(), "sqlite".to_string()),
                 ("connection".to_string(), db_path.clone()),
             ]))
             .unwrap(),
+            username: None,
+            password: None,
+            tables: vec![],
         }],
         cache: Default::default(),
     };
@@ -100,14 +104,18 @@ async fn test_sqlite_joins() -> Result<()> {
     let config = Config {
         sources: vec![SourceConfig {
             name: "db".to_string(),
-            r#type: "sql".to_string(),
+            source_type: "sql".to_string(),
+            url: Some(db_path.clone()),
             default_limit: None,
             cache: None,
-            config: serde_yaml::to_value(HashMap::from([
+            config: serde_json::to_value(HashMap::from([
                 ("dialect".to_string(), "sqlite".to_string()),
                 ("connection".to_string(), db_path.clone()),
             ]))
             .unwrap(),
+            username: None,
+            password: None,
+            tables: vec![],
         }],
         cache: Default::default(),
     };
@@ -182,25 +190,33 @@ async fn test_sqlite_cross_db_federation() -> Result<()> {
         sources: vec![
             SourceConfig {
                 name: "s1".to_string(),
-                r#type: "sql".to_string(),
+                source_type: "sql".to_string(),
+                url: Some(db1_path.clone()),
                 default_limit: None,
                 cache: None,
-                config: serde_yaml::to_value(HashMap::from([
+                config: serde_json::to_value(HashMap::from([
                     ("dialect".to_string(), "sqlite".to_string()),
                     ("connection".to_string(), db1_path),
                 ]))
                 .unwrap(),
+                username: None,
+                password: None,
+                tables: vec![],
             },
             SourceConfig {
                 name: "s2".to_string(),
-                r#type: "sql".to_string(),
+                source_type: "sql".to_string(),
+                url: Some(db2_path.clone()),
                 default_limit: None,
                 cache: None,
-                config: serde_yaml::to_value(HashMap::from([
+                config: serde_json::to_value(HashMap::from([
                     ("dialect".to_string(), "sqlite".to_string()),
                     ("connection".to_string(), db2_path),
                 ]))
                 .unwrap(),
+                username: None,
+                password: None,
+                tables: vec![],
             },
         ],
         cache: Default::default(),

@@ -11,10 +11,12 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
-secrecy = { workspace = true }
+secrecy = { workspace = true, features = ["serde"] }
+config = "0.14"
+validator = { version = "0.19", features = ["derive"] }
 tracing-subscriber = { workspace = true, features = ["registry"] }
 opentelemetry = { workspace = true, optional = true }
-opentelemetry-otlp = { version = "0.27", optional = true, features = ["grpc-tonic", "trace"] }
+opentelemetry-otlp = { version = "0.27", optional = true, features = ["grpc-tonic", "trace", "metrics"] }
 opentelemetry_sdk = { workspace = true, optional = true, features = ["rt-tokio"] }
 tracing-opentelemetry = { workspace = true, optional = true }
 datafusion = { workspace = true }
