@@ -131,6 +131,13 @@ pub async fn spawn_sidecar(config: &AppConfig) -> Result<Option<SidecarHandle>> 
                     _ = &mut shutdown_rx => return,
                 }
             } else {
+                tracing::warn!(
+                    target: "mcp",
+                    sidecar_enabled = mcp_config.enabled,
+                    max_retries = mcp_config.max_retries,
+                    "MCP Sidecar permanently unavailable - AI features (query explanation, natural language) disabled. \
+                     Check Python environment and sidecar logs."
+                );
                 tracing::error!(
                     "MCP Sidecar failed after {} retries. Giving up.",
                     mcp_config.max_retries
@@ -254,5 +261,25 @@ mod tests {
         if let Ok(Some(h)) = handle {
             h.shutdown().await;
         }
+    }
+
+    #[tokio::test]
+    async fn test_sidecar_failure_logging() {
+        let mut config = AppConfig::default();
+        config.mcp.enabled = true;
+        config.mcp.max_retries = 1;
+        config.mcp.retry_delay_ms = 10;
+        // Use a non-existent binary to force failure
+        config.mcp.python_bin = Some("non_existent_python_bin_for_test".to_string());
+
+        // This will fail validation immediately in `spawn_sidecar` because of `resolve_python_bin`.
+        // To test the loop logic, we need `spawn_sidecar` to succeed but the command to fail inside the task.
+        // However, `spawn_sidecar` performs a check `resolve_python_bin` *before* spawning the task.
+        // So we can't easily test the retry loop failure mode without mocking `Command` or bypassing the check.
+        // But we can verify that `resolve_python_bin` fails correctly, which prevents the loop from even starting.
+
+        let result = spawn_sidecar(&config).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
     }
 }

@@ -61,6 +61,9 @@ pub struct SourceConfig {
     pub url: Option<String>,
     pub username: Option<String>,
 
+    #[serde(default)]
+    pub max_concurrent_queries: Option<usize>,
+
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

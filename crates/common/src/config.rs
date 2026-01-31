@@ -42,6 +42,8 @@ pub struct QueryLimits {
     pub max_scan_bytes: Option<usize>,
     #[serde(default = "default_limit")]
     pub default_limit: Option<usize>,
+    #[serde(default)]
+    pub query_timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, Default)]

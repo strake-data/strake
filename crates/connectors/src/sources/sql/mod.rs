@@ -93,6 +93,7 @@ impl SourceProvider for SqlSourceProvider {
             pool_size: sql_config.pool_size,
             explicit_tables: &explicit_tables,
             retry: effective_retry,
+            max_concurrent_queries: config.max_concurrent_queries.unwrap_or(0),
         })
         .await
     }
@@ -111,6 +112,7 @@ pub async fn register_sql_source(options: common::SqlRegistrationOptions<'_>) ->
         cb,
         explicit_tables: options.explicit_tables,
         retry: options.retry,
+        max_concurrent_queries: options.max_concurrent_queries,
     };
 
     match options.dialect {

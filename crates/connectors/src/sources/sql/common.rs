@@ -48,6 +48,7 @@ pub struct SqlSourceParams<'a> {
     pub cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
     pub explicit_tables: &'a Option<Vec<strake_common::config::TableConfig>>,
     pub retry: strake_common::config::RetrySettings,
+    pub max_concurrent_queries: usize,
 }
 
 pub struct SqlRegistrationOptions<'a> {
@@ -59,4 +60,5 @@ pub struct SqlRegistrationOptions<'a> {
     pub pool_size: usize,
     pub explicit_tables: &'a Option<Vec<strake_common::config::TableConfig>>,
     pub retry: strake_common::config::RetrySettings,
+    pub max_concurrent_queries: usize,
 }

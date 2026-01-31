@@ -6,8 +6,11 @@ use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
+use futures::stream::TryStreamExt;
+use futures::TryFutureExt;
 use std::any::Any;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 use super::common::{FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory};
 
@@ -18,6 +21,7 @@ pub async fn register_tables(
     metadata_fetcher: Option<Box<dyn SqlMetadataFetcher>>,
     factory: &dyn SqlProviderFactory,
     cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
+    max_concurrent_queries: usize,
     tables: Vec<(String, String)>, // (table_name, target_schema_name)
 ) -> Result<()> {
     use datafusion::catalog::MemorySchemaProvider;
@@ -56,6 +60,7 @@ pub async fn register_tables(
             .await
         {
             Ok(provider) => {
+                let provider = wrap_concurrent(provider, max_concurrent_queries);
                 let qualified =
                     TableReference::full(target_catalog, &*target_schema, table_name.as_str());
                 if let Err(e) = context.register_table(qualified, provider) {
@@ -164,5 +169,158 @@ impl TableProvider for MetadataEnrichedTableProvider {
     ) -> datafusion::common::Result<Vec<datafusion::logical_expr::TableProviderFilterPushDown>>
     {
         self.inner.supports_filters_pushdown(filters)
+    }
+}
+
+pub fn wrap_concurrent(
+    provider: Arc<dyn TableProvider>,
+    max_concurrency: usize,
+) -> Arc<dyn TableProvider> {
+    if max_concurrency == 0 {
+        return provider;
+    }
+    Arc::new(ConcurrencyLimitedTableProvider {
+        inner: provider,
+        semaphore: Arc::new(Semaphore::new(max_concurrency)),
+    })
+}
+
+#[derive(Debug)]
+pub struct ConcurrencyLimitedTableProvider {
+    inner: Arc<dyn TableProvider>,
+    semaphore: Arc<Semaphore>,
+}
+
+#[async_trait]
+impl TableProvider for ConcurrencyLimitedTableProvider {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+    fn table_type(&self) -> TableType {
+        self.inner.table_type()
+    }
+    async fn scan(
+        &self,
+        state: &dyn datafusion::catalog::Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        let inner_plan = self.inner.scan(state, projection, filters, limit).await?;
+        Ok(Arc::new(ConcurrencyLimitedExec {
+            inner: inner_plan,
+            semaphore: self.semaphore.clone(),
+        }))
+    }
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> datafusion::common::Result<Vec<datafusion::logical_expr::TableProviderFilterPushDown>>
+    {
+        self.inner.supports_filters_pushdown(filters)
+    }
+}
+
+#[derive(Debug)]
+pub struct ConcurrencyLimitedExec {
+    inner: Arc<dyn ExecutionPlan>,
+    semaphore: Arc<Semaphore>,
+}
+
+impl datafusion::physical_plan::DisplayAs for ConcurrencyLimitedExec {
+    fn fmt_as(
+        &self,
+        t: datafusion::physical_plan::DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        match t {
+            datafusion::physical_plan::DisplayFormatType::Default
+            | datafusion::physical_plan::DisplayFormatType::Verbose => {
+                write!(
+                    f,
+                    "ConcurrencyLimitedExec: permits={}",
+                    self.semaphore.available_permits()
+                )
+            }
+        }
+    }
+}
+
+impl ExecutionPlan for ConcurrencyLimitedExec {
+    fn name(&self) -> &str {
+        "ConcurrencyLimitedExec"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+    fn properties(&self) -> &datafusion::physical_plan::PlanProperties {
+        self.inner.properties()
+    }
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        self.inner.children()
+    }
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        Ok(Arc::new(ConcurrencyLimitedExec {
+            inner: self.inner.clone().with_new_children(children)?,
+            semaphore: self.semaphore.clone(),
+        }))
+    }
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<datafusion::execution::TaskContext>,
+    ) -> datafusion::common::Result<datafusion::physical_plan::SendableRecordBatchStream> {
+        let semaphore = self.semaphore.clone();
+        let inner = self.inner.clone();
+
+        let stream = futures::stream::once(async move {
+            let permit = semaphore
+                .acquire_owned()
+                .await
+                .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+
+            let stream = inner.execute(partition, context)?;
+            Ok::<_, datafusion::error::DataFusionError>((stream, permit))
+        })
+        .try_flat_map(|(stream, permit)| {
+            let permit_stream = PermitStream {
+                inner: stream,
+                _permit: permit,
+            };
+            futures::stream::once(async move { Ok(futures::stream::boxed(permit_stream)) })
+                .try_flatten()
+        });
+
+        use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.schema(),
+            Box::pin(stream),
+        )))
+    }
+}
+
+struct PermitStream {
+    inner: datafusion::physical_plan::SendableRecordBatchStream,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl futures::stream::Stream for PermitStream {
+    type Item = datafusion::common::Result<datafusion::arrow::record_batch::RecordBatch>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use futures::stream::StreamExt;
+        self.inner.poll_next_unpin(cx)
     }
 }

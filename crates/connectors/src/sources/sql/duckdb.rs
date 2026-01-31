@@ -351,6 +351,7 @@ pub async fn register_duckdb(params: SqlSourceParams<'_>) -> Result<()> {
     let cb = params.cb.clone();
     let explicit_tables = params.explicit_tables;
     let retry_settings = params.retry;
+    let max_concurrent_queries = params.max_concurrent_queries;
 
     retry_async(
         &format!("register_duckdb({})", name),
@@ -365,6 +366,7 @@ pub async fn register_duckdb(params: SqlSourceParams<'_>) -> Result<()> {
                     connection_string,
                     cb,
                     explicit_tables,
+                    max_concurrent_queries,
                 )
                 .await
             }
@@ -380,6 +382,7 @@ async fn try_register_duckdb(
     connection_string: &str,
     cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
     explicit_tables: &Option<Vec<TableConfig>>,
+    max_concurrent_queries: usize,
 ) -> Result<()> {
     // For DuckDB, connection is file path.
     // We don't use a pool yet, just path string.
@@ -416,6 +419,7 @@ async fn try_register_duckdb(
         fetcher,
         &factory,
         cb,
+        max_concurrent_queries,
         tables_to_register,
     )
     .await?;

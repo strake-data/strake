@@ -42,18 +42,40 @@ impl PhysicalOptimizerRule for CostBasedValidator {
         // Validate against thresholds
         if let Some(max_rows) = self.max_rows {
             if cost_visitor.total_rows > max_rows {
-                return Err(DataFusionError::Plan(format!(
-                    "Query rejected: Estimated row count {} exceeds limit of {}",
-                    cost_visitor.total_rows, max_rows
+                let context = strake_error::ErrorContext::BudgetExceeded {
+                    estimated_rows: cost_visitor.total_rows,
+                    limit: max_rows,
+                    suggestion:
+                        "Add a LIMIT clause or increase the 'max_output_rows' in query limits"
+                            .to_string(),
+                };
+
+                return Err(DataFusionError::External(Box::new(
+                    strake_error::StrakeError::new(
+                        strake_error::ErrorCode::BudgetExceeded,
+                        format!(
+                            "Query estimated {} rows exceeds limit of {}",
+                            cost_visitor.total_rows, max_rows
+                        ),
+                    )
+                    .with_context(context),
                 )));
             }
         }
 
         if let Some(max_bytes) = self.max_bytes {
             if cost_visitor.total_bytes > max_bytes {
-                return Err(DataFusionError::Plan(format!(
-                    "Query rejected: Estimated byte size {} exceeds limit of {}",
-                    cost_visitor.total_bytes, max_bytes
+                // Note: BudgetExceeded context for bytes could be added to ErrorContext in future
+                // For now using the same error code but generic message
+                return Err(DataFusionError::External(Box::new(
+                    strake_error::StrakeError::new(
+                        strake_error::ErrorCode::BudgetExceeded,
+                        format!(
+                            "Query estimated {} bytes exceeds limit of {}",
+                            cost_visitor.total_bytes, max_bytes
+                        ),
+                    )
+                    .with_hint("Refine your query to select fewer columns or use filters"),
                 )));
             }
         }

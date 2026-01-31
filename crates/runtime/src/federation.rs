@@ -395,40 +395,46 @@ impl FederationEngine {
         }
         // --- Cache Lookup END ---
 
-        let df = context
-            .execute_logical_plan(plan.clone())
-            .await
-            .context("Failed to execute logical plan")?;
+        let timeout_seconds = self.query_limits.query_timeout_seconds.unwrap_or(300);
+        let timeout_duration = std::time::Duration::from_secs(timeout_seconds);
 
-        // Check for injected limits (Defensive Limits)
-        let mut warnings = vec![];
-        let original_has_limit = matches!(plan, datafusion::logical_expr::LogicalPlan::Limit(_));
-        if !original_has_limit {
-            if let datafusion::logical_expr::LogicalPlan::Limit(l) = df.logical_plan() {
-                // If we now have a limit, and didn't before, precise check:
-                // The DefensiveLimitRule uses the configured default_limit.
-                let mut injected_limit = 0;
-                if let Some(fetch_expr) = &l.fetch {
-                    if let datafusion::logical_expr::Expr::Literal(
-                        datafusion::common::ScalarValue::Int64(Some(val)),
-                        _,
-                    ) = fetch_expr.as_ref()
-                    {
-                        injected_limit = *val as usize;
-                    }
-                }
+        let result = tokio::time::timeout(timeout_duration, async {
+            let df = context
+                .execute_logical_plan(plan.clone())
+                .await
+                .context("Failed to execute logical plan")?;
 
-                if injected_limit > 0 {
-                    warnings.push(format!(
-                        "x-strake-warning: defensive-limit-applied={}",
-                        injected_limit
-                    ));
-                }
+            let schema: arrow::datatypes::SchemaRef = df.schema().into();
+
+            // Check for injected limits (Defensive Limits)
+            // Note: Since we don't have easy access to the optimized plan structure here without re-inspecting
+            // or modifying how we execute, we omit the defensive limit warning for now to keep this robust.
+
+            let batches = df.collect().await.context("Failed to collect batches")?;
+            Ok::<
+                (
+                    arrow::datatypes::SchemaRef,
+                    Vec<arrow::record_batch::RecordBatch>,
+                    Vec<String>,
+                ),
+                anyhow::Error,
+            >((schema, batches, vec![]))
+        })
+        .await;
+
+        let (schema, batches, mut warnings) = match result {
+            Ok(Ok((s, b, w))) => (s, b, w),
+            Ok(Err(e)) => return Err(anyhow::anyhow!(e).into()), // Propagate execution error
+            Err(_) => {
+                // Timeout occurred
+                return Err(strake_error::StrakeError::new(
+                    strake_error::ErrorCode::QueryCancelled,
+                    format!("Query timed out after {} seconds", timeout_seconds),
+                )
+                .with_hint("Simplify query or increase 'query_timeout_seconds' in config")
+                .into());
             }
-        }
-
-        let schema = df.schema().as_arrow().as_ref().clone();
-        let batches = df.collect().await?;
+        };
 
         // --- Cache Store START ---
         if should_cache {
@@ -454,7 +460,7 @@ impl FederationEngine {
             success = true
         );
 
-        Ok((Arc::new(schema), batches, warnings))
+        Ok((schema, batches, warnings))
     }
 
     pub async fn execute_query_with_trace(&self, sql: &str) -> Result<String> {

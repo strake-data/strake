@@ -35,6 +35,7 @@ pub async fn register_sqlite(params: SqlSourceParams<'_>) -> Result<()> {
     let cb = params.cb.clone();
     let explicit_tables = params.explicit_tables;
     let retry_settings = params.retry;
+    let max_concurrent_queries = params.max_concurrent_queries;
 
     retry_async(
         &format!("register_sqlite({})", name),
@@ -49,6 +50,7 @@ pub async fn register_sqlite(params: SqlSourceParams<'_>) -> Result<()> {
                     connection_string,
                     cb,
                     explicit_tables,
+                    max_concurrent_queries,
                 )
                 .await
             }
@@ -64,6 +66,7 @@ async fn try_register_sqlite(
     connection_string: &str,
     cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
     explicit_tables: &Option<Vec<TableConfig>>,
+    max_concurrent_queries: usize,
 ) -> Result<()> {
     let pool = SqliteConnectionPool::new(
         connection_string,
@@ -119,6 +122,7 @@ async fn try_register_sqlite(
         fetcher,
         &factory,
         cb,
+        max_concurrent_queries,
         tables_to_register,
     )
     .await?;

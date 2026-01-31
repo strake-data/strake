@@ -34,6 +34,7 @@ pub async fn register_postgres(params: SqlSourceParams<'_>) -> Result<()> {
     let cb = params.cb.clone();
     let explicit_tables = params.explicit_tables;
     let retry_settings = params.retry;
+    let max_concurrent_queries = params.max_concurrent_queries;
 
     retry_async(
         &format!("register_postgres({})", name),
@@ -49,6 +50,7 @@ pub async fn register_postgres(params: SqlSourceParams<'_>) -> Result<()> {
                     pool_size,
                     cb,
                     explicit_tables,
+                    max_concurrent_queries,
                 )
                 .await
             }
@@ -65,6 +67,7 @@ async fn try_register_postgres(
     pool_size: usize,
     cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
     explicit_tables: &Option<Vec<TableConfig>>,
+    max_concurrent_queries: usize,
 ) -> Result<()> {
     let pool = create_pg_pool(connection_string, pool_size).await?;
     let inner_factory = PostgresTableFactory::new(pool);
@@ -110,6 +113,7 @@ async fn try_register_postgres(
         fetcher,
         &factory,
         cb,
+        max_concurrent_queries,
         tables_to_register,
     )
     .await?;

@@ -7,7 +7,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
-  STRAKE_LICENSE_PUBKEY_PATH: keys/public.pem
+  STRAKE_LICENSE_PUBKEY_PATH: ${{ github.workspace }}/keys/public.pem
 
 jobs:
   lint:
@@ -40,6 +40,13 @@ jobs:
       
       - uses: Swatinem/rust-cache@v2
 
+      - name: Setup Enterprise Key
+        run: |
+          mkdir -p keys
+          echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem
+          echo "MCowBQYDK2VwAyEAYTi9PtvXVWepOcLdKgBPe/TcZxat3g4f7nRR6My7QM0=" >> keys/public.pem
+          echo "-----END PUBLIC KEY-----" >> keys/public.pem
+
       - name: Rustfmt
         run: cargo fmt --all -- --check
 
@@ -71,6 +78,13 @@ jobs:
       
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      
+      - name: Setup Enterprise Key
+        run: |
+          mkdir -p keys
+          echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem
+          echo "MCowBQYDK2VwAyEAYTi9PtvXVWepOcLdKgBPe/TcZxat3g4f7nRR6My7QM0=" >> keys/public.pem
+          echo "-----END PUBLIC KEY-----" >> keys/public.pem
       
       - name: Run Unit Tests
         run: cargo test --workspace

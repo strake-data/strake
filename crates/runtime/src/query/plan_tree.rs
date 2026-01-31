@@ -196,6 +196,7 @@ impl PlanTreeFormatter {
         }
 
         // For filter nodes, show the filter expression
+        // Any FilterExec node in the physical plan represents filtering happening in Strake (not pushed down completely)
         if name.contains("Filter") {
             if let Some(filter_start) = display.find("predicate=") {
                 let filter_part = &display[filter_start..];
@@ -204,7 +205,11 @@ impl PlanTreeFormatter {
                 } else {
                     filter_part.to_string()
                 };
-                let _ = writeln!(output, "{}filter: {} ✓", detail_prefix, filter_display);
+                let _ = writeln!(
+                    output,
+                    "{}filter: {} [NOT PUSHED - Executed Locally]",
+                    detail_prefix, filter_display
+                );
             }
         }
 
@@ -294,5 +299,25 @@ mod tests {
         assert!(formatter.show_federation);
         assert!(formatter.show_pushdown);
         assert!(formatter.show_metrics);
+    }
+
+    #[test]
+    fn test_filter_not_pushed_annotation() {
+        use datafusion::common::ScalarValue;
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::physical_plan::expressions::Literal;
+        use datafusion::physical_plan::filter::FilterExec;
+
+        // Construct a simple plan: Filter -> Empty
+        let schema = Arc::new(datafusion::arrow::datatypes::Schema::empty());
+        let empty = Arc::new(EmptyExec::new(schema.clone()));
+
+        let predicate = Arc::new(Literal::new(ScalarValue::Boolean(Some(true))));
+        let filter = Arc::new(FilterExec::try_new(predicate, empty).unwrap());
+
+        let formatter = PlanTreeFormatter::new();
+        let output = formatter.format(&(filter as Arc<dyn ExecutionPlan>));
+
+        assert!(output.contains("[NOT PUSHED - Executed Locally]"));
     }
 }

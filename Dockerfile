@@ -45,6 +45,15 @@ COPY crates/ ./crates/
 COPY python/ ./python/
 COPY strake-enterprise/ ./strake-enterprise/
 
+# Create public key for enterprise build
+# This is safe to include in the Dockerfile as it is a public key
+RUN mkdir -p keys && \
+    echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem && \
+    echo "MCowBQYDK2VwAyEAYTi9PtvXVWepOcLdKgBPe/TcZxat3g4f7nRR6My7QM0=" >> keys/public.pem && \
+    echo "-----END PUBLIC KEY-----" >> keys/public.pem
+
+ENV STRAKE_LICENSE_PUBKEY_PATH=keys/public.pem
+
 # Build all binaries with musl for static linking
 # Use vendored OpenSSL to avoid runtime dependencies
 ENV OPENSSL_VENDORED=1

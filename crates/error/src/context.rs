@@ -63,6 +63,13 @@ pub enum ErrorContext {
         reason: String,
     },
 
+    /// Context for STRAKE-2006 (BudgetExceeded)
+    BudgetExceeded {
+        estimated_rows: usize,
+        limit: usize,
+        suggestion: String,
+    },
+
     /// Generic key-value context for extensibility
     Generic {
         #[serde(flatten)]
