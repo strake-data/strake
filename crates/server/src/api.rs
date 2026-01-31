@@ -1,8 +1,9 @@
 use axum::{
     extract::{Path, State},
     routing::{get, post},
-    Json, Router,
+    Extension, Json, Router,
 };
+use chrono::Utc;
 use std::sync::Arc;
 use strake_common::models::{
     QueryRequest, QueryResponse, SourcesConfig, TableDiscovery, ValidationRequest,
@@ -228,6 +229,7 @@ async fn list_sources(State(state): State<Arc<QueryState>>) -> Json<SourcesConfi
 
 async fn execute_query(
     State(state): State<Arc<QueryState>>,
+    Extension(user): Extension<strake_common::auth::AuthenticatedUser>,
     Json(payload): Json<QueryRequest>,
 ) -> Json<QueryResponse> {
     // License Check
@@ -239,9 +241,18 @@ async fn execute_query(
         });
     }
 
-    tracing::info!("Executing query: {}", payload.sql);
+    let user_id = user.id.clone();
+    let scrubbed_sql = strake_common::scrubber::scrub(&payload.sql);
 
-    match state.engine.execute_query(&payload.sql, None).await {
+    tracing::info!(
+        target: "audit",
+        event = "rest_query",
+        user_id = %user_id,
+        sql = %scrubbed_sql,
+        timestamp = %Utc::now().to_rfc3339(),
+    );
+
+    match state.engine.execute_query(&payload.sql, Some(user)).await {
         Ok((_schema, batches, _warnings)) => {
             // Convert RecordBatches to JSON using ArrayWriter
             let mut buf = Vec::new();

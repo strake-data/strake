@@ -218,6 +218,9 @@ pub struct ServerSettings {
 
     #[serde(default = "default_server_name")]
     pub name: String,
+
+    #[serde(default)]
+    pub audit: AuditSettings,
 }
 
 fn default_listen_addr() -> String {
@@ -301,6 +304,27 @@ fn default_cache_ttl() -> u64 {
 
 fn default_cache_capacity() -> u64 {
     DEFAULT_CACHE_CAPACITY
+}
+
+#[derive(Debug, Deserialize, Clone, Validate)]
+pub struct AuditSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_audit_failure_mode")]
+    pub failure_mode: String, // "shutdown" or "alert"
+}
+
+impl Default for AuditSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            failure_mode: default_audit_failure_mode(),
+        }
+    }
+}
+
+fn default_audit_failure_mode() -> String {
+    "alert".to_string()
 }
 
 // Config implementation

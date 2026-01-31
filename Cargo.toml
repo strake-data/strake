@@ -42,6 +42,7 @@ secrecy = { version = "0.10", features = ["serde"] }
 anyhow = "1.0"
 thiserror = "1.0"
 tonic = "0.14"
+chrono = "0.4"
 futures = "0.3"
 async-trait = "0.1"
 tower = "0.5"
@@ -51,10 +52,10 @@ url = "2.5"
 sha2 = "0.10"
 
 # Telemetry & Observability
-opentelemetry = "0.27"
-opentelemetry-otlp = "0.27"
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
-tracing-opentelemetry = "0.28"
+opentelemetry = "0.31"
+opentelemetry-otlp = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
+tracing-opentelemetry = "0.32.1"
 prometheus = "0.13"
 once_cell = "1.20"
 nix = "0.29.0"

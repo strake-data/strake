@@ -26,6 +26,7 @@ futures = "0.3"
 anyhow = { workspace = true }
 prost = { workspace = true }
 arrow = { workspace = true }
+chrono = { workspace = true }
 datafusion = { workspace = true }
 tracing-appender = "0.2.4"
 axum = { workspace = true }

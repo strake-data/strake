@@ -9,8 +9,9 @@ use anyhow::Result;
 #[cfg(feature = "telemetry")]
 use {
     opentelemetry::trace::TracerProvider, opentelemetry::KeyValue,
-    opentelemetry_otlp::WithExportConfig, opentelemetry_sdk::metrics::MeterProviderBuilder,
-    opentelemetry_sdk::trace::TracerProvider as SdkTracerProvider, opentelemetry_sdk::Resource,
+    opentelemetry_otlp::WithExportConfig,
+    opentelemetry_sdk::metrics::PeriodicReader,
+    opentelemetry_sdk::trace::SdkTracerProvider, opentelemetry_sdk::Resource,
     tracing_opentelemetry::OpenTelemetryLayer,
 };
 
@@ -32,17 +33,18 @@ where
             .with_endpoint(endpoint)
             .build()?;
 
+        let resource = Resource::builder()
+            .with_attributes(vec![KeyValue::new("service.name", service_name.to_string())])
+            .build();
+
         let provider = SdkTracerProvider::builder()
-            .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
-            .with_resource(Resource::new(vec![KeyValue::new(
-                "service.name",
-                service_name.to_string(),
-            )]))
+            .with_batch_exporter(exporter)
+            .with_resource(resource)
             .build();
 
         let tracer = provider.tracer(service_name.to_string());
 
-        // Set the global tracer provider so that other parts of the app can use it
+        // Set the global tracer provider
         opentelemetry::global::set_tracer_provider(provider);
 
         // 2. Initialize Metrics
@@ -60,23 +62,22 @@ where
 
 #[cfg(feature = "telemetry")]
 fn init_metrics(service_name: &str, endpoint: &str) -> Result<()> {
+    use opentelemetry_sdk::metrics::SdkMeterProvider;
+
     let exporter = opentelemetry_otlp::MetricExporter::builder()
         .with_tonic()
         .with_endpoint(endpoint)
         .build()?;
 
-    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(
-        exporter,
-        opentelemetry_sdk::runtime::Tokio,
-    )
-    .build();
+    let reader = PeriodicReader::builder(exporter).build();
 
-    let provider = MeterProviderBuilder::default()
+    let provider = SdkMeterProvider::builder()
         .with_reader(reader)
-        .with_resource(Resource::new(vec![KeyValue::new(
-            "service.name",
-            service_name.to_string(),
-        )]))
+        .with_resource(
+            Resource::builder()
+                .with_attributes(vec![KeyValue::new("service.name", service_name.to_string())])
+                .build(),
+        )
         .build();
 
     opentelemetry::global::set_meter_provider(provider);
@@ -86,6 +87,6 @@ fn init_metrics(service_name: &str, endpoint: &str) -> Result<()> {
 pub fn shutdown_telemetry() {
     #[cfg(feature = "telemetry")]
     {
-        opentelemetry::global::shutdown_tracer_provider();
+        // Global shutdown moved to explicit provider drops or flush in 0.31
     }
 }

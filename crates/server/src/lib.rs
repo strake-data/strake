@@ -191,7 +191,7 @@ impl StrakeServer {
         };
 
         // Ensure logs directory exists
-        std::fs::create_dir_all("logs").ok();
+        std::fs::create_dir_all("logs").expect("Failed to create logs directory");
 
         // Appenders
         let metrics_appender = tracing_appender::rolling::daily("logs", "metrics.jsonl");
@@ -239,11 +239,18 @@ impl StrakeServer {
                     metadata.target() == "audit"
                 }));
 
-            registry
-                .with(queries_layer)
-                .with(audit_layer)
-                .try_init()
-                .ok();
+            let audit_init_res = registry.with(queries_layer).with(audit_layer).try_init();
+
+            if let Err(e) = audit_init_res {
+                if app_config.server.audit.failure_mode == "shutdown" {
+                    panic!(
+                        "Audit logging initialization failed and audit_failure_mode=shutdown: {}",
+                        e
+                    );
+                } else {
+                    tracing::error!("Audit logging initialization failed: {}", e);
+                }
+            }
         } else {
             registry.try_init().ok();
         }

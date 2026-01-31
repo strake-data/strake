@@ -1,4 +1,5 @@
 use crate::license::{LicenseCache, LicenseState};
+use chrono::Utc;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -80,6 +81,14 @@ impl StrakeFlightSqlService {
 
     /// Simpler conversion for planning errors
     fn to_plan_error(e: datafusion::error::DataFusionError) -> Status {
+        // Detect Enterprise errors via prefix to avoid circular dependencies
+        // (strake-enterprise depends on strake-server).
+
+        let msg = e.to_string();
+        if msg.contains("[ERR_CONTRACT_VIOLATION]") {
+            return Status::permission_denied(msg);
+        }
+
         let strake_error = StrakeError::from(datafusion::error::DataFusionError::Execution(
             format!("{:#}", e).replace('\n', " || "),
         ));
@@ -136,32 +145,70 @@ impl StrakeFlightSqlService {
         tracing::info!(sql = %sql, "Executing Flight SQL query");
 
         let user = self.get_user(request);
-        let (schema, batches, warnings) = self
-            .engine
-            .execute_query(sql, user)
-            .await
-            .map_err(Self::to_status_with_metadata)?;
+        let user_id = user.as_ref().map(|u| u.id.clone()).unwrap_or_default();
+        let scrubbed_sql = strake_common::scrubber::scrub(sql);
+        let start = std::time::Instant::now();
 
-        let flight_data = arrow_flight::utils::batches_to_flight_data(&schema, batches)
-            .map_err(|e| Status::internal(e.to_string()))?;
+        tracing::info!(
+            target: "audit",
+            event = "query_start",
+            user_id = %user_id,
+            sql = %scrubbed_sql,
+            timestamp = %Utc::now().to_rfc3339(),
+        );
 
-        let stream = futures::stream::iter(flight_data.into_iter().map(Ok));
-        let stream: Pin<Box<dyn Stream<Item = Result<arrow_flight::FlightData, Status>> + Send>> =
-            Box::pin(stream);
-        let mut response = Response::new(stream);
+        let result = self.engine.execute_query(sql, user).await;
 
-        for warning in warnings {
-            if let Some((k, v)) = warning.split_once(": ") {
-                if let (Ok(key), Ok(val)) = (
-                    tonic::metadata::MetadataKey::from_str(k),
-                    tonic::metadata::MetadataValue::try_from(v),
-                ) {
-                    response.metadata_mut().append(key, val);
+        match &result {
+            Ok((schema, batches, warnings)) => {
+                tracing::info!(
+                    target: "audit",
+                    event = "query_success",
+                    user_id = %user_id,
+                    sql = %scrubbed_sql,
+                    duration_ms = start.elapsed().as_millis() as u64,
+                    rows_returned = batches.iter().map(|b| b.num_rows()).sum::<usize>(),
+                    timestamp = %Utc::now().to_rfc3339(),
+                );
+
+                let flight_data =
+                    arrow_flight::utils::batches_to_flight_data(schema, batches.clone())
+                        .map_err(|e| Status::internal(e.to_string()))?;
+
+                let stream = futures::stream::iter(flight_data.into_iter().map(Ok));
+                let stream: Pin<
+                    Box<dyn Stream<Item = Result<arrow_flight::FlightData, Status>> + Send>,
+                > = Box::pin(stream);
+                let mut response = Response::new(stream);
+
+                for warning in warnings {
+                    if let Some((k, v)) = warning.split_once(": ") {
+                        if let (Ok(key), Ok(val)) = (
+                            tonic::metadata::MetadataKey::from_str(k),
+                            tonic::metadata::MetadataValue::try_from(v),
+                        ) {
+                            response.metadata_mut().append(key, val);
+                        }
+                    }
                 }
+
+                Ok(response)
+            }
+            Err(e) => {
+                tracing::error!(
+                    target: "audit",
+                    event = "query_failed",
+                    user_id = %user_id,
+                    sql = %scrubbed_sql,
+                    error = %e,
+                    duration_ms = start.elapsed().as_millis() as u64,
+                    timestamp = %chrono::Utc::now().to_rfc3339(),
+                );
+                Err(Self::to_status_with_metadata(
+                    anyhow::anyhow!(e.to_string()),
+                ))
             }
         }
-
-        Ok(response)
     }
 }
 

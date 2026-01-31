@@ -59,7 +59,7 @@ impl Authenticator for ApiKeyAuthenticator {
         }
 
         // 2. Verify Credentials
-        let (user_id, permissions) = verify_api_key_credentials(&self.pool, token_str).await?;
+        let (user_id, _key_id, permissions) = verify_api_key_credentials(&self.pool, token_str).await?;
 
         let user = AuthenticatedUser {
             id: user_id,
@@ -82,11 +82,11 @@ impl Authenticator for ApiKeyAuthenticator {
 /// 3. Verifies the full key using Argon2 hashing.
 /// 5. Updates the `last_used_at` timestamp on success.
 ///
-/// Returns `(user_id, permissions)` on success.
+/// Returns `(user_id, key_id, permissions)` on success.
 pub async fn verify_api_key_credentials(
     pool: &Pool,
     token_str: &str,
-) -> Result<(String, Vec<String>), Status> {
+) -> Result<(String, uuid::Uuid, Vec<String>), Status> {
     // We need at least the prefix length
     if token_str.len() < API_KEY_PREFIX_LENGTH {
         return Err(Status::unauthenticated("Invalid API Key format"));
@@ -141,7 +141,7 @@ pub async fn verify_api_key_credentials(
                 );
             }
 
-            return Ok((user_id, permissions));
+            return Ok((user_id, key_id, permissions));
         }
     }
 
