@@ -7,6 +7,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
+  STRAKE_LICENSE_PUBKEY_PATH: keys/public.pem
 
 jobs:
   lint:
