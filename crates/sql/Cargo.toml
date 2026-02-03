@@ -4,12 +4,6 @@ version.workspace = true
 license.workspace = true
 edition = "2021"
 
-[features]
-default = []
-# Emergency rollback feature: enables aggressive join aliasing (disabled by default due to DataFusion Unparser issue #13272)
-aggressive-join-aliasing = []
-
-
 [dependencies]
 strake-common = { path = "../common" }
 strake-error = { path = "../error" }
