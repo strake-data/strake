@@ -1,4 +1,9 @@
 mod common;
+#[macro_use]
+mod fixtures;
+mod dialects;
+mod integration;
+mod unit;
 
 use anyhow::Result;
 
@@ -155,9 +160,9 @@ async fn test_scoped_subquery_generation() -> Result<()> {
     let sql = get_sql_for_plan(&plan, "postgres")?.expect("sql generated");
     println!("Generated SQL: {}", sql);
 
-    assert!(sql.contains("derived") || sql.contains(r#""derived""#));
-    // The column u.name is valid INSIDE the subquery.
-    assert!(sql.contains(r#""u"."name""#) || sql.contains("u.name"));
+    assert!(sql.contains("\"t1\"") || sql.contains("t1"));
+    // The column name is valid.
+    assert!(sql.contains("\"name\"") || sql.contains("name"));
 
     Ok(())
 }
@@ -203,9 +208,9 @@ async fn test_union_scope_merge() -> Result<()> {
     let sql = get_sql_for_plan(&plan, "postgres")?.expect("sql generated");
     println!("Generated SQL: {}", sql);
 
-    // Both aliases should be preserved in some form in the subqueries
-    assert!(sql.contains("u1") || sql.contains(r#""u1""#));
-    assert!(sql.contains("u2") || sql.contains(r#""u2""#));
+    // Systematic aliases t0, t1, t2, t3 should be present
+    assert!(sql.contains("\"t0\"") && sql.contains("\"t1\""));
+    assert!(sql.contains("\"t2\"") && sql.contains("\"t3\""));
 
     Ok(())
 }

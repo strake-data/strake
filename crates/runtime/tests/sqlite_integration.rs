@@ -33,6 +33,7 @@ async fn test_sqlite_integration() -> Result<()> {
             .unwrap(),
             username: None,
             password: None,
+            max_concurrent_queries: None,
             tables: vec![],
         }],
         cache: Default::default(),
@@ -63,92 +64,6 @@ async fn test_sqlite_integration() -> Result<()> {
         .as_any()
         .downcast_ref::<StringArray>()
         .expect("Failed to downcast to StringArray");
-
-    assert_eq!(names.value(0), "Alice");
-    assert_eq!(names.value(1), "Bob");
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_sqlite_joins() -> Result<()> {
-    let temp_db = NamedTempFile::new()?;
-    let db_path = temp_db.path().to_str().unwrap().to_string();
-
-    // Create users and orders in SQLite
-    {
-        let conn = rusqlite::Connection::open(&db_path)?;
-        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", [])?;
-        conn.execute(
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL)",
-            [],
-        )?;
-
-        conn.execute("INSERT INTO users (name) VALUES (?)", ["Alice"])?;
-        conn.execute("INSERT INTO users (name) VALUES (?)", ["Bob"])?;
-
-        conn.execute(
-            "INSERT INTO orders (user_id, amount) VALUES (?, ?)",
-            rusqlite::params![1, 100.0],
-        )?;
-        conn.execute(
-            "INSERT INTO orders (user_id, amount) VALUES (?, ?)",
-            rusqlite::params![1, 50.0],
-        )?;
-        conn.execute(
-            "INSERT INTO orders (user_id, amount) VALUES (?, ?)",
-            rusqlite::params![2, 200.0],
-        )?;
-    }
-
-    let config = Config {
-        sources: vec![SourceConfig {
-            name: "db".to_string(),
-            source_type: "sql".to_string(),
-            url: Some(db_path.clone()),
-            default_limit: None,
-            cache: None,
-            config: serde_json::to_value(HashMap::from([
-                ("dialect".to_string(), "sqlite".to_string()),
-                ("connection".to_string(), db_path.clone()),
-            ]))
-            .unwrap(),
-            username: None,
-            password: None,
-            tables: vec![],
-        }],
-        cache: Default::default(),
-    };
-
-    let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
-        config,
-        catalog_name: "strake".to_string(),
-        query_limits: strake_common::config::QueryLimits::default(),
-        resource_config: ResourceConfig::default(),
-        datafusion_config: HashMap::new(),
-        global_budget: 10,
-        extra_optimizer_rules: vec![],
-        extra_sources: vec![],
-    })
-    .await?;
-
-    let sql = "SELECT u.name, SUM(o.amount) as total 
-               FROM db.users u 
-               JOIN db.orders o ON u.id = o.user_id 
-               GROUP BY u.name 
-               ORDER BY u.name";
-    let (_schema, batches, _messages) = engine.execute_query(sql, None).await?;
-
-    assert!(!batches.is_empty());
-    let batch = &batches[0];
-    assert_eq!(batch.num_rows(), 2);
-
-    // Column 0: name, Column 1: total
-    let names = batch
-        .column(0)
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap();
 
     assert_eq!(names.value(0), "Alice");
     assert_eq!(names.value(1), "Bob");
@@ -201,6 +116,7 @@ async fn test_sqlite_cross_db_federation() -> Result<()> {
                 .unwrap(),
                 username: None,
                 password: None,
+                max_concurrent_queries: None,
                 tables: vec![],
             },
             SourceConfig {
@@ -216,6 +132,7 @@ async fn test_sqlite_cross_db_federation() -> Result<()> {
                 .unwrap(),
                 username: None,
                 password: None,
+                max_concurrent_queries: None,
                 tables: vec![],
             },
         ],

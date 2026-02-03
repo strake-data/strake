@@ -83,6 +83,7 @@ pub async fn register_mysql(params: SqlSourceParams<'_>) -> Result<()> {
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn try_register_mysql(
     context: &SessionContext,
     catalog_name: &str,

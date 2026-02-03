@@ -441,6 +441,7 @@ impl MetadataStore for SqliteStore {
                          password: None,
                          default_limit: None,
                          cache: None,
+                         max_concurrent_queries: None,
                          tables,
                          config: serde_json::Value::Null,
                     });

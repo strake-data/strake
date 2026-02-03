@@ -59,6 +59,7 @@ pub async fn register_sqlite(params: SqlSourceParams<'_>) -> Result<()> {
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn try_register_sqlite(
     context: &SessionContext,
     catalog_name: &str,

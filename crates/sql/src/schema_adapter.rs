@@ -164,15 +164,18 @@ impl ExtensionPlanner for SchemaAdapterPlanner {
         for (logical_idx, logical_field) in target_schema.fields().iter().enumerate() {
             let logical_name = logical_field.name();
 
-            // Strategy: Find physical column by position first, then by name matching
+            // Strategy: Find physical column by position first, then by name matching.
+            // Using field indices is preferred for performance in high-throughput adapters.
             let physical_idx = if logical_idx < input_schema.fields().len() {
                 // Positional match (most reliable for adapters)
                 Some(logical_idx)
             } else {
-                // Fallback: search by name
-                input_schema.fields().iter().position(|f| {
-                    f.name() == logical_name || f.name().ends_with(&format!("_{}", logical_name))
-                })
+                // Fallback: search by name (avoiding format! in loop)
+                let suffix = format!("_{}", logical_name);
+                input_schema
+                    .fields()
+                    .iter()
+                    .position(|f| f.name() == logical_name || f.name().ends_with(&suffix))
             };
 
             let physical_idx =

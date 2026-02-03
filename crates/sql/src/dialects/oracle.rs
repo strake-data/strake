@@ -4,6 +4,7 @@
 
 use super::FunctionMapper;
 use datafusion::sql::unparser::dialect::Dialect;
+use sqlparser::ast::{BinaryOperator, Expr as SqlExpr, Value};
 
 /// Oracle-specific SQL dialect for the Unparser
 
@@ -45,27 +46,36 @@ impl Dialect for OracleDialect {
     }
 }
 
+fn null_expr() -> SqlExpr {
+    SqlExpr::Value(Value::Null.into())
+}
+
+fn str_expr(s: &str) -> SqlExpr {
+    SqlExpr::Value(Value::SingleQuotedString(s.to_string()).into())
+}
+
+fn ident_expr(name: &str) -> SqlExpr {
+    SqlExpr::Identifier(sqlparser::ast::Ident::new(name))
+}
+
 /// Comprehensive Oracle function translation rules
 fn oracle_function_rules() -> FunctionMapper {
     FunctionMapper::new()
         // ========================================
         // NULL handling
         // ========================================
-        .rename("coalesce", "NVL") // NVL for 2 args; COALESCE also works
+        .rename("coalesce", "NVL")
         .rename("nullif", "NULLIF")
         .transform("ifnull", |args| {
-            // MySQL IFNULL → Oracle NVL
-            let a = args.first().cloned().unwrap_or_else(|| "NULL".to_string());
-            let b = args.get(1).cloned().unwrap_or_else(|| "NULL".to_string());
-            format!("NVL({}, {})", a, b)
+            let a = args.first().cloned().unwrap_or_else(null_expr);
+            let b = args.get(1).cloned().unwrap_or_else(null_expr);
+            FunctionMapper::build_func("NVL", vec![a, b])
         })
         // ========================================
         // String functions
         // ========================================
         .rename("length", "LENGTH")
         .rename("char_length", "LENGTH")
-        .rename("character_length", "LENGTH")
-        .rename("octet_length", "LENGTHB") // byte length
         .rename("substr", "SUBSTR")
         .rename("substring", "SUBSTR")
         .rename("upper", "UPPER")
@@ -73,161 +83,169 @@ fn oracle_function_rules() -> FunctionMapper {
         .rename("trim", "TRIM")
         .rename("ltrim", "LTRIM")
         .rename("rtrim", "RTRIM")
-        .rename("lpad", "LPAD")
-        .rename("rpad", "RPAD")
-        .rename("replace", "REPLACE")
-        .rename("translate", "TRANSLATE")
-        .rename("reverse", "REVERSE")
-        .rename("initcap", "INITCAP")
-        .rename("ascii", "ASCII")
-        .rename("chr", "CHR")
-        // Concatenation: PostgreSQL concat() → Oracle ||
-        .transform("concat", |args| args.join(" || "))
-        .transform("concat_ws", |args| {
-            // concat_ws(sep, a, b, c) → a || sep || b || sep || c
+        .transform("concat", |args| {
             if args.is_empty() {
-                return "NULL".to_string();
+                return null_expr();
             }
-            let sep = args.first().unwrap();
-            args[1..].join(&format!(" || {} || ", sep))
+            let mut res = args[0].clone();
+            for arg in &args[1..] {
+                res = SqlExpr::BinaryOp {
+                    left: Box::new(res),
+                    op: BinaryOperator::StringConcat,
+                    right: Box::new(arg.clone()),
+                };
+            }
+            res
+        })
+        .transform("concat_ws", |args| {
+            if args.len() < 2 {
+                return null_expr();
+            }
+            let sep = args[0].clone();
+            let mut res = args[1].clone();
+            for arg in &args[2..] {
+                res = SqlExpr::BinaryOp {
+                    left: Box::new(SqlExpr::BinaryOp {
+                        left: Box::new(res),
+                        op: BinaryOperator::StringConcat,
+                        right: Box::new(sep.clone()),
+                    }),
+                    op: BinaryOperator::StringConcat,
+                    right: Box::new(arg.clone()),
+                };
+            }
+            res
         })
         .transform("strpos", |args| {
-            // strpos(string, substring) → INSTR(string, substring)
-            let a = args.first().cloned().unwrap_or_else(|| "NULL".to_string());
-            let b = args.get(1).cloned().unwrap_or_else(|| "NULL".to_string());
-            format!("INSTR({}, {})", a, b)
+            let a = args.first().cloned().unwrap_or_else(null_expr);
+            let b = args.get(1).cloned().unwrap_or_else(null_expr);
+            FunctionMapper::build_func("INSTR", vec![a, b])
         })
         .transform("position", |args| {
-            // position(substring IN string) parsed as position(substring, string)
-            let a = args.get(1).cloned().unwrap_or_else(|| "NULL".to_string());
-            let b = args.first().cloned().unwrap_or_else(|| "NULL".to_string());
-            format!("INSTR({}, {})", a, b)
+            let needle = args.first().cloned().unwrap_or_else(null_expr);
+            let haystack = args.get(1).cloned().unwrap_or_else(null_expr);
+            FunctionMapper::build_func("INSTR", vec![haystack, needle])
         })
         .transform("regexp_replace", |args| {
-            let a = args.first().cloned().unwrap_or_else(|| "NULL".to_string());
-            let b = args.get(1).cloned().unwrap_or_else(|| "NULL".to_string());
-            let c = args.get(2).cloned().unwrap_or_else(|| "NULL".to_string());
-            format!("REGEXP_REPLACE({}, {}, {})", a, b, c)
+            let a = args.first().cloned().unwrap_or_else(null_expr);
+            let b = args.get(1).cloned().unwrap_or_else(null_expr);
+            let c = args.get(2).cloned().unwrap_or_else(null_expr);
+            FunctionMapper::build_func("REGEXP_REPLACE", vec![a, b, c])
         })
         .transform("regexp_like", |args| {
-            let a = args.first().cloned().unwrap_or_else(|| "NULL".to_string());
-            let b = args.get(1).cloned().unwrap_or_else(|| "NULL".to_string());
-            format!("REGEXP_LIKE({}, {})", a, b)
+            let a = args.first().cloned().unwrap_or_else(null_expr);
+            let b = args.get(1).cloned().unwrap_or_else(null_expr);
+            FunctionMapper::build_func("REGEXP_LIKE", vec![a, b])
         })
         // ========================================
         // Numeric functions
         // ========================================
         .rename("abs", "ABS")
         .rename("ceil", "CEIL")
-        .rename("ceiling", "CEIL")
         .rename("floor", "FLOOR")
         .rename("round", "ROUND")
         .rename("trunc", "TRUNC")
-        .rename("truncate", "TRUNC")
         .rename("mod", "MOD")
         .rename("power", "POWER")
-        .rename("pow", "POWER")
         .rename("sqrt", "SQRT")
-        .rename("exp", "EXP")
-        .rename("ln", "LN")
-        .rename("log", "LOG")
-        .rename("log10", "LOG") // LOG(10, x) in Oracle
-        .rename("sign", "SIGN")
-        .rename("greatest", "GREATEST")
-        .rename("least", "LEAST")
-        // Random: random() → DBMS_RANDOM.VALUE
-        .transform("random", |_| "DBMS_RANDOM.VALUE".to_string())
-        .transform("rand", |_| "DBMS_RANDOM.VALUE".to_string())
+        .transform("random", |_| {
+            SqlExpr::CompoundIdentifier(vec![
+                sqlparser::ast::Ident::new("DBMS_RANDOM"),
+                sqlparser::ast::Ident::new("VALUE"),
+            ])
+        })
+        .transform("rand", |_| {
+            SqlExpr::CompoundIdentifier(vec![
+                sqlparser::ast::Ident::new("DBMS_RANDOM"),
+                sqlparser::ast::Ident::new("VALUE"),
+            ])
+        })
         // ========================================
         // Date/Time functions
         // ========================================
-        .transform("current_timestamp", |_| "SYSTIMESTAMP".to_string())
-        .transform("current_date", |_| "SYSDATE".to_string())
-        .transform("now", |_| "SYSTIMESTAMP".to_string())
-        .transform("getdate", |_| "SYSDATE".to_string()) // MSSQL
-        .transform("date_part", |args| {
-            // date_part('year', date) → EXTRACT(YEAR FROM date)
-            let part = args.first().map(|s| s.trim_matches('\'')).unwrap_or("YEAR");
-            let date = args
-                .get(1)
-                .cloned()
-                .unwrap_or_else(|| "SYSDATE".to_string());
-            format!("EXTRACT({} FROM {})", part.to_uppercase(), date)
-        })
+        .transform("current_timestamp", |_| ident_expr("SYSTIMESTAMP"))
+        .transform("current_date", |_| ident_expr("SYSDATE"))
+        .transform("now", |_| ident_expr("SYSTIMESTAMP"))
         .transform("extract", |args| {
-            // Already correct syntax for Oracle
-            let a = args.first().cloned().unwrap_or_else(|| "YEAR".to_string());
-            let b = args
+            let part = args.first().cloned().unwrap_or_else(|| str_expr("YEAR"));
+            let source = args
                 .get(1)
                 .cloned()
-                .unwrap_or_else(|| "SYSDATE".to_string());
-            format!("EXTRACT({} FROM {})", a, b)
+                .unwrap_or_else(|| ident_expr("SYSDATE"));
+            SqlExpr::Extract {
+                field: match part {
+                    SqlExpr::Value(sqlparser::ast::ValueWithSpan {
+                        value: Value::SingleQuotedString(s),
+                        ..
+                    }) => sqlparser::ast::DateTimeField::Custom(sqlparser::ast::Ident::new(
+                        s.to_uppercase(),
+                    )),
+                    _ => sqlparser::ast::DateTimeField::Year,
+                },
+                syntax: sqlparser::ast::ExtractSyntax::From,
+                expr: Box::new(source),
+            }
         })
-        .transform("date_trunc", |args| {
-            let unit = args.first().cloned().unwrap_or_else(|| "'DAY'".to_string());
-            let expr = args
+        .transform("date_part", |args| {
+            let part = args.first().cloned().unwrap_or_else(|| str_expr("YEAR"));
+            let source = args
                 .get(1)
                 .cloned()
-                .unwrap_or_else(|| "SYSDATE".to_string());
-            format!("TRUNC({}, {})", expr, unit)
-        })
-        .transform("to_char", |args| {
-            let a = args
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "SYSDATE".to_string());
-            let b = args
-                .get(1)
-                .cloned()
-                .unwrap_or_else(|| "'YYYY-MM-DD'".to_string());
-            format!("TO_CHAR({}, {})", a, b)
+                .unwrap_or_else(|| ident_expr("SYSDATE"));
+            SqlExpr::Extract {
+                field: match part {
+                    SqlExpr::Value(sqlparser::ast::ValueWithSpan {
+                        value: Value::SingleQuotedString(s),
+                        ..
+                    }) => sqlparser::ast::DateTimeField::Custom(sqlparser::ast::Ident::new(
+                        s.to_uppercase().trim_matches('\'').to_string(),
+                    )),
+                    _ => sqlparser::ast::DateTimeField::Year,
+                },
+                syntax: sqlparser::ast::ExtractSyntax::From,
+                expr: Box::new(source),
+            }
         })
         .transform("to_date", |args| {
-            let a = args.first().cloned().unwrap_or_else(|| "NULL".to_string());
+            let a = args.first().cloned().unwrap_or_else(null_expr);
             let b = args
                 .get(1)
                 .cloned()
-                .unwrap_or_else(|| "'YYYY-MM-DD'".to_string());
-            format!("TO_DATE({}, {})", a, b)
+                .unwrap_or_else(|| str_expr("YYYY-MM-DD"));
+            FunctionMapper::build_func("TO_DATE", vec![a, b])
         })
         .transform("to_timestamp", |args| {
+            let a = args.first().cloned().unwrap_or_else(null_expr);
             if args.len() == 1 {
-                format!("TO_TIMESTAMP({})", args[0])
+                FunctionMapper::build_func("TO_TIMESTAMP", vec![a])
             } else {
-                let a = args.first().cloned().unwrap_or_else(|| "NULL".to_string());
                 let b = args
                     .get(1)
                     .cloned()
-                    .unwrap_or_else(|| "'YYYY-MM-DD HH24:MI:SS'".to_string());
-                format!("TO_TIMESTAMP({}, {})", a, b)
+                    .unwrap_or_else(|| str_expr("YYYY-MM-DD HH24:MI:SS"));
+                FunctionMapper::build_func("TO_TIMESTAMP", vec![a, b])
             }
         })
-        .transform("dateadd", |args| {
-            // dateadd(day, 1, date) → date + INTERVAL '1' DAY
-            let unit = args.first().map(|s| s.trim_matches('\'')).unwrap_or("DAY");
-            let amount = args.get(1).cloned().unwrap_or_else(|| "0".to_string());
-            let date = args
-                .get(2)
-                .cloned()
-                .unwrap_or_else(|| "SYSDATE".to_string());
-            format!("{} + INTERVAL '{}' {}", date, amount, unit.to_uppercase())
-        })
-        .transform("datediff", |args| {
-            // datediff(day, date1, date2) → date2 - date1 (returns days)
-            let date1 = args
-                .get(1)
-                .cloned()
-                .unwrap_or_else(|| "SYSDATE".to_string());
-            let date2 = args
-                .get(2)
-                .cloned()
-                .unwrap_or_else(|| "SYSDATE".to_string());
-            format!("({} - {})", date2, date1)
-        })
         .transform("from_unixtime", |args| {
-            // from_unixtime(epoch) → TO_DATE('1970-01-01', 'YYYY-MM-DD') + (epoch / 86400)
-            let ts = args.first().cloned().unwrap_or_else(|| "0".to_string());
-            format!("TO_DATE('1970-01-01', 'YYYY-MM-DD') + ({} / 86400)", ts)
+            let ts = args
+                .first()
+                .cloned()
+                .unwrap_or_else(|| SqlExpr::Value(Value::Number("0".to_string(), false).into()));
+            let start = FunctionMapper::build_func(
+                "TO_DATE",
+                vec![str_expr("1970-01-01"), str_expr("YYYY-MM-DD")],
+            );
+            SqlExpr::BinaryOp {
+                left: Box::new(start),
+                op: BinaryOperator::Plus,
+                right: Box::new(SqlExpr::Nested(Box::new(SqlExpr::BinaryOp {
+                    left: Box::new(ts),
+                    op: BinaryOperator::Divide,
+                    right: Box::new(SqlExpr::Value(
+                        Value::Number("86400".to_string(), false).into(),
+                    )),
+                }))),
+            }
         })
         // ========================================
         // Aggregate functions
@@ -237,49 +255,40 @@ fn oracle_function_rules() -> FunctionMapper {
         .rename("avg", "AVG")
         .rename("min", "MIN")
         .rename("max", "MAX")
-        .rename("stddev", "STDDEV")
-        .rename("variance", "VARIANCE")
         .transform("string_agg", |args| {
-            let expr = args.first().cloned().unwrap_or_else(|| "NULL".to_string());
-            let sep = args.get(1).cloned().unwrap_or_else(|| "','".to_string());
-            format!(
-                "LISTAGG({}, {}) WITHIN GROUP (ORDER BY {})",
-                expr, sep, expr
-            )
-        })
-        .transform("group_concat", |args| {
-            // MySQL GROUP_CONCAT → Oracle LISTAGG
-            let expr = args.first().cloned().unwrap_or_else(|| "NULL".to_string());
-            format!("LISTAGG({}, ',') WITHIN GROUP (ORDER BY {})", expr, expr)
-        })
-        .rename("array_agg", "COLLECT") // Oracle 10g+
-        // ========================================
-        // Type casting
-        // ========================================
-        // CAST handled by Unparser, but type names differ:
-        // VARCHAR → VARCHAR2, TEXT → CLOB, INT → NUMBER
-        // ========================================
-        // Boolean / Logical (Oracle has no native BOOLEAN in SQL)
-        // ========================================
-        .transform("bool_and", |args| {
-            // bool_and(x) → MIN(CASE WHEN x THEN 1 ELSE 0 END) = 1
-            let expr = args.first().cloned().unwrap_or_else(|| "NULL".to_string());
-            format!("MIN(CASE WHEN {} THEN 1 ELSE 0 END) = 1", expr)
-        })
-        .transform("bool_or", |args| {
-            let expr = args.first().cloned().unwrap_or_else(|| "NULL".to_string());
-            format!("MAX(CASE WHEN {} THEN 1 ELSE 0 END) = 1", expr)
-        })
-        // ========================================
-        // Miscellaneous
-        // ========================================
-        .rename("decode", "DECODE") // Oracle native
-        .rename("nvl2", "NVL2") // Oracle native: NVL2(expr, if_not_null, if_null)
-        .transform("iif", |args| {
-            // IIF(cond, then, else) → CASE WHEN cond THEN then ELSE else END
-            let cond = args.first().cloned().unwrap_or_else(|| "1=1".to_string());
-            let then_val = args.get(1).cloned().unwrap_or_else(|| "NULL".to_string());
-            let else_val = args.get(2).cloned().unwrap_or_else(|| "NULL".to_string());
-            format!("CASE WHEN {} THEN {} ELSE {} END", cond, then_val, else_val)
+            let expr = args.first().cloned().unwrap_or_else(null_expr);
+            let sep = args.get(1).cloned().unwrap_or_else(|| str_expr(","));
+            SqlExpr::Function(sqlparser::ast::Function {
+                name: sqlparser::ast::ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
+                    sqlparser::ast::Ident::new("LISTAGG"),
+                )]),
+                args: sqlparser::ast::FunctionArguments::List(
+                    sqlparser::ast::FunctionArgumentList {
+                        duplicate_treatment: None,
+                        args: vec![
+                            sqlparser::ast::FunctionArg::Unnamed(
+                                sqlparser::ast::FunctionArgExpr::Expr(expr.clone()),
+                            ),
+                            sqlparser::ast::FunctionArg::Unnamed(
+                                sqlparser::ast::FunctionArgExpr::Expr(sep),
+                            ),
+                        ],
+                        clauses: vec![],
+                    },
+                ),
+                filter: None,
+                null_treatment: None,
+                over: None,
+                within_group: vec![sqlparser::ast::OrderByExpr {
+                    expr,
+                    options: sqlparser::ast::OrderByOptions {
+                        asc: None,
+                        nulls_first: None,
+                    },
+                    with_fill: None,
+                }],
+                parameters: sqlparser::ast::FunctionArguments::None,
+                uses_odbc_syntax: false,
+            })
         })
 }

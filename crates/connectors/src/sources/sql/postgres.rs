@@ -59,6 +59,7 @@ pub async fn register_postgres(params: SqlSourceParams<'_>) -> Result<()> {
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn try_register_postgres(
     context: &SessionContext,
     catalog_name: &str,

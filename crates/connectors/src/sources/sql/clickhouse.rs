@@ -75,6 +75,7 @@ pub async fn register_clickhouse(params: SqlSourceParams<'_>) -> Result<()> {
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn try_register_clickhouse(
     context: &SessionContext,
     catalog_name: &str,
