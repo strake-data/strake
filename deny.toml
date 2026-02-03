@@ -30,7 +30,55 @@ allow = [
 
 [bans]
 multiple-versions = "warn"
-wildcards = "warn" # Allow internal path-based dependencies without versions for now
+wildcards = "warn"
+
+[[bans.skip]]
+name = "arrow"
+version = "56.1.0"
+
+[[bans.skip]]
+name = "arrow-arith"
+version = "56.2.0"
+
+[[bans.skip]]
+name = "arrow-array"
+version = "56.2.0"
+
+[[bans.skip]]
+name = "arrow-buffer"
+version = "56.2.0"
+
+[[bans.skip]]
+name = "arrow-cast"
+version = "56.1.0"
+
+[[bans.skip]]
+name = "arrow-data"
+version = "56.2.0"
+
+[[bans.skip]]
+name = "arrow-ord"
+version = "56.2.0"
+
+[[bans.skip]]
+name = "arrow-row"
+version = "56.2.0"
+
+[[bans.skip]]
+name = "arrow-schema"
+version = "56.2.0"
+
+[[bans.skip]]
+name = "arrow-select"
+version = "56.2.0"
+
+[[bans.skip]]
+name = "arrow-string"
+version = "56.2.0"
+
+[[bans.skip]]
+name = "async-channel"
+version = "1.9.0"
 
 [sources]
 unknown-registry = "deny"
