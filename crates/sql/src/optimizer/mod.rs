@@ -10,6 +10,4 @@
 //! - `FederationOptimizerRule`: (External crate) Responsible for pushing down subqueries to remote sources.
 
 pub mod defensive_trace;
-pub mod remapper;
-
-pub use remapper::FederationScopeOptimizer;
+pub mod flatten_federated;

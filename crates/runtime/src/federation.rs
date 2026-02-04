@@ -66,6 +66,8 @@ pub struct FederationEngine {
     source_configs: HashMap<String, SourceConfig>,
     /// Global cache configuration (default)
     global_cache_config: strake_common::config::QueryCacheConfig,
+    /// Query execution limits
+    query_limits: strake_common::config::QueryLimits,
 }
 
 pub struct FederationEngineOptions {
@@ -142,6 +144,7 @@ impl FederationEngine {
                 .map(|s| (s.name.clone(), s.clone()))
                 .collect(),
             global_cache_config: options.config.cache.clone(),
+            query_limits: options.query_limits,
         })
     }
 
@@ -404,7 +407,7 @@ impl FederationEngine {
                 .await
                 .context("Failed to execute logical plan")?;
 
-            let schema: arrow::datatypes::SchemaRef = df.schema().into();
+            let schema: arrow::datatypes::SchemaRef = Arc::new(df.schema().as_arrow().clone());
 
             // Check for injected limits (Defensive Limits)
             // Note: Since we don't have easy access to the optimized plan structure here without re-inspecting
@@ -424,7 +427,10 @@ impl FederationEngine {
 
         let (schema, batches, mut warnings) = match result {
             Ok(Ok((s, b, w))) => (s, b, w),
-            Ok(Err(e)) => return Err(anyhow::anyhow!(e).into()), // Propagate execution error
+            Ok(Err(e)) => {
+                tracing::error!("Detailed execution error: {:#}", e);
+                return Err(anyhow::anyhow!(e));
+            } // Propagate execution error
             Err(_) => {
                 // Timeout occurred
                 return Err(strake_error::StrakeError::new(

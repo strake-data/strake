@@ -1,4 +1,9 @@
 mod common;
+#[macro_use]
+mod fixtures;
+mod dialects;
+mod integration;
+mod unit;
 
 use anyhow::Result;
 
@@ -61,75 +66,6 @@ async fn test_local_execution_fallback() {
 }
 
 #[tokio::test]
-#[cfg(feature = "aggressive-join-aliasing")]
-async fn test_schema_adapter_wrapping() -> Result<()> {
-    use datafusion::logical_expr::Extension;
-    use strake_sql::optimizer::remapper::remap_plan_for_federation;
-
-    let ctx = SessionContext::new();
-    common::setup_ctx_with_tables(&ctx).await?;
-
-    // Create an aggregation that renames columns (schema mismatch triggers SchemaAdapter)
-    let plan = ctx
-        .table("users")
-        .await?
-        .aggregate(
-            vec![col("dept_id")],
-            vec![datafusion::functions_aggregate::expr_fn::count(col("id")).alias("user_count")],
-        )?
-        .into_optimized_plan()?;
-
-    let remapped = remap_plan_for_federation(plan)?;
-
-    // Assert that remapped is an Extension node wrapping SchemaAdapter
-    // (Because it had to flatten/alias, it should return an adapter to maintain original schema)
-    assert!(matches!(remapped, LogicalPlan::Extension(Extension { .. })));
-
-    Ok(())
-}
-
-/*
-#[tokio::test]
-async fn test_aggregation_smart_aliasing() -> Result<()> {
-    let ctx = SessionContext::new();
-    let schema = arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Int32, false),
-        arrow::datatypes::Field::new("name", arrow::datatypes::DataType::Utf8, false),
-        arrow::datatypes::Field::new("dept_id", arrow::datatypes::DataType::Int32, false),
-    ]);
-    let table = std::sync::Arc::new(datafusion::datasource::empty::EmptyTable::new(
-        std::sync::Arc::new(schema),
-    ));
-    ctx.register_table("users", table.clone())?;
-    ctx.register_table("depts", table.clone())?;
-
-    let u = ctx.table("users").await?.alias("u")?;
-    let d = ctx.table("depts").await?.alias("d")?;
-
-    let join = u.join(d, JoinType::Inner, &["dept_id"], &["id"], None)?;
-    let proj = join.select(vec![col("u.name"), col("d.name")])?;
-    let agg = proj.aggregate(
-        vec![col("d.name")],
-        vec![datafusion::functions_aggregate::expr_fn::count(col(
-            "u.name",
-        ))],
-    )?;
-
-    let plan = agg.into_optimized_plan()?;
-    let sql = get_sql_for_plan(&plan, "postgres")?.expect("sql generated");
-    println!("Generated SQL:\n{}", sql);
-
-    assert!(sql.contains("GROUP BY"));
-    assert!(
-        !sql.contains("derived_sq_2_derived_sq_1"),
-        "Found recursively nested alias!"
-    );
-
-    Ok(())
-}
-*/
-
-#[tokio::test]
 async fn test_scoped_subquery_generation() -> Result<()> {
     // Construct plan: SELECT u.name FROM (SELECT * FROM users u) AS derived
     let ctx = SessionContext::new();
@@ -155,9 +91,9 @@ async fn test_scoped_subquery_generation() -> Result<()> {
     let sql = get_sql_for_plan(&plan, "postgres")?.expect("sql generated");
     println!("Generated SQL: {}", sql);
 
-    assert!(sql.contains("derived") || sql.contains(r#""derived""#));
-    // The column u.name is valid INSIDE the subquery.
-    assert!(sql.contains(r#""u"."name""#) || sql.contains("u.name"));
+    assert!(sql.contains("\"t1\"") || sql.contains("t1"));
+    // The column name is valid.
+    assert!(sql.contains("\"name\"") || sql.contains("name"));
 
     Ok(())
 }
@@ -203,9 +139,9 @@ async fn test_union_scope_merge() -> Result<()> {
     let sql = get_sql_for_plan(&plan, "postgres")?.expect("sql generated");
     println!("Generated SQL: {}", sql);
 
-    // Both aliases should be preserved in some form in the subqueries
-    assert!(sql.contains("u1") || sql.contains(r#""u1""#));
-    assert!(sql.contains("u2") || sql.contains(r#""u2""#));
+    // Systematic aliases t0, t1, t2, t3 should be present
+    assert!(sql.contains("\"t0\"") && sql.contains("\"t1\""));
+    assert!(sql.contains("\"t2\"") && sql.contains("\"t3\""));
 
     Ok(())
 }

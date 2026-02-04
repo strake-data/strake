@@ -24,7 +24,10 @@ pub enum DialectPath {
     /// DataFusion built-in Unparser dialects
     Native(Arc<dyn UnparserDialect + Send + Sync>),
     /// Strake custom Unparser dialects with FunctionMapper
-    Custom(Arc<dyn UnparserDialect + Send + Sync>),
+    Custom(
+        Arc<dyn UnparserDialect + Send + Sync>,
+        Option<crate::dialects::FunctionMapper>,
+    ),
     /// Substrait binary plan (for DuckDB, remote DataFusion)
     Substrait,
     /// No pushdown — fetch all data and execute locally
@@ -40,8 +43,16 @@ pub fn route_dialect(source_type: &str) -> DialectPath {
         "sqlite" => DialectPath::Native(Arc::new(SqliteDialect {})),
 
         // Tier 2: Strake custom dialects
-        "oracle" => DialectPath::Custom(Arc::new(OracleDialect::new())),
-        "snowflake" => DialectPath::Custom(Arc::new(SnowflakeDialect::new())),
+        "oracle" => {
+            let dialect = OracleDialect::new();
+            let mapper = dialect.mapper().clone();
+            DialectPath::Custom(Arc::new(dialect), Some(mapper))
+        }
+        "snowflake" => {
+            let dialect = SnowflakeDialect::new();
+            let mapper = dialect.mapper().clone();
+            DialectPath::Custom(Arc::new(dialect), Some(mapper))
+        }
 
         // Tier 3: Substrait-capable engines
         "duckdb" | "datafusion" => DialectPath::Substrait,
@@ -89,8 +100,11 @@ mod tests {
 
     #[test]
     fn test_custom_dialects() {
-        assert!(matches!(route_dialect("oracle"), DialectPath::Custom(_)));
-        assert!(matches!(route_dialect("snowflake"), DialectPath::Custom(_)));
+        assert!(matches!(route_dialect("oracle"), DialectPath::Custom(_, _)));
+        assert!(matches!(
+            route_dialect("snowflake"),
+            DialectPath::Custom(_, _)
+        ));
     }
 
     #[test]

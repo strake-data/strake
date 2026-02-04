@@ -605,6 +605,7 @@ async fn test_per_datasource_cache_config() -> anyhow::Result<()> {
         }),
         username: None,
         password: None,
+        max_concurrent_queries: None,
         tables: vec![],
     };
 
@@ -622,6 +623,7 @@ async fn test_per_datasource_cache_config() -> anyhow::Result<()> {
         }),
         username: None,
         password: None,
+        max_concurrent_queries: None,
         tables: vec![],
     };
 

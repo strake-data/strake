@@ -43,9 +43,7 @@ impl SQLExecutor for SqliteExecutor {
     }
 
     fn logical_optimizer(&self) -> Option<datafusion_federation::sql::LogicalOptimizer> {
-        Some(Box::new(|plan| {
-            strake_sql::sql_gen::remap_plan_for_federation(plan)
-        }))
+        None
     }
 
     fn execute(

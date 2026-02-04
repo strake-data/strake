@@ -198,19 +198,25 @@ impl PlanTreeFormatter {
         // For filter nodes, show the filter expression
         // Any FilterExec node in the physical plan represents filtering happening in Strake (not pushed down completely)
         if name.contains("Filter") {
-            if let Some(filter_start) = display.find("predicate=") {
-                let filter_part = &display[filter_start..];
-                let filter_display = if filter_part.len() > 60 {
-                    format!("{}...", &filter_part[..57])
-                } else {
-                    filter_part.to_string()
-                };
-                let _ = writeln!(
-                    output,
-                    "{}filter: {} [NOT PUSHED - Executed Locally]",
-                    detail_prefix, filter_display
-                );
-            }
+            let filter_part = if let Some(idx) = display.find("predicate=") {
+                &display[idx..]
+            } else if let Some(idx) = display.find(':') {
+                // DF 51 often uses ": predicate" format
+                &display[idx + 1..]
+            } else {
+                &display
+            };
+
+            let filter_display = if filter_part.len() > 60 {
+                format!("{}...", &filter_part[..57])
+            } else {
+                filter_part.trim().to_string()
+            };
+            let _ = writeln!(
+                output,
+                "{}filter: {} [NOT PUSHED - Executed Locally]",
+                detail_prefix, filter_display
+            );
         }
 
         // For DataSource or Projection nodes, look for projection

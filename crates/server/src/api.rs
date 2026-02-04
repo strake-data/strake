@@ -138,6 +138,7 @@ async fn introspect_tables(
         cache: None,
         tables: vec![],
         config: serde_json::Value::Null,
+        max_concurrent_queries: None,
     };
 
     for table_full in tables {
@@ -217,6 +218,7 @@ async fn list_sources(State(state): State<Arc<QueryState>>) -> Json<SourcesConfi
                 cache: None,
                 tables: vec![], // Details fetched via introspection
                 config: serde_json::Value::Null,
+                max_concurrent_queries: None,
             }
         })
         .collect();

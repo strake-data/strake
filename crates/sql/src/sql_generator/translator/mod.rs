@@ -1,0 +1,161 @@
+use crate::sql_generator::context::GeneratorContext;
+use crate::sql_generator::dialect::GeneratorDialect;
+use crate::sql_generator::error::SqlGenError;
+use datafusion::logical_expr::LogicalPlan;
+use sqlparser::ast::{Query, Select, SetExpr, TableFactor};
+use sqlparser::dialect::GenericDialect;
+use sqlparser::parser::Parser;
+use std::sync::OnceLock;
+use strake_error::StrakeError;
+
+pub(crate) mod aggregate;
+pub(crate) mod join;
+pub(crate) mod projection;
+pub(crate) mod scan;
+pub(crate) mod set_ops;
+pub(crate) mod sort;
+
+const MAX_RECURSION_DEPTH: usize = 100;
+
+pub struct SqlGenerator<'a> {
+    pub context: GeneratorContext,
+    pub dialect: GeneratorDialect<'a>,
+    pub(crate) recursion_level: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl<'a> SqlGenerator<'a> {
+    pub fn new(dialect: GeneratorDialect<'a>) -> Self {
+        Self {
+            context: GeneratorContext::new(),
+            dialect,
+            recursion_level: std::rc::Rc::new(std::cell::Cell::new(0)),
+        }
+    }
+
+    pub fn generate(&mut self, plan: &LogicalPlan) -> Result<String, StrakeError> {
+        tracing::debug!(target: "sql_generator", plan = %plan.display(), "Generating SQL from plan");
+        self.plan_to_query(plan)
+            .map(|q| {
+                let sql = q.to_string();
+                tracing::debug!(target: "sql_generator", sql = %sql, "Generated SQL");
+                sql
+            })
+            .map_err(|e| e.to_strake_error(self.dialect.dialect_name))
+    }
+
+    pub(crate) fn create_skeleton_query(&self) -> Query {
+        static SKELETON: OnceLock<Query> = OnceLock::new();
+
+        SKELETON
+            .get_or_init(|| {
+                let dialect = GenericDialect {};
+                let parser = Parser::new(&dialect);
+                *parser
+                    .try_with_sql("SELECT *")
+                    .unwrap()
+                    .parse_query()
+                    .unwrap()
+            })
+            .clone()
+    }
+
+    pub fn create_skeleton_select(&self) -> Select {
+        let query = self.create_skeleton_query();
+        match *query.body {
+            SetExpr::Select(select) => *select,
+            _ => panic!(
+                "SKELETON query invariant violated: expected Select, got {:?}. \
+                 This indicates memory corruption or a bug in sqlparser.",
+                query.body
+            ),
+        }
+    }
+
+    pub fn plan_to_query(&mut self, plan: &LogicalPlan) -> Result<Query, SqlGenError> {
+        let _guard = RecursionGuard::new(self.recursion_level.clone())?;
+
+        tracing::trace!(target: "sql_generator", node = %plan.display(), depth = self.recursion_level.get(), "Translating plan node");
+
+        let result = match plan {
+            LogicalPlan::TableScan(scan) => scan::handle_table_scan(self, scan),
+            LogicalPlan::Projection(proj) => projection::handle_projection(self, proj),
+            LogicalPlan::SubqueryAlias(alias) => projection::handle_subquery_alias(self, alias),
+            LogicalPlan::Filter(filter) => projection::handle_filter(self, filter),
+            LogicalPlan::Join(join) => join::handle_join(self, join),
+            LogicalPlan::Aggregate(agg) => aggregate::handle_aggregate(self, agg),
+            LogicalPlan::Sort(sort) => sort::handle_sort(self, sort),
+            LogicalPlan::Limit(limit) => set_ops::handle_limit(self, limit),
+            LogicalPlan::Window(window) => aggregate::handle_window(self, window),
+            LogicalPlan::Union(union) => set_ops::handle_union(self, union),
+            LogicalPlan::Distinct(distinct) => set_ops::handle_distinct(self, distinct),
+            LogicalPlan::EmptyRelation(empty) => set_ops::handle_empty_relation(self, empty),
+            LogicalPlan::Values(values) => set_ops::handle_values(self, values),
+            LogicalPlan::RecursiveQuery(recursive) => {
+                set_ops::handle_recursive_query(self, recursive)
+            }
+            _ => Err(SqlGenError::UnsupportedPlan {
+                message: format!("Logical plan node: {}", plan.display()),
+                node_type: match plan {
+                    LogicalPlan::Projection(_) => "Projection",
+                    LogicalPlan::Filter(_) => "Filter",
+                    LogicalPlan::Join(_) => "Join",
+                    LogicalPlan::Aggregate(_) => "Aggregate",
+                    LogicalPlan::Sort(_) => "Sort",
+                    LogicalPlan::Limit(_) => "Limit",
+                    LogicalPlan::Subquery(_) => "Subquery",
+                    LogicalPlan::TableScan(_) => "TableScan",
+                    LogicalPlan::EmptyRelation(_) => "EmptyRelation",
+                    LogicalPlan::Values(_) => "Values",
+                    LogicalPlan::Distinct(_) => "Distinct",
+                    LogicalPlan::Union(_) => "Union",
+                    LogicalPlan::Window(_) => "Window",
+                    LogicalPlan::SubqueryAlias(_) => "SubqueryAlias",
+                    LogicalPlan::RecursiveQuery(_) => "RecursiveQuery",
+                    _ => "Unknown",
+                }
+                .to_string(),
+            }),
+        };
+
+        result
+    }
+
+    pub fn extract_relation(&self, query: Query) -> Result<TableFactor, SqlGenError> {
+        if let SetExpr::Select(select) = *query.body {
+            if select.from.len() == 1 && select.from[0].joins.is_empty() {
+                return Ok(select.from[0].relation.clone());
+            }
+        }
+
+        Err(SqlGenError::UnsupportedPlan {
+            message:
+                "Cannot extract relation from complex query - consider wrapping in SubqueryAlias"
+                    .to_string(),
+            node_type: "TableFactor".to_string(),
+        })
+    }
+}
+
+struct RecursionGuard {
+    level: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl RecursionGuard {
+    fn new(level: std::rc::Rc<std::cell::Cell<usize>>) -> Result<Self, SqlGenError> {
+        let current = level.get();
+        if current > MAX_RECURSION_DEPTH {
+            return Err(SqlGenError::UnsupportedPlan {
+                message: format!("Maximum recursion depth ({}) exceeded", MAX_RECURSION_DEPTH),
+                node_type: "LogicalPlan".to_string(),
+            });
+        }
+        level.set(current + 1);
+        Ok(Self { level })
+    }
+}
+
+impl Drop for RecursionGuard {
+    fn drop(&mut self) {
+        self.level.set(self.level.get().saturating_sub(1));
+    }
+}

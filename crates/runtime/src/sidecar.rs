@@ -10,6 +10,7 @@ use tokio::process::Command;
 use tokio::sync::oneshot;
 
 /// Handle to the spawned sidecar process
+#[derive(Debug)]
 pub struct SidecarHandle {
     shutdown_tx: oneshot::Sender<()>,
     task: tokio::task::JoinHandle<()>,

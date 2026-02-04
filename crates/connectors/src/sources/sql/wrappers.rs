@@ -7,13 +7,14 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
 use futures::stream::TryStreamExt;
-use futures::TryFutureExt;
+// use futures::TryFutureExt;
 use std::any::Any;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use super::common::{FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory};
 
+#[allow(clippy::too_many_arguments)]
 pub async fn register_tables(
     context: &SessionContext,
     target_catalog: &str,
@@ -245,6 +246,7 @@ impl datafusion::physical_plan::DisplayAs for ConcurrencyLimitedExec {
                     self.semaphore.available_permits()
                 )
             }
+            _ => Ok(()),
         }
     }
 }
@@ -291,14 +293,24 @@ impl ExecutionPlan for ConcurrencyLimitedExec {
             let stream = inner.execute(partition, context)?;
             Ok::<_, datafusion::error::DataFusionError>((stream, permit))
         })
-        .try_flat_map(|(stream, permit)| {
+        .try_filter_map(|(stream, permit)| {
             let permit_stream = PermitStream {
                 inner: stream,
                 _permit: permit,
             };
-            futures::stream::once(async move { Ok(futures::stream::boxed(permit_stream)) })
-                .try_flatten()
-        });
+            // This logic is a bit convoluted to match map semantics, but essentially we want to return the stream
+            // keeping the permit alive.
+            // Using try_flatten with a stream of stream is one way, but maybe creating a new stream is easier.
+
+            // Note: try_flat_map was removed/not available in recent futures or I'm misremembering.
+            // Let's use map + flatten or similar.
+            // Actually, let's just use then + flatten if possible or map.
+
+            futures::future::ready(Ok(Some(
+                Box::pin(permit_stream) as datafusion::physical_plan::SendableRecordBatchStream
+            )))
+        })
+        .try_flatten();
 
         use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
         Ok(Box::pin(RecordBatchStreamAdapter::new(
@@ -322,5 +334,11 @@ impl futures::stream::Stream for PermitStream {
     ) -> std::task::Poll<Option<Self::Item>> {
         use futures::stream::StreamExt;
         self.inner.poll_next_unpin(cx)
+    }
+}
+
+impl datafusion::execution::RecordBatchStream for PermitStream {
+    fn schema(&self) -> datafusion::arrow::datatypes::SchemaRef {
+        self.inner.schema()
     }
 }

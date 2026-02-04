@@ -59,9 +59,7 @@ impl SQLExecutor for PostgresExecutor {
     /// inner table names. This fixes the "alias leakage" problem where inner table
     /// names like `u.id` appear in outer scopes where they should be `derived.id`.
     fn logical_optimizer(&self) -> Option<datafusion_federation::sql::LogicalOptimizer> {
-        Some(Box::new(|plan| {
-            strake_sql::sql_gen::remap_plan_for_federation(plan)
-        }))
+        None
     }
 
     fn execute(

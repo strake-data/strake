@@ -3,11 +3,19 @@
 //! Declarative registry for translating DataFusion function names to dialect-specific syntax.
 //! Inspired by sqlglot's AST transformation pattern.
 
+use sqlparser::ast::{
+    Expr as SqlExpr, Function, FunctionArg, FunctionArgExpr, FunctionArgumentList,
+    FunctionArguments, Ident, ObjectName, ObjectNamePart,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Type alias for transform function closures
-pub type TransformFn = Arc<dyn Fn(&[String]) -> String + Send + Sync>;
+/// Type alias for transform function closures.
+///
+/// **Security Notice**: Closures must return pre-sanitized SQL snippets.
+/// These strings are parsed as expressions and integrated into the final SQL.
+/// Type alias for transform function closures.
+pub type TransformFn = Arc<dyn Fn(&[SqlExpr]) -> SqlExpr + Send + Sync>;
 
 /// A translation rule for converting a function to target dialect
 pub enum Translation {
@@ -69,19 +77,39 @@ impl FunctionMapper {
     /// Add a custom transform rule
     pub fn transform<F>(mut self, from: &'static str, f: F) -> Self
     where
-        F: Fn(&[String]) -> String + Send + Sync + 'static,
+        F: Fn(&[SqlExpr]) -> SqlExpr + Send + Sync + 'static,
     {
         self.rules.insert(from, Translation::Transform(Arc::new(f)));
         self
     }
 
     /// Translate a function call to target dialect syntax
-    /// Returns None if no translation rule exists (use default rendering)
-    pub fn translate(&self, func: &str, args: &[String]) -> Option<String> {
+    /// Returns None if no translation rule exists (use default rendering).
+    pub fn translate(&self, func: &str, args: &[SqlExpr]) -> Option<SqlExpr> {
         let func_lower = func.to_lowercase();
         match self.rules.get(func_lower.as_str()) {
             Some(Translation::Rename(new_name)) => {
-                Some(format!("{}({})", new_name, args.join(", ")))
+                let sql_args = args
+                    .iter()
+                    .map(|arg| FunctionArg::Unnamed(FunctionArgExpr::Expr(arg.clone())))
+                    .collect();
+
+                let func_args = FunctionArguments::List(FunctionArgumentList {
+                    duplicate_treatment: None,
+                    args: sql_args,
+                    clauses: vec![],
+                });
+
+                Some(SqlExpr::Function(Function {
+                    name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new(*new_name))]),
+                    args: func_args,
+                    filter: None,
+                    null_treatment: None,
+                    over: None,
+                    within_group: vec![],
+                    parameters: FunctionArguments::None,
+                    uses_odbc_syntax: false,
+                }))
             }
             Some(Translation::Transform(f)) => Some(f(args)),
             None => None, // No translation — use default
@@ -91,5 +119,30 @@ impl FunctionMapper {
     /// Check if a function has a translation rule
     pub fn has_rule(&self, func: &str) -> bool {
         self.rules.contains_key(func.to_lowercase().as_str())
+    }
+
+    /// Helper to build a function AST node
+    pub fn build_func(name: &str, args: Vec<SqlExpr>) -> SqlExpr {
+        let sql_args = args
+            .into_iter()
+            .map(|arg| FunctionArg::Unnamed(FunctionArgExpr::Expr(arg)))
+            .collect();
+
+        let func_args = FunctionArguments::List(FunctionArgumentList {
+            duplicate_treatment: None,
+            args: sql_args,
+            clauses: vec![],
+        });
+
+        SqlExpr::Function(Function {
+            name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new(name))]),
+            args: func_args,
+            filter: None,
+            null_treatment: None,
+            over: None,
+            within_group: vec![],
+            parameters: FunctionArguments::None,
+            uses_odbc_syntax: false,
+        })
     }
 }

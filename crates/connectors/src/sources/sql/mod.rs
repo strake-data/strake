@@ -99,6 +99,7 @@ impl SourceProvider for SqlSourceProvider {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn register_sql_source(options: common::SqlRegistrationOptions<'_>) -> Result<()> {
     use strake_common::circuit_breaker::{AdaptiveCircuitBreaker, CircuitBreakerConfig};
     let cb = Arc::new(AdaptiveCircuitBreaker::new(CircuitBreakerConfig::default()));
