@@ -28,6 +28,7 @@ use strake_common::config::SourceConfig;
 pub mod file;
 pub mod flight;
 pub mod grpc;
+pub mod iceberg;
 pub mod rest;
 pub mod rest_auth;
 pub mod sql;
@@ -70,6 +71,7 @@ impl SourceRegistry {
     ) -> Result<()> {
         let type_name = match config.source_type.as_str() {
             "parquet" | "csv" | "json" => "file",
+            "iceberg" => "iceberg_rest",
             other => other,
         };
 
@@ -88,6 +90,7 @@ pub fn default_registry(global_retry: strake_common::config::RetrySettings) -> S
     registry.register_provider(Box::new(file::FileSourceProvider));
     registry.register_provider(Box::new(rest::RestSourceProvider { global_retry }));
     registry.register_provider(Box::new(grpc::GrpcSourceProvider { global_retry }));
+    registry.register_provider(Box::new(iceberg::IcebergSourceProvider { global_retry }));
 
     registry
 }

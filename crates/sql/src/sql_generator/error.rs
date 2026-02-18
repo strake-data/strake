@@ -13,6 +13,12 @@ pub enum SqlGenError {
     #[error("Unsupported plan type: {message} (node: {node_type})")]
     UnsupportedPlan { message: String, node_type: String },
 
+    #[error("Ambiguous column reference: {name}. Candidates: {candidates:?}")]
+    AmbiguousColumn {
+        name: String,
+        candidates: Vec<String>,
+    },
+
     #[error("Unsupported expression: {0}")]
     UnsupportedExpr(String),
 
@@ -26,6 +32,12 @@ pub enum SqlGenError {
 
     #[error("Dialect error: {0}")]
     DialectError(String),
+
+    #[error("Invalid identifier: {0}")]
+    InvalidIdentifier(String),
+
+    #[error("Maximum recursion depth ({0}) exceeded")]
+    MaxRecursion(usize),
 }
 
 impl SqlGenError {
@@ -42,19 +54,40 @@ impl SqlGenError {
                 StrakeError::new(ErrorCode::SyntaxError, format!("SQL Parser error: {}", e))
                     .with_hint("The generated SQL is syntactically invalid for the target dialect")
             }
-            SqlGenError::UnsupportedPlan { message, node_type } => StrakeError::new(
-                ErrorCode::PushdownUnsupported,
-                format!(
-                    "Plan node '{}' not supported for SQL generation: {}",
-                    node_type, message
-                ),
-            )
-            .with_hint("Try simplifying the query or disabling pushdown for this source"),
+            SqlGenError::UnsupportedPlan { message, node_type } => {
+                let mut data = std::collections::HashMap::new();
+                data.insert(
+                    "node_type".to_string(),
+                    serde_json::Value::String(node_type.clone()),
+                );
+                data.insert(
+                    "dialect".to_string(),
+                    serde_json::Value::String(dialect_name.to_string()),
+                );
+
+                StrakeError::new(
+                    ErrorCode::PushdownUnsupported,
+                    format!(
+                        "Plan node '{}' not supported for SQL generation: {}",
+                        node_type, message
+                    ),
+                )
+                .with_context(ErrorContext::Generic { data })
+                .with_hint("Try simplifying the query or disabling pushdown for this source")
+            }
             SqlGenError::UnsupportedExpr(expr) => StrakeError::new(
                 ErrorCode::NotImplemented,
                 format!("Expression not supported for SQL generation: {}", expr),
             )
             .with_hint("This expression might not have a mapping for the target dialect"),
+            SqlGenError::AmbiguousColumn { name, candidates } => StrakeError::new(
+                ErrorCode::AmbiguousColumn,
+                format!(
+                    "Ambiguous column reference: {}. Candidates: {:?}",
+                    name, candidates
+                ),
+            )
+            .with_hint("Try qualifying the column name with a table or alias"),
             SqlGenError::ScopeViolation {
                 col,
                 node_type,
@@ -96,6 +129,16 @@ impl SqlGenError {
                     .with_context(context)
                     .with_hint("The dialect implementation encountered an error")
             }
+            SqlGenError::InvalidIdentifier(e) => StrakeError::new(
+                ErrorCode::SyntaxError,
+                format!("Invalid SQL identifier: {}", e),
+            )
+            .with_hint("Identifiers must be sanitized to prevent SQL injection"),
+            SqlGenError::MaxRecursion(depth) => StrakeError::new(
+                ErrorCode::InternalPanic,
+                format!("Maximum recursion depth ({}) exceeded", depth),
+            )
+            .with_hint("This query might be too deeply nested or circular"),
         }
     }
 }

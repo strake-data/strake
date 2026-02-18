@@ -2,6 +2,7 @@ pub mod context;
 pub mod dialect;
 pub mod error;
 pub mod expr;
+pub mod sanitize;
 pub mod translator;
 
 pub use self::translator::SqlGenerator;

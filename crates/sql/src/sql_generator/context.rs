@@ -10,6 +10,11 @@ pub struct ColumnEntry {
     /// The alias of the table/relation where this column originates.
     /// Used to resolve `t0` vs `t1` in joins.
     pub source_alias: Arc<str>,
+    /// Chain of aliases/qualifiers this column has passed through.
+    /// Used for disambiguation in complex joins.
+    pub provenance: Vec<String>,
+    /// Global unique identifier for this specific column instance.
+    pub unique_id: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +33,8 @@ pub struct Scope {
 pub struct GeneratorContext {
     /// Global counter for deterministic aliases (t0, t1...)
     counter: usize,
+    /// Global counter for unique column IDs
+    column_id_counter: usize,
     /// Stack of visible scopes, from outermost to innermost
     scope_stack: Vec<Scope>,
 }
@@ -102,15 +109,23 @@ impl GeneratorContext {
     pub fn new() -> Self {
         Self {
             counter: 0,
+            column_id_counter: 0,
             scope_stack: Vec::new(),
         }
     }
 
     /// Assign next systematic alias and increment counter
     pub fn next_alias(&mut self) -> String {
-        let alias = format!("t{}", self.counter);
+        let alias = format!("rel_{}", self.counter);
         self.counter += 1;
         alias
+    }
+
+    /// Assign next unique column ID and increment counter
+    pub fn next_column_id(&mut self) -> usize {
+        let id = self.column_id_counter;
+        self.column_id_counter += 1;
+        id
     }
 
     /// Enter a new scope, returning a guard that will pop it when dropped.
@@ -181,19 +196,50 @@ impl GeneratorContext {
     ) -> Result<(String, String), SqlGenError> {
         // Search from top of stack down
         for scope in self.scope_stack.iter().rev() {
-            // First pass: try exact match with qualifier if present
+            // Find all matching columns in this scope
+            let matches: Vec<&ColumnEntry> = scope
+                .columns
+                .iter()
+                .filter(|e| e.name.as_ref() == col.name)
+                .collect();
+
+            if matches.is_empty() {
+                continue;
+            }
+
+            // If we have a qualifier (relation), try to find a specific match
             if let Some(relation) = &col.relation {
                 let table_str = relation.to_string();
-                if !scope.qualifiers.contains(&table_str) {
+
+                // Check exact provenance or search scope's known qualifiers
+                let specific = matches.iter().find(|e| {
+                    e.provenance.contains(&table_str) || e.source_alias.as_ref() == table_str
+                });
+
+                if let Some(found) = specific {
+                    return Ok((found.source_alias.to_string(), col.name.clone()));
+                }
+
+                // If qualifier was provided but didn't match anything in this scope's columns,
+                // we should continue searching down or check if the qualifier itself matches this scope.
+                if !scope.qualifiers.contains(&table_str) && scope.alias != table_str {
                     continue;
                 }
             }
 
-            // Look for the column entry
-            if let Some(entry) = scope.columns.iter().find(|e| e.name.as_ref() == col.name) {
-                // Return the true source alias (e.g. "t0") not necessarily the scope's alias (e.g. "t3")
-                return Ok((entry.source_alias.to_string(), col.name.clone()));
+            // If no qualifier or simple match found, and it's unambiguous within this scope
+            if matches.len() == 1 {
+                return Ok((matches[0].source_alias.to_string(), col.name.clone()));
             }
+
+            // Ambigous within the current scope
+            return Err(SqlGenError::AmbiguousColumn {
+                name: col.name.clone(),
+                candidates: matches
+                    .iter()
+                    .map(|e| format!("{}.{}", e.source_alias, e.name))
+                    .collect(),
+            });
         }
 
         Err(SqlGenError::ScopeViolation {

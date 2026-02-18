@@ -264,6 +264,7 @@ impl StrakeServer {
                 global_budget: app_config.server.global_connection_budget,
                 extra_optimizer_rules: self.extra_optimizer_rules,
                 extra_sources: self.extra_sources,
+                retry: app_config.retry,
             })
             .await?,
         );

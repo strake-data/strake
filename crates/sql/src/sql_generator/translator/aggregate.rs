@@ -55,6 +55,8 @@ pub(crate) fn handle_aggregate(
             name: std::sync::Arc::from(f.name().as_ref()),
             data_type: f.data_type().clone(),
             source_alias: std::sync::Arc::from(alias.as_str()),
+            provenance: vec![alias.clone()],
+            unique_id: gen.context.next_column_id(),
         })
         .collect::<Vec<_>>()
         .into();
@@ -103,14 +105,30 @@ pub(crate) fn handle_window(
         .unwrap_or_default();
     gen.context.pop_scope();
     let alias = gen.context.next_alias();
+    let input_scope = gen.context.current_scope().cloned();
     let columns = window
         .schema
         .fields()
         .iter()
-        .map(|f| ColumnEntry {
-            name: std::sync::Arc::from(f.name().as_ref()),
-            data_type: f.data_type().clone(),
-            source_alias: std::sync::Arc::from(alias.as_str()),
+        .enumerate()
+        .map(|(i, f)| {
+            let mut provenance = vec![alias.clone()];
+            // First N columns are from input
+            if i < window.input.schema().fields().len() {
+                if let Some(scope) = &input_scope {
+                    if let Some(entry) = scope.columns.get(i) {
+                        provenance.extend(entry.provenance.clone());
+                    }
+                }
+            }
+
+            ColumnEntry {
+                name: std::sync::Arc::from(f.name().as_ref()),
+                data_type: f.data_type().clone(),
+                source_alias: std::sync::Arc::from(alias.as_str()),
+                provenance,
+                unique_id: gen.context.next_column_id(),
+            }
         })
         .collect::<Vec<_>>()
         .into();

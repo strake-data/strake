@@ -114,3 +114,37 @@ fn snowflake_function_rules() -> FunctionMapper {
             FunctionMapper::build_func("TO_TIMESTAMP", vec![ts])
         })
 }
+
+impl crate::sql_generator::dialect::DialectCapabilities for SnowflakeDialect {
+    fn supports_distinct_on(&self) -> bool {
+        false
+    }
+}
+
+impl crate::sql_generator::dialect::TypeMapper for SnowflakeDialect {
+    fn map_type(
+        &self,
+        df_type: &datafusion::arrow::datatypes::DataType,
+    ) -> Result<sqlparser::ast::DataType, crate::sql_generator::error::SqlGenError> {
+        // Snowflake mapping
+        use datafusion::arrow::datatypes::DataType;
+        use sqlparser::ast::DataType as SqlDataType;
+
+        match df_type {
+            DataType::Utf8 | DataType::LargeUtf8 => Ok(SqlDataType::Varchar(None)),
+            DataType::Int64 | DataType::Int32 | DataType::Int16 | DataType::Int8 => {
+                Ok(SqlDataType::Numeric(sqlparser::ast::ExactNumberInfo::None))
+            }
+            DataType::Float64 | DataType::Float32 => {
+                Ok(SqlDataType::Float(sqlparser::ast::ExactNumberInfo::None))
+            }
+            DataType::Boolean => Ok(SqlDataType::Boolean),
+            DataType::Date32 => Ok(SqlDataType::Date),
+            DataType::Timestamp(_, _) => Ok(SqlDataType::Timestamp(
+                None,
+                sqlparser::ast::TimezoneInfo::None,
+            )),
+            _ => crate::sql_generator::dialect::DefaultTypeMapper.map_type(df_type),
+        }
+    }
+}

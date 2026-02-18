@@ -44,12 +44,12 @@ async fn test_join_column_collision() -> Result<()> {
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         // Verify that the ON condition and SELECT use correct disambiguated aliases
         assert!(
-            sql.contains("\"t0\".\"id\" = \"t1\".\"id\""),
+            sql.contains("\"rel_0\".\"id\" = \"rel_1\".\"id\""),
             "Join condition should be disambiguated: {}",
             sql
         );
         assert!(
-            sql.contains("\"t0\".\"id\"") && sql.contains("\"t1\".\"id\""),
+            sql.contains("\"rel_0\".\"id\"") && sql.contains("\"rel_1\".\"id\""),
             "Projection should be disambiguated: {}",
             sql
         );
@@ -81,8 +81,8 @@ async fn test_projection_provenance_above_join() -> Result<()> {
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         // Check that t0.id and t1.role are used in the same SELECT
-        assert!(sql.contains("\"t0\".\"id\""));
-        assert!(sql.contains("\"t1\".\"role\""));
+        assert!(sql.contains("\"rel_0\".\"id\""));
+        assert!(sql.contains("\"rel_1\".\"role\""));
     });
     Ok(())
 }
@@ -107,7 +107,7 @@ async fn test_nested_subquery_alias_resets_source_alias() -> Result<()> {
         // Inner: SELECT t0.id FROM t1 AS t0
         // Outer: SELECT t1.id FROM (...) AS t1
         assert!(sql.contains(
-            "SELECT \"t1\".\"id\" FROM (SELECT \"t0\".\"id\" FROM \"t1\" AS \"t0\") AS \"t1\""
+            "SELECT \"rel_1\".\"id\" FROM (SELECT \"rel_0\".\"id\" FROM \"t1\" AS \"rel_0\") AS \"rel_1\""
         ));
     });
     Ok(())

@@ -80,7 +80,9 @@ impl SourceProvider for GrpcSourceProvider {
         if tables.is_empty() {
             // MVP: Validation that we can parse config
             // In real impl: fetch schema via reflection
-            let schema = create_schema_from_config(&grpc_config)?;
+            // MVP: Validation that we can parse config
+            // In real impl: fetch schema via reflection
+            let (schema, pool) = create_schema_and_pool_from_config(&grpc_config).await?;
 
             let catalog = context
                 .catalog(catalog_name)
@@ -89,7 +91,7 @@ impl SourceProvider for GrpcSourceProvider {
                 catalog.register_schema("public", Arc::new(MemorySchemaProvider::new()))?;
             }
 
-            let provider = Arc::new(GrpcTableProvider::new(grpc_config, schema));
+            let provider = Arc::new(GrpcTableProvider::new(grpc_config, schema, pool));
 
             context.register_table(
                 datafusion::sql::TableReference::full(catalog_name, "public", config.name.clone()),
@@ -97,6 +99,9 @@ impl SourceProvider for GrpcSourceProvider {
             )?;
         } else {
             for table_cfg in tables {
+                let (default_schema, pool) =
+                    create_schema_and_pool_from_config(&grpc_config).await?;
+
                 let schema = if !table_cfg.columns.is_empty() {
                     // Convert TableConfig columns to GrpcSourceConfig columns
                     let grpc_cols: Vec<ColumnConfig> = table_cfg
@@ -112,10 +117,10 @@ impl SourceProvider for GrpcSourceProvider {
                     temp_cfg.columns = Some(grpc_cols);
                     create_schema_from_config(&temp_cfg)?
                 } else {
-                    create_schema_from_config(&grpc_config)?
+                    default_schema
                 };
 
-                let provider = Arc::new(GrpcTableProvider::new(grpc_config.clone(), schema));
+                let provider = Arc::new(GrpcTableProvider::new(grpc_config.clone(), schema, pool));
 
                 let schema_name = if table_cfg.schema.is_empty() {
                     "public"
@@ -160,11 +165,20 @@ use datafusion::physical_plan::{DisplayAs, PlanProperties};
 struct GrpcTableProvider {
     config: GrpcSourceConfig,
     schema: arrow::datatypes::SchemaRef,
+    pool: Option<Arc<DescriptorPool>>,
 }
 
 impl GrpcTableProvider {
-    fn new(config: GrpcSourceConfig, schema: arrow::datatypes::SchemaRef) -> Self {
-        Self { config, schema }
+    fn new(
+        config: GrpcSourceConfig,
+        schema: arrow::datatypes::SchemaRef,
+        pool: Option<Arc<DescriptorPool>>,
+    ) -> Self {
+        Self {
+            config,
+            schema,
+            pool,
+        }
     }
 }
 
@@ -190,6 +204,7 @@ impl TableProvider for GrpcTableProvider {
         let exec = GrpcExec::try_new(
             self.config.clone(),
             self.schema.clone(),
+            self.pool.clone(),
             _projection.cloned(),
             _limit,
         )?;
@@ -201,6 +216,7 @@ impl TableProvider for GrpcTableProvider {
 struct GrpcExec {
     config: GrpcSourceConfig,
     schema: arrow::datatypes::SchemaRef,
+    pool: Option<Arc<DescriptorPool>>,
     #[allow(dead_code)] // TODO: Implement projection pushdown
     projection: Option<Vec<usize>>,
     #[allow(dead_code)] // TODO: Implement limit pushdown
@@ -212,6 +228,7 @@ impl GrpcExec {
     fn try_new(
         config: GrpcSourceConfig,
         schema: arrow::datatypes::SchemaRef,
+        pool: Option<Arc<DescriptorPool>>,
         projection: Option<Vec<usize>>,
         limit: Option<usize>,
     ) -> datafusion::error::Result<Self> {
@@ -236,6 +253,7 @@ impl GrpcExec {
         Ok(Self {
             config,
             schema: projected_schema,
+            pool,
             projection,
             limit,
             cache,
@@ -288,40 +306,18 @@ impl ExecutionPlan for GrpcExec {
         let config = self.config.clone();
         let schema = self.schema.clone();
 
+        let pool = self.pool.clone();
+
         // Return a stream that executes gRPC in background
         let stream = futures::stream::once(async move {
             // 1. Load Descriptor Pool
-            // File I/O offloaded to blocking pool
-            let descriptor_path = config
-                .descriptor_set
-                .as_ref()
-                .ok_or_else(|| {
-                    datafusion::error::DataFusionError::Execution(
-                        "No descriptor_set provided. Reflection not yet supported.".to_string(),
-                    )
-                })?
-                .clone();
-
-            let pool = tokio::task::spawn_blocking(move || {
-                let bytes = std::fs::read(&descriptor_path).map_err(|e| {
-                    datafusion::error::DataFusionError::Execution(format!(
-                        "Failed to read descriptor file: {}",
-                        e
-                    ))
-                })?;
-
-                let pool = DescriptorPool::decode(bytes.as_slice()).map_err(|e| {
-                    datafusion::error::DataFusionError::Execution(format!(
-                        "Failed to decode descriptor pool: {}",
-                        e
-                    ))
-                })?;
-                Ok::<_, datafusion::error::DataFusionError>(pool)
-            })
-            .await
-            .map_err(|join_err| {
-                datafusion::error::DataFusionError::Execution(format!("Join error: {}", join_err))
-            })??;
+            // Fix [Performance]: Use pre-loaded pool or error if not found
+            let pool = pool.ok_or_else(|| {
+                datafusion::error::DataFusionError::Execution(
+                    "No descriptor pool available. Reflection requires a valid descriptor."
+                        .to_string(),
+                )
+            })?;
 
             // 2. Resolve Service and Method
             let service_name = &config.service;
@@ -414,57 +410,50 @@ impl ExecutionPlan for GrpcExec {
 
             // 5. Convert to Arrow logic: Response (Protobuf) -> JSON -> Arrow
             //
-            // TRADEOFF:
-            // We serialize the Protobuf DynamicMessage to [JSON] to leverage Arrow's robust
-            // `json::Reader` for handling complex nested schemas without a custom converter.
-            //
             // PERFORMANCE NOTE:
-            // This double-serialization is a bottleneck. A future optimization should implement
-            // a direct `DynamicMessage -> Arrow` transcoder to skip the intermediate JSON step.
-            let json_val = serde_json::to_value(&response_msg).map_err(|e| {
+            // We serialize the Protobuf DynamicMessage directly to JSON bytes to leverage Arrow's
+            // `json::Reader`. This avoids intermediate serde_json::Value and String allocations.
+            let json_bytes = serde_json::to_vec(&response_msg).map_err(|e| {
                 datafusion::error::DataFusionError::Execution(format!(
-                    "Failed to serialize response to JSON: {}",
+                    "Failed to serialize response to JSON bytes: {}",
                     e
                 ))
             })?;
 
-            // Treat as single record or list?
-            // If response is a list-like wrapper needed...
-            let records = [json_val]; // Wrap single response object
-
             // Infer/use schema
-            // We use `schema` (the Arrow one).
-
-            // Convert to batch (Reuse logic from REST or similar)
-            let json_vals: Result<Vec<String>, _> =
-                records.iter().map(serde_json::to_string).collect();
-            let json_str = json_vals
-                .map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))?
-                .join("\n");
-            let cursor = std::io::Cursor::new(json_str);
-
             let final_schema = if schema.fields().is_empty() {
-                let values = records.iter().map(|v| Ok(v.clone()));
-                let inferred = arrow::json::reader::infer_json_schema_from_iterator(values)
-                    .map_err(|e| {
+                // For schema inference, we still need a Value for now as let's stay simple,
+                // but usually schema is provided in GrpcTableProvider.
+                let json_val: serde_json::Value =
+                    serde_json::from_slice(&json_bytes).map_err(|e| {
                         datafusion::error::DataFusionError::Execution(format!(
-                            "Failed to infer schema: {}",
+                            "Failed to parse JSON for inference: {}",
                             e
                         ))
                     })?;
+                let inferred = arrow::json::reader::infer_json_schema_from_iterator(
+                    [Ok(json_val)].into_iter(),
+                )
+                .map_err(|e| {
+                    datafusion::error::DataFusionError::Execution(format!(
+                        "Failed to infer schema: {}",
+                        e
+                    ))
+                })?;
                 Arc::new(inferred)
             } else {
                 schema.clone()
             };
 
-            let reader = arrow::json::ReaderBuilder::new(final_schema).build(cursor)?;
+            let reader = arrow::json::ReaderBuilder::new(final_schema.clone())
+                .build(std::io::Cursor::new(json_bytes))?;
 
             let mut batches = Vec::new();
-            for res in reader {
-                batches.push(res?);
+            for batch in reader {
+                batches.push(batch?);
             }
 
-            let batch = arrow::compute::concat_batches(&schema, &batches)?;
+            let batch = arrow::compute::concat_batches(&final_schema, &batches)?;
             Ok(batch)
         });
 
@@ -549,6 +538,24 @@ impl Decoder for DynamicDecoder {
             .map_err(|e| Status::internal(format!("Failed to decode: {}", e)))?;
         Ok(Some(msg))
     }
+}
+
+async fn create_schema_and_pool_from_config(
+    config: &GrpcSourceConfig,
+) -> Result<(arrow::datatypes::SchemaRef, Option<Arc<DescriptorPool>>)> {
+    let pool = if let Some(path) = &config.descriptor_set {
+        let bytes = tokio::fs::read(path)
+            .await
+            .context("Failed to read descriptor set")?;
+        let pool =
+            DescriptorPool::decode(bytes.as_slice()).context("Failed to decode descriptor pool")?;
+        Some(Arc::new(pool))
+    } else {
+        None
+    };
+
+    let schema = create_schema_from_config(config)?;
+    Ok((schema, pool))
 }
 
 fn create_schema_from_config(config: &GrpcSourceConfig) -> Result<arrow::datatypes::SchemaRef> {

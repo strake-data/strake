@@ -80,6 +80,7 @@ pub struct FederationEngineOptions {
     pub extra_optimizer_rules:
         Vec<Arc<dyn datafusion::optimizer::optimizer::OptimizerRule + Send + Sync>>,
     pub extra_sources: Vec<Box<dyn SourceProvider>>,
+    pub retry: strake_common::config::RetrySettings,
 }
 
 impl FederationEngine {
@@ -108,8 +109,7 @@ impl FederationEngine {
         )?;
         context.register_catalog(&options.catalog_name, catalog);
 
-        let mut registry =
-            sources::default_registry(strake_common::config::RetrySettings::default());
+        let mut registry = sources::default_registry(options.retry);
         for provider in options.extra_sources {
             registry.register_provider(provider);
         }
@@ -413,7 +413,7 @@ impl FederationEngine {
             // Note: Since we don't have easy access to the optimized plan structure here without re-inspecting
             // or modifying how we execute, we omit the defensive limit warning for now to keep this robust.
 
-            let batches = df.collect().await.context("Failed to collect batches")?;
+            let batches = df.collect().await?;
             Ok::<
                 (
                     arrow::datatypes::SchemaRef,
@@ -530,6 +530,7 @@ mod tests {
             global_budget: 10,
             extra_optimizer_rules: vec![],
             extra_sources: vec![],
+            retry: Default::default(),
         })
         .await?;
 
@@ -553,6 +554,7 @@ mod tests {
             global_budget: 10,
             extra_optimizer_rules: vec![],
             extra_sources: vec![],
+            retry: Default::default(),
         })
         .await?;
 
@@ -582,6 +584,7 @@ mod tests {
             global_budget: 10,
             extra_optimizer_rules: vec![],
             extra_sources: vec![],
+            retry: Default::default(),
         })
         .await?;
 
@@ -613,6 +616,7 @@ mod tests {
             global_budget: 10,
             extra_optimizer_rules: vec![],
             extra_sources: vec![],
+            retry: Default::default(),
         })
         .await?;
 

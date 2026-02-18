@@ -98,17 +98,47 @@ pub async fn register_flight_sql_source(
                 .downcast_ref::<arrow::array::StringArray>()
                 .context("Failed to downcast db_schema_name column")?;
 
-            for i in 0..batch.num_rows() {
-                if table_names.is_valid(i) {
-                    let t_name = table_names.value(i).to_string();
-                    let s_name = if schema_names.is_valid(i) && !schema_names.value(i).is_empty() {
-                        Some(schema_names.value(i).to_string())
-                    } else {
-                        None
-                    };
-                    discovered_tables.push((s_name, t_name));
-                }
-            }
+            // Vectorized discovery using Arrow kernels
+            let valid_mask = arrow::compute::is_not_null(table_names)?;
+            let indices = arrow::array::Int32Array::from_iter_values(0..batch.num_rows() as i32);
+            let valid_indices = arrow::compute::filter(&indices, &valid_mask)
+                .context("Failed to filter valid indices")?;
+
+            let valid_indices = valid_indices
+                .as_any()
+                .downcast_ref::<arrow::array::Int32Array>()
+                .context("Failed to downcast valid indices")?;
+
+            // Optimization: Use take to get only valid table names without allocations
+            // Fix [Performance]: Avoid per-row allocation loop
+            let filtered_tables = arrow::compute::take(table_names, valid_indices, None)
+                .context("Failed to take valid table names")?;
+            let filtered_tables = filtered_tables
+                .as_any()
+                .downcast_ref::<arrow::array::StringArray>()
+                .context("Failed to downcast filtered table names")?;
+
+            let filtered_schemas = arrow::compute::take(schema_names, valid_indices, None)
+                .context("Failed to take valid schema names")?;
+            let filtered_schemas = filtered_schemas
+                .as_any()
+                .downcast_ref::<arrow::array::StringArray>()
+                .context("Failed to downcast filtered schema names")?;
+
+            let discovered: Vec<(Option<String>, String)> = (0..filtered_tables.len())
+                .map(|i| {
+                    let t_name = filtered_tables.value(i).to_string();
+                    let s_name =
+                        if filtered_schemas.is_valid(i) && !filtered_schemas.value(i).is_empty() {
+                            Some(filtered_schemas.value(i).to_string())
+                        } else {
+                            None
+                        };
+                    (s_name, t_name)
+                })
+                .collect();
+
+            discovered_tables.extend(discovered);
         }
     }
 
@@ -131,7 +161,8 @@ pub async fn register_flight_sql_source(
         // The FlightSqlDriver in datafusion-table-providers 0.9.0 expects the query in this key
         options.insert(
             "flight.sql.query".to_string(),
-            format!("SELECT * FROM {}", t_name),
+            // Fix [Safety]: Quote table name to prevent SQL injection
+            format!("SELECT * FROM \"{}\"", t_name.replace('"', "\"\"")),
         );
 
         match factory.open_table(url, options).await {

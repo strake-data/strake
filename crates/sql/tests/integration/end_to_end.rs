@@ -13,7 +13,9 @@ async fn test_table_scan_generation() -> Result<()> {
         let sql = gen
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
-        assert!(sql.contains("SELECT \"t0\".\"id\", \"t0\".\"name\" FROM \"users\" AS \"t0\""));
+        assert!(
+            sql.contains("SELECT \"rel_0\".\"id\", \"rel_0\".\"name\" FROM \"users\" AS \"rel_0\"")
+        );
     });
     Ok(())
 }
@@ -31,7 +33,9 @@ async fn test_projection_generation() -> Result<()> {
         let sql = gen
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
-        assert!(sql.contains("SELECT \"t0\".\"id\", \"t0\".\"name\" FROM \"users\" AS \"t0\""));
+        assert!(
+            sql.contains("SELECT \"rel_0\".\"id\", \"rel_0\".\"name\" FROM \"users\" AS \"rel_0\"")
+        );
     });
     Ok(())
 }
@@ -49,7 +53,7 @@ async fn test_filter_generation() -> Result<()> {
         let sql = gen
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
-        assert!(sql.contains("SELECT \"t0\".\"id\", \"t0\".\"name\" FROM \"users\" AS \"t0\" WHERE \"t0\".\"id\" = 1"));
+        assert!(sql.contains("SELECT \"rel_0\".\"id\", \"rel_0\".\"name\" FROM \"users\" AS \"rel_0\" WHERE \"rel_0\".\"id\" = 1"));
     });
     Ok(())
 }
@@ -72,7 +76,7 @@ async fn test_subquery_alias_scope_isolation() -> Result<()> {
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         // Now explicit columns instead of *
         assert!(sql.contains(
-            "SELECT \"t1\".\"id\" FROM (SELECT \"t0\".\"id\" FROM \"users\" AS \"t0\") AS \"t1\""
+            "SELECT \"rel_1\".\"id\" FROM (SELECT \"rel_0\".\"id\" FROM \"users\" AS \"rel_0\") AS \"rel_1\""
         ));
     });
     Ok(())
@@ -105,9 +109,9 @@ async fn test_join_generation() -> Result<()> {
         let sql = gen
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
-        assert!(
-            sql.contains("INNER JOIN \"orders\" AS \"t1\" ON \"t0\".\"id\" = \"t1\".\"user_id\"")
-        );
+        assert!(sql.contains(
+            "INNER JOIN \"orders\" AS \"rel_1\" ON \"rel_0\".\"id\" = \"rel_1\".\"user_id\""
+        ));
     });
     Ok(())
 }
@@ -126,7 +130,7 @@ async fn test_determinism() -> Result<()> {
         with_generator!(gen2, {
             let sql2 = gen2.generate(&plan).unwrap();
             assert_eq!(sql1, sql2);
-            assert!(sql1.contains("t0"));
+            assert!(sql1.contains("rel_0"));
         });
     });
     Ok(())

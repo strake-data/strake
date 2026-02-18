@@ -26,6 +26,7 @@ async fn test_cache_speeds_up_repeated_query() -> anyhow::Result<()> {
         global_budget: 10,
         extra_optimizer_rules: vec![],
         extra_sources: vec![],
+        retry: Default::default(),
     })
     .await?;
 
@@ -123,6 +124,7 @@ async fn test_cache_isolation_by_user() -> anyhow::Result<()> {
         global_budget: 10,
         extra_optimizer_rules: vec![],
         extra_sources: vec![],
+        retry: Default::default(),
     })
     .await?;
 
@@ -189,6 +191,7 @@ async fn test_cache_disabled() -> anyhow::Result<()> {
         global_budget: 10,
         extra_optimizer_rules: vec![],
         extra_sources: vec![],
+        retry: Default::default(),
     })
     .await?;
 
@@ -244,6 +247,7 @@ async fn test_cache_performance_improvement() -> anyhow::Result<()> {
         global_budget: 10,
         extra_optimizer_rules: vec![],
         extra_sources: vec![],
+        retry: Default::default(),
     })
     .await?;
 
@@ -342,6 +346,7 @@ async fn test_cache_large_dataset() -> anyhow::Result<()> {
         global_budget: 10,
         extra_optimizer_rules: vec![],
         extra_sources: vec![],
+        retry: Default::default(),
     })
     .await?;
 
@@ -504,6 +509,7 @@ async fn test_metadata_persistence() -> anyhow::Result<()> {
         global_budget: 10,
         extra_optimizer_rules: vec![],
         extra_sources: vec![],
+        retry: Default::default(),
     })
     .await?;
 
@@ -537,6 +543,7 @@ async fn test_metadata_persistence() -> anyhow::Result<()> {
         global_budget: 10,
         extra_optimizer_rules: vec![],
         extra_sources: vec![],
+        retry: Default::default(),
     })
     .await?;
 
@@ -647,6 +654,7 @@ async fn test_per_datasource_cache_config() -> anyhow::Result<()> {
         global_budget: 10,
         extra_optimizer_rules: vec![],
         extra_sources: vec![Box::new(MockProvider)],
+        retry: Default::default(),
     })
     .await?;
 

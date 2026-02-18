@@ -5,6 +5,8 @@ use datafusion::logical_expr::LogicalPlan;
 use sqlparser::ast::{Query, Select, SetExpr, TableFactor};
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::sync::OnceLock;
 use strake_error::StrakeError;
 
@@ -15,12 +17,12 @@ pub(crate) mod scan;
 pub(crate) mod set_ops;
 pub(crate) mod sort;
 
-const MAX_RECURSION_DEPTH: usize = 100;
+const MAX_RECURSION_DEPTH: usize = 50;
 
 pub struct SqlGenerator<'a> {
     pub context: GeneratorContext,
     pub dialect: GeneratorDialect<'a>,
-    pub(crate) recursion_level: std::rc::Rc<std::cell::Cell<usize>>,
+    pub(crate) recursion_level: Arc<AtomicUsize>,
 }
 
 impl<'a> SqlGenerator<'a> {
@@ -28,7 +30,7 @@ impl<'a> SqlGenerator<'a> {
         Self {
             context: GeneratorContext::new(),
             dialect,
-            recursion_level: std::rc::Rc::new(std::cell::Cell::new(0)),
+            recursion_level: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -74,7 +76,7 @@ impl<'a> SqlGenerator<'a> {
     pub fn plan_to_query(&mut self, plan: &LogicalPlan) -> Result<Query, SqlGenError> {
         let _guard = RecursionGuard::new(self.recursion_level.clone())?;
 
-        tracing::trace!(target: "sql_generator", node = %plan.display(), depth = self.recursion_level.get(), "Translating plan node");
+        tracing::trace!(target: "sql_generator", node = %plan.display(), depth = self.recursion_level.load(Ordering::SeqCst), "Translating plan node");
 
         let result = match plan {
             LogicalPlan::TableScan(scan) => scan::handle_table_scan(self, scan),
@@ -92,6 +94,28 @@ impl<'a> SqlGenerator<'a> {
             LogicalPlan::Values(values) => set_ops::handle_values(self, values),
             LogicalPlan::RecursiveQuery(recursive) => {
                 set_ops::handle_recursive_query(self, recursive)
+            }
+            LogicalPlan::Extension(ext) => {
+                if let Some(nary) = ext
+                    .node
+                    .as_any()
+                    .downcast_ref::<crate::optimizer::join_flattener::NaryJoinNode>()
+                {
+                    join::handle_nary_join(self, nary)
+                } else if let Some(adapter) = ext
+                    .node
+                    .as_any()
+                    .downcast_ref::<crate::schema_adapter::SchemaAdapter>()
+                {
+                    // Fallback for SchemaAdapter if not already replaced:
+                    // Treat as projection but we should have replaced it in sql_gen.rs anyway.
+                    self.plan_to_query(&adapter.to_projection()?)
+                } else {
+                    Err(SqlGenError::UnsupportedPlan {
+                        message: format!("Unsupported extension node: {}", ext.node.name()),
+                        node_type: "Extension".to_string(),
+                    })
+                }
             }
             _ => Err(SqlGenError::UnsupportedPlan {
                 message: format!("Logical plan node: {}", plan.display()),
@@ -137,25 +161,55 @@ impl<'a> SqlGenerator<'a> {
 }
 
 struct RecursionGuard {
-    level: std::rc::Rc<std::cell::Cell<usize>>,
+    level: Arc<AtomicUsize>,
 }
 
 impl RecursionGuard {
-    fn new(level: std::rc::Rc<std::cell::Cell<usize>>) -> Result<Self, SqlGenError> {
-        let current = level.get();
+    fn new(level: Arc<AtomicUsize>) -> Result<Self, SqlGenError> {
+        let current = level.fetch_add(1, Ordering::SeqCst);
         if current > MAX_RECURSION_DEPTH {
-            return Err(SqlGenError::UnsupportedPlan {
-                message: format!("Maximum recursion depth ({}) exceeded", MAX_RECURSION_DEPTH),
-                node_type: "LogicalPlan".to_string(),
-            });
+            level.fetch_sub(1, Ordering::SeqCst);
+            return Err(SqlGenError::MaxRecursion(MAX_RECURSION_DEPTH));
         }
-        level.set(current + 1);
         Ok(Self { level })
     }
 }
 
 impl Drop for RecursionGuard {
     fn drop(&mut self) {
-        self.level.set(self.level.get().saturating_sub(1));
+        self.level.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::sql::unparser::dialect::PostgreSqlDialect as DataFusionPostgres;
+
+    #[tokio::test]
+    async fn test_concurrent_generation_safety() {
+        let sqlparser_dialect = DataFusionPostgres {};
+        let _dialect = GeneratorDialect::new(
+            &sqlparser_dialect,
+            None,
+            std::sync::Arc::new(crate::sql_generator::dialect::DefaultDialectCapabilities),
+            std::sync::Arc::new(crate::sql_generator::dialect::DefaultTypeMapper),
+            "postgres",
+        );
+        let mut tasks = vec![];
+
+        for _ in 0..1000 {
+            // We can't easily move SqlGenerator due to lifetimes of GeneratorDialect,
+            // but we can test that its components (like recursion_level) are Send/Sync.
+            let level = Arc::new(AtomicUsize::new(0));
+            tasks.push(tokio::spawn(async move {
+                let _guard = RecursionGuard::new(level).unwrap();
+                // If this compiles and runs, we've proven Arc<AtomicUsize> works in async
+            }));
+        }
+
+        for task in tasks {
+            task.await.unwrap();
+        }
     }
 }

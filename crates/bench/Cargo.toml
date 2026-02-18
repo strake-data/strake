@@ -7,8 +7,9 @@ edition = "2021"
 [dependencies]
 strake-runtime = { path = "../runtime" }
 strake-common = { path = "../common" }
-# strake-sql = { path = "../sql" } # Might need this if benching optimizer
+strake-sql = { path = "../sql" }
 datafusion = { workspace = true }
+arrow = { workspace = true }
 tokio = { workspace = true }
 clap = { version = "4.4", features = ["derive"] }
 anyhow = { workspace = true }
@@ -20,3 +21,11 @@ rand = "0.9.2"
 chrono = "0.4"
 async-trait = { workspace = true }
 futures = { workspace = true }
+
+[dev-dependencies]
+criterion = "0.5"
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[[bench]]
+name = "flatten_benchmark"
+harness = false

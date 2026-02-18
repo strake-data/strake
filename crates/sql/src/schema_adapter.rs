@@ -31,16 +31,46 @@ impl SchemaAdapter {
         let input_schema = self.input.schema();
         let mut exprs = Vec::new();
 
-        for (i, (qualifier, _field)) in input_schema.iter().enumerate() {
-            if i >= self.schema.fields().len() {
-                break;
-            }
-            let target_field = self.schema.field(i);
-            let input_field = input_schema.field(i);
+        for (i, target_field) in self.schema.fields().iter().enumerate() {
+            let logical_name = target_field.name();
+
+            // Try to find the field in the input
+            // 1. Exact match
+            // 2. Suffix match (common in joins/aliasing)
+            // 3. Fallback to position match if names match (extra validation)
+            let input_index = input_schema
+                .fields()
+                .iter()
+                .position(|f| f.name() == logical_name)
+                .or_else(|| {
+                    let suffix = format!("_{}", logical_name);
+                    input_schema
+                        .fields()
+                        .iter()
+                        .position(|f| f.name().ends_with(&suffix))
+                })
+                .or_else(|| {
+                    if i < input_schema.fields().len()
+                        && input_schema.field(i).name() == logical_name
+                    {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                });
+
+            let input_index = input_index.ok_or_else(|| {
+                DataFusionError::Plan(format!(
+                    "SchemaAdapter: Cannot find field '{}' in input schema for projection conversion",
+                    logical_name
+                ))
+            })?;
+
+            let (qualifier, field) = input_schema.qualified_field(input_index);
 
             let expr = Expr::Column(datafusion::common::Column::new(
                 qualifier.cloned(),
-                input_field.name().clone(),
+                field.name().clone(),
             ))
             .alias(target_field.name().clone());
             exprs.push(expr);
@@ -164,19 +194,30 @@ impl ExtensionPlanner for SchemaAdapterPlanner {
         for (logical_idx, logical_field) in target_schema.fields().iter().enumerate() {
             let logical_name = logical_field.name();
 
-            // Strategy: Find physical column by position first, then by name matching.
-            // Using field indices is preferred for performance in high-throughput adapters.
-            let physical_idx = if logical_idx < input_schema.fields().len() {
-                // Positional match (most reliable for adapters)
-                Some(logical_idx)
-            } else {
-                // Fallback: search by name (avoiding format! in loop)
-                let suffix = format!("_{}", logical_name);
-                input_schema
-                    .fields()
-                    .iter()
-                    .position(|f| f.name() == logical_name || f.name().ends_with(&suffix))
-            };
+            // Strategy:
+            // 1. Search by exact name
+            // 2. Search by suffix match (e.g. t0_id)
+            // 3. Fallback to positional match ONLY if name matches at that position (extra safety)
+            let physical_idx = input_schema
+                .fields()
+                .iter()
+                .position(|f| f.name() == logical_name)
+                .or_else(|| {
+                    let suffix = format!("_{}", logical_name);
+                    input_schema
+                        .fields()
+                        .iter()
+                        .position(|f| f.name().ends_with(&suffix))
+                })
+                .or_else(|| {
+                    if logical_idx < input_schema.fields().len()
+                        && input_schema.field(logical_idx).name() == logical_name
+                    {
+                        Some(logical_idx)
+                    } else {
+                        None
+                    }
+                });
 
             let physical_idx =
                 physical_idx.ok_or_else(|| {
@@ -191,6 +232,16 @@ impl ExtensionPlanner for SchemaAdapterPlanner {
                 })?;
 
             let physical_field = input_schema.field(physical_idx);
+
+            // Type validation: Ensure types are compatible (at least they should be the same for now)
+            if !types_compatible(physical_field.data_type(), logical_field.data_type()) {
+                return Err(DataFusionError::Internal(format!(
+                    "SchemaAdapter: Type mismatch for field '{}'. Physical: {:?}, Logical: {:?}",
+                    logical_name,
+                    physical_field.data_type(),
+                    logical_field.data_type()
+                )));
+            }
             let physical_col = PhysColumn::new(physical_field.name(), physical_idx);
 
             projection_exprs.push((
@@ -212,5 +263,19 @@ impl ExtensionPlanner for SchemaAdapterPlanner {
         );
 
         Ok(Some(Arc::new(projection)))
+    }
+}
+
+fn types_compatible(
+    physical: &datafusion::arrow::datatypes::DataType,
+    logical: &datafusion::arrow::datatypes::DataType,
+) -> bool {
+    use datafusion::arrow::datatypes::DataType;
+    match (physical, logical) {
+        (a, b) if a == b => true,
+        (DataType::Int32, DataType::Int64) => true,
+        (DataType::UInt32, DataType::UInt64) => true,
+        (DataType::Float32, DataType::Float64) => true,
+        _ => false,
     }
 }

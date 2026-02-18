@@ -9,7 +9,7 @@ use datafusion::sql::TableReference;
 use futures::stream::TryStreamExt;
 // use futures::TryFutureExt;
 use std::any::Any;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::Semaphore;
 
 use super::common::{FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory};
@@ -104,16 +104,27 @@ pub fn wrap_provider(
 #[derive(Debug)]
 pub struct MetadataEnrichedTableProvider {
     pub inner: Arc<dyn TableProvider>,
-    pub schema: SchemaRef,
+    pub metadata: FetchedMetadata,
+    // Use std::sync::OnceLock because schema() is a synchronous trait method.
+    // We cannot await tokio::sync::OnceCell here, and the computation is CPU-bound.
+    pub schema: OnceLock<SchemaRef>,
 }
 
 impl MetadataEnrichedTableProvider {
     pub fn new(provider: Arc<dyn TableProvider>, metadata: FetchedMetadata) -> Self {
-        let existing_schema = provider.schema();
+        Self {
+            inner: provider,
+            metadata,
+            schema: OnceLock::new(),
+        }
+    }
+
+    fn compute_schema(&self) -> SchemaRef {
+        let existing_schema = self.inner.schema();
         let mut new_fields = Vec::new();
 
         for field in existing_schema.fields() {
-            if let Some(desc) = metadata.columns.get(field.name()) {
+            if let Some(desc) = self.metadata.columns.get(field.name()) {
                 let mut new_metadata = field.metadata().clone();
                 new_metadata.insert("ARROW:FLIGHT:SQL:REMARKS".to_string(), desc.clone());
                 new_metadata.insert("description".to_string(), desc.clone());
@@ -127,19 +138,14 @@ impl MetadataEnrichedTableProvider {
         }
 
         let mut schema_metadata = existing_schema.metadata().clone();
-        if let Some(table_desc) = metadata.table_description {
+        if let Some(table_desc) = &self.metadata.table_description {
             schema_metadata.insert("ARROW:FLIGHT:SQL:REMARKS".to_string(), table_desc.clone());
             schema_metadata.insert("description".to_string(), table_desc.clone());
             schema_metadata.insert("comment".to_string(), table_desc.clone());
             schema_metadata.insert("remarks".to_string(), table_desc.clone());
         }
 
-        let new_schema = Arc::new(Schema::new_with_metadata(new_fields, schema_metadata));
-
-        Self {
-            inner: provider,
-            schema: new_schema,
-        }
+        Arc::new(Schema::new_with_metadata(new_fields, schema_metadata))
     }
 }
 
@@ -149,7 +155,7 @@ impl TableProvider for MetadataEnrichedTableProvider {
         self
     }
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        self.schema.get_or_init(|| self.compute_schema()).clone()
     }
     fn table_type(&self) -> TableType {
         self.inner.table_type()

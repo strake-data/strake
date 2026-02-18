@@ -46,3 +46,19 @@ Strake Enterprise adds a layer of security and policy management on top of your 
 1.  **Row-Level Security (RLS)**: Define SQL-based policies (e.g., `org_id = current_setting('user.org_id')`) that automatically filter rows based on the authenticated user.
 2.  **Column Masking**: Automatically mask sensitive data (PII) for unauthorized roles (e.g., `SELECT mask(email) ...`).
 3.  **Role-Based Access Control (RBAC)**: Assign permissions to Roles and map Users to Roles via OIDC claims.
+
+## Cache Consistency Model
+
+Strake implements a **TTL-based, User-Isolated** caching strategy to ensure performance while maintaining security.
+
+*   **User Isolation**: Cache keys include the User ID (or Roles) to prevent cross-user data leakage. A query run by User A will not return cached results for User B unless they share the exact same context permissioning (depending on configuration).
+*   **TTL-Based Expiry**: Cached entries are valid for a configured duration (e.g., 60 seconds). Strake does not actively invalidate cache on source changes; it relies on eventual consistency driven by the TTL.
+*   **Defensive Caching**: If the cache backend (e.g., Redis) fails, Strake fails open and executes the query directly against the source, logging a warning.
+
+## Resource Governance
+
+To protect both the Strake engine and your upstream data sources, Strake enforces multi-layer resource limits:
+
+1.  **Global Query Timeout**: A hard limit on the total execution time of any query (e.g., 30s). If exceeded, the query is cancelled to free up resources.
+2.  **Per-Source Concurrency Limits**: Each data source (e.g., "Production DB") can be configured with a maximum number of concurrent queries (e.g., `max_concurrent_queries: 5`). This acts as a bulk-head pattern, preventing a flood of analytical queries from overwhelming a transactional database. Queries exceeding this limit are queued or rejected.
+3.  **Defensive Rows Limit**: (Planned) Strake can enforce a maximum number of rows returned to prevent OOM errors.

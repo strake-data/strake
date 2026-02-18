@@ -57,9 +57,9 @@ async fn test_join_column_collision() -> Result<()> {
     println!("OPTIMIZED SQL: {}", optimized_sql);
 
     // Verify: Both should correctly distinguish between the two "id" columns
-    // Postgres uses "t0"."id" and "t1"."id"
-    assert!(optimized_sql.contains("\"t0\".\"id\"") || optimized_sql.contains("t0.id"));
-    assert!(optimized_sql.contains("\"t1\".\"id\"") || optimized_sql.contains("t1.id"));
+    // Postgres uses "rel_0"."id" and "rel_1"."id"
+    assert!(optimized_sql.contains("\"rel_0\".\"id\"") || optimized_sql.contains("rel_0.id"));
+    assert!(optimized_sql.contains("\"rel_1\".\"id\"") || optimized_sql.contains("rel_1.id"));
 
     Ok(())
 }

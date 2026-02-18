@@ -40,6 +40,40 @@ async fn test_oracle_dialect() {
 }
 
 #[tokio::test]
+async fn test_oracle_cast() -> Result<()> {
+    let ctx = SessionContext::new();
+    let schema = arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+        "id",
+        arrow::datatypes::DataType::Int32,
+        false,
+    )]);
+    ctx.register_table(
+        "users",
+        std::sync::Arc::new(datafusion::datasource::empty::EmptyTable::new(
+            std::sync::Arc::new(schema),
+        )),
+    )?;
+
+    let plan = ctx
+        .table("users")
+        .await?
+        .select(vec![datafusion::logical_expr::Expr::Cast(
+            datafusion::logical_expr::Cast {
+                expr: Box::new(col("id")),
+                data_type: arrow::datatypes::DataType::Utf8,
+            },
+        )])?
+        .into_optimized_plan()?;
+
+    let sql = get_sql_for_plan(&plan, "oracle")?.expect("expected SQL output");
+
+    // Check for VARCHAR2
+    // Expected: CAST("rel_0"."id" AS VARCHAR2)
+    assert!(sql.contains("VARCHAR2"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_snowflake_dialect() {
     let plan = common::test_plan().await;
     let sql = get_sql_for_plan(&plan, "snowflake")
@@ -91,7 +125,7 @@ async fn test_scoped_subquery_generation() -> Result<()> {
     let sql = get_sql_for_plan(&plan, "postgres")?.expect("sql generated");
     println!("Generated SQL: {}", sql);
 
-    assert!(sql.contains("\"t1\"") || sql.contains("t1"));
+    assert!(sql.contains("\"rel_1\"") || sql.contains("rel_1"));
     // The column name is valid.
     assert!(sql.contains("\"name\"") || sql.contains("name"));
 
@@ -139,9 +173,9 @@ async fn test_union_scope_merge() -> Result<()> {
     let sql = get_sql_for_plan(&plan, "postgres")?.expect("sql generated");
     println!("Generated SQL: {}", sql);
 
-    // Systematic aliases t0, t1, t2, t3 should be present
-    assert!(sql.contains("\"t0\"") && sql.contains("\"t1\""));
-    assert!(sql.contains("\"t2\"") && sql.contains("\"t3\""));
+    // Systematic aliases rel_0, rel_1, rel_2, rel_3 should be present
+    assert!(sql.contains("\"rel_0\"") && sql.contains("\"rel_1\""));
+    assert!(sql.contains("\"rel_2\"") && sql.contains("\"rel_3\""));
 
     Ok(())
 }

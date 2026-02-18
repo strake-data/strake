@@ -21,9 +21,10 @@ pub async fn get_substrait_for_plan(plan: &LogicalPlan, ctx: &SessionContext) ->
 ///
 /// Used by the federation layer when pushing subqueries to remote databases.
 pub fn get_sql_for_plan(plan: &LogicalPlan, source_type: &str) -> Result<Option<String>> {
-    let (dialect_arc, function_mapper) = match route_dialect(source_type) {
-        DialectPath::Native(d) => (d, None),
-        DialectPath::Custom(d, mapper) => (d, mapper), // Mapper is Option<FunctionMapper>, already matching
+    let (dialect_arc, capabilities, type_mapper, function_mapper) = match route_dialect(source_type)
+    {
+        DialectPath::Native(d, cap, tm) => (d, cap, tm, None),
+        DialectPath::Custom(d, cap, tm, mapper) => (d, cap, tm, mapper),
         DialectPath::Substrait => {
             return Err(anyhow::anyhow!(
                 "Source '{}' uses Substrait, use get_substrait_for_plan instead",
@@ -59,9 +60,17 @@ pub fn get_sql_for_plan(plan: &LogicalPlan, source_type: &str) -> Result<Option<
         })
         .map(|t| t.data)?;
 
+    // Flatten join trees for cleaner SQL generation
+    use crate::optimizer::join_flattener::JoinTreeFlattener;
+    use datafusion::optimizer::optimizer::{OptimizerContext, OptimizerRule};
+    let config = OptimizerContext::default();
+    let plan = JoinTreeFlattener::new().rewrite(plan, &config)?.data;
+
     let generator_dialect = crate::sql_generator::dialect::GeneratorDialect::new(
         dialect_arc.as_ref(),
         function_mapper.as_ref(),
+        capabilities,
+        type_mapper,
         source_type,
     );
     let mut generator = crate::sql_generator::SqlGenerator::new(generator_dialect);

@@ -48,6 +48,7 @@ async fn test_sqlite_integration() -> Result<()> {
         global_budget: 10,
         extra_optimizer_rules: vec![],
         extra_sources: vec![],
+        retry: Default::default(),
     })
     .await?;
 
@@ -148,6 +149,7 @@ async fn test_sqlite_cross_db_federation() -> Result<()> {
         global_budget: 10,
         extra_optimizer_rules: vec![],
         extra_sources: vec![],
+        retry: Default::default(),
     })
     .await?;
 

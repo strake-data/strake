@@ -45,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
         global_budget: 10,
         extra_optimizer_rules: vec![],
         extra_sources: vec![],
+        retry: Default::default(),
     })
     .await?;
 

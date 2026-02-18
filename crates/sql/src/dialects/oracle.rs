@@ -292,3 +292,48 @@ fn oracle_function_rules() -> FunctionMapper {
             })
         })
 }
+
+impl crate::sql_generator::dialect::DialectCapabilities for OracleDialect {
+    fn supports_distinct_on(&self) -> bool {
+        false
+    }
+    fn supports_values_clause(&self) -> bool {
+        false // Oracle uses SELECT ... FROM DUAL UNION ALL ...
+    }
+    fn requires_from_dual(&self) -> bool {
+        true
+    }
+}
+
+impl crate::sql_generator::dialect::TypeMapper for OracleDialect {
+    fn map_type(
+        &self,
+        df_type: &datafusion::arrow::datatypes::DataType,
+    ) -> Result<sqlparser::ast::DataType, crate::sql_generator::error::SqlGenError> {
+        use datafusion::arrow::datatypes::DataType;
+        use sqlparser::ast::DataType as SqlDataType;
+
+        match df_type {
+            DataType::Utf8 | DataType::LargeUtf8 => Ok(SqlDataType::Custom(
+                sqlparser::ast::ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
+                    sqlparser::ast::Ident::new("VARCHAR2"),
+                )]),
+                vec![],
+            )),
+            DataType::Int64 | DataType::UInt64 | DataType::Int32 | DataType::UInt32 => {
+                Ok(SqlDataType::Numeric(sqlparser::ast::ExactNumberInfo::None))
+            }
+            DataType::Float64 => Ok(SqlDataType::Double(sqlparser::ast::ExactNumberInfo::None)),
+            DataType::Float32 => Ok(SqlDataType::Float(sqlparser::ast::ExactNumberInfo::None)),
+            DataType::Boolean => Ok(SqlDataType::Numeric(
+                sqlparser::ast::ExactNumberInfo::PrecisionAndScale(1, 0),
+            )),
+            DataType::Date32 => Ok(SqlDataType::Date),
+            DataType::Timestamp(_, _) => Ok(SqlDataType::Timestamp(
+                None,
+                sqlparser::ast::TimezoneInfo::None,
+            )),
+            _ => crate::sql_generator::dialect::DefaultTypeMapper.map_type(df_type),
+        }
+    }
+}

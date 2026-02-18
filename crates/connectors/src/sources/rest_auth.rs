@@ -87,28 +87,55 @@ impl OAuthTokenCache {
     /// Get a valid token, fetching/refreshing if needed.
     pub async fn get_token(&self, config: &OAuthClientCredentialsConfig) -> Result<String> {
         let cache_key = format!("{}:{}", config.token_url, config.client_id);
+        let config_clone = config.clone();
 
-        // Check cache first
-        if let Some(cached) = self.cache.get(&cache_key).await {
-            if !cached.is_expired() {
-                tracing::debug!("Using cached OAuth token for {}", config.client_id);
-                return Ok(cached.access_token.clone());
-            }
+        // Use moka's try_get_with for atomic check-and-set (prevents thundering herd/TOCTOU)
+        // Fix [Concurrency]: TOCTOU Race
+        let config_for_cache = config_clone.clone();
+        let mut cached = self
+            .cache
+            .try_get_with(cache_key.clone(), async move {
+                tracing::info!(
+                    "Fetching new OAuth token from {}",
+                    config_for_cache.token_url
+                );
+                let response = self.fetch_token(&config_for_cache).await?;
+
+                let expires_in = response.expires_in.unwrap_or(3600);
+                Ok(CachedToken {
+                    access_token: response.access_token,
+                    expires_at: Instant::now() + Duration::from_secs(expires_in),
+                }) as Result<CachedToken>
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Token fetch failed: {}", e))?;
+
+        if cached.is_expired() {
+            tracing::info!("Token expired (buffer check), refreshing...");
+            self.cache.invalidate(&cache_key).await;
+
+            // Retry fetch
+            let config_for_retry = config_clone.clone();
+            cached = self
+                .cache
+                .try_get_with(cache_key, async move {
+                    tracing::info!(
+                        "Fetching new OAuth token from {} (retry)",
+                        config_for_retry.token_url
+                    );
+                    let response = self.fetch_token(&config_for_retry).await?;
+
+                    let expires_in = response.expires_in.unwrap_or(3600);
+                    Ok(CachedToken {
+                        access_token: response.access_token,
+                        expires_at: Instant::now() + Duration::from_secs(expires_in),
+                    }) as Result<CachedToken>
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("Token fetch failed: {}", e))?;
         }
 
-        // Fetch new token
-        tracing::info!("Fetching new OAuth token from {}", config.token_url);
-        let token_response = self.fetch_token(config).await?;
-
-        // Cache the token
-        let expires_in = token_response.expires_in.unwrap_or(3600);
-        let cached = CachedToken {
-            access_token: token_response.access_token.clone(),
-            expires_at: Instant::now() + Duration::from_secs(expires_in),
-        };
-        self.cache.insert(cache_key, cached).await;
-
-        Ok(token_response.access_token)
+        Ok(cached.access_token)
     }
 
     /// Fetch a new token from the OAuth server.
@@ -325,6 +352,75 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("401") || err.contains("failed"));
+    }
+
+    #[tokio::test]
+    async fn test_token_refresh_after_expiry() {
+        let mock_server: MockServer = MockServer::start().await;
+
+        // First response - short expiry
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "token1",
+                "token_type": "Bearer",
+                "expires_in": 1 // Very short
+            })))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        // Second response - new token
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "token2",
+                "token_type": "Bearer",
+                "expires_in": 3600
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cache = OAuthTokenCache::new();
+        let config = OAuthClientCredentialsConfig {
+            client_id: "refresh_test".to_string(),
+            client_secret: "secret".to_string(),
+            token_url: format!("{}/oauth/token", mock_server.uri()),
+            scopes: vec![],
+        };
+
+        // First fetch
+        // Token1 expires in 1s. Our buffer is 60s. So it is considered expired immediately.
+        // The cache logic should retry and fetch token2.
+        let t1 = cache.get_token(&config).await.unwrap();
+        assert_eq!(t1, "token2");
+
+        // Second fetch should return the cached token2 (valid for 3600s)
+        let t2 = cache.get_token(&config).await.unwrap();
+        assert_eq!(t2, "token2");
+    }
+
+    #[tokio::test]
+    async fn test_oauth_invalid_json() {
+        let mock_server: MockServer = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("corrupt{json"))
+            .mount(&mock_server)
+            .await;
+
+        let cache = OAuthTokenCache::new();
+        let config = OAuthClientCredentialsConfig {
+            client_id: "json_test".to_string(),
+            client_secret: "secret".to_string(),
+            token_url: format!("{}/oauth/token", mock_server.uri()),
+            scopes: vec![],
+        };
+
+        let result = cache.get_token(&config).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("parse"));
     }
 
     #[test]

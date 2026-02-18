@@ -18,9 +18,10 @@ tokio = { workspace = true }
 url = "2.5"
 secrecy = { workspace = true }
 serde = { workspace = true }
+thiserror = "2.0"
 
 # Connectors
-duckdb = { version = "1.1", features = ["bundled"] }
+duckdb = { version = "1.1", features = ["bundled"], default-features = false }
 tokio-postgres = { workspace = true }
 postgres-types = { workspace = true }
 rust_decimal = { workspace = true }
@@ -45,6 +46,13 @@ tower = { workspace = true }
 prost-reflect = { version = "0.16", features = ["serde"] }
 moka = { version = "0.12", features = ["future"] }
 chrono = "0.4"
+# Apache Iceberg integration
+iceberg = "0.8"
+iceberg-catalog-rest = "0.8"
+iceberg-datafusion = "0.8"
+aws-config = "1.8.14"
+aws-credential-types = "1.2.12"
+dashmap = "6.1.0"
 
 [dev-dependencies]
 wiremock = "0.6"

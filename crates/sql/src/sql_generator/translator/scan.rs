@@ -2,8 +2,9 @@ use super::SqlGenerator;
 use crate::sql_generator::context::ColumnEntry;
 use crate::sql_generator::error::SqlGenError;
 use crate::sql_generator::expr::ExprTranslator;
+use crate::sql_generator::sanitize::safe_ident;
 use sqlparser::ast::{
-    BinaryOperator, Expr as SqlExpr, Ident, LimitClause, ObjectName, ObjectNamePart, SelectItem,
+    BinaryOperator, Expr as SqlExpr, LimitClause, ObjectName, ObjectNamePart, SelectItem,
     TableAlias, TableFactor, TableWithJoins,
 };
 
@@ -22,6 +23,8 @@ pub(crate) fn handle_table_scan(
             name: std::sync::Arc::from(f.name().as_ref()),
             data_type: f.data_type().clone(),
             source_alias: std::sync::Arc::from(alias.as_str()),
+            provenance: vec![table_name.clone(), alias.clone()],
+            unique_id: gen.context.next_column_id(),
         })
         .collect::<Vec<_>>()
         .into();
@@ -31,11 +34,9 @@ pub(crate) fn handle_table_scan(
         .commit();
 
     let relation = TableFactor::Table {
-        name: ObjectName(vec![ObjectNamePart::Identifier(Ident::with_quote(
-            '"', table_name,
-        ))]),
+        name: ObjectName(vec![ObjectNamePart::Identifier(safe_ident(&table_name)?)]),
         alias: Some(TableAlias {
-            name: Ident::with_quote('"', alias.clone()),
+            name: safe_ident(&alias)?,
             columns: vec![],
         }),
         args: None,
@@ -53,13 +54,12 @@ pub(crate) fn handle_table_scan(
         .fields()
         .iter()
         .map(|f| {
-            let alias_clone = alias.clone();
-            SelectItem::UnnamedExpr(SqlExpr::CompoundIdentifier(vec![
-                Ident::with_quote('"', alias_clone),
-                Ident::with_quote('"', f.name().to_string()),
-            ]))
+            Ok(SelectItem::UnnamedExpr(SqlExpr::CompoundIdentifier(vec![
+                safe_ident(alias.as_ref())?,
+                safe_ident(f.name().as_ref())?,
+            ])))
         })
-        .collect();
+        .collect::<Result<Vec<_>, SqlGenError>>()?;
 
     let mut select = gen.create_skeleton_select();
     select.from = vec![TableWithJoins {

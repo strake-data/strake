@@ -6,7 +6,7 @@
 
 contracts:
   # Example: Strict contract for the 'orders' table
-  - table: "public.orders"
+  - table: "pg.orders"
     strict: true # If true, querying columns NOT listed below will fail (Closed Schema)
     columns:
       - name: o_orderkey
@@ -31,7 +31,7 @@ contracts:
 
 
   # Example: Open contract (allows extra columns) but enforces rules on specific ones
-  - table: "public.lineitem"
+  - table: "pg.lineitem"
     strict: false
     columns:
       - name: l_quantity

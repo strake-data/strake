@@ -93,6 +93,7 @@ async fn run_benchmarks(
         global_budget: 100, // global_budget
         extra_optimizer_rules: vec![],
         extra_sources: vec![],
+        retry: _retry,
     })
     .await
     .context("Failed to initialize FederationEngine")?;

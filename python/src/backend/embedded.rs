@@ -44,6 +44,7 @@ impl EmbeddedBackend {
             global_budget: 100,
             extra_optimizer_rules: vec![],
             extra_sources: vec![],
+            retry: _app_config.retry,
         })
         .await?;
 

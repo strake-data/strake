@@ -1,11 +1,12 @@
 use crate::sql_generator::context::GeneratorContext;
 use crate::sql_generator::dialect::GeneratorDialect;
 use crate::sql_generator::error::SqlGenError;
+use crate::sql_generator::sanitize::{safe_ident, safe_ident_unquoted};
 use datafusion::logical_expr::Expr;
 use datafusion::sql::unparser::Unparser;
 use sqlparser::ast::{
-    Function, FunctionArg, FunctionArgExpr, FunctionArgumentList, FunctionArguments, Ident,
-    ObjectName, ObjectNamePart, WindowSpec, WindowType,
+    Function, FunctionArg, FunctionArgExpr, FunctionArgumentList, FunctionArguments, ObjectName,
+    ObjectNamePart, WindowSpec, WindowType,
 };
 use sqlparser::parser::Parser;
 
@@ -24,8 +25,8 @@ impl<'a> ExprTranslator<'a> {
             Expr::Column(col) => {
                 let (scope_alias, col_name) = self.context.resolve_column(col, "Expression")?;
                 Ok(sqlparser::ast::Expr::CompoundIdentifier(vec![
-                    Ident::with_quote('"', scope_alias),
-                    Ident::with_quote('"', col_name),
+                    safe_ident(&scope_alias)?,
+                    safe_ident(&col_name)?,
                 ]))
             }
 
@@ -110,17 +111,10 @@ impl<'a> ExprTranslator<'a> {
 
             Expr::Cast(cast) => {
                 let sql_inner = self.expr_to_sql(&cast.expr)?;
-                // Minimal cast support for now
+                let sql_type = self.dialect.type_mapper.map_type(&cast.data_type)?;
                 Ok(sqlparser::ast::Expr::Cast {
                     expr: Box::new(sql_inner),
-                    data_type: sqlparser::ast::DataType::Custom(
-                        sqlparser::ast::ObjectName(vec![
-                            sqlparser::ast::ObjectNamePart::Identifier(Ident::new(
-                                cast.data_type.to_string(),
-                            )),
-                        ]),
-                        vec![],
-                    ),
+                    data_type: sql_type,
                     format: None,
                     kind: sqlparser::ast::CastKind::Cast,
                 })
@@ -186,9 +180,27 @@ impl<'a> ExprTranslator<'a> {
                         sqlparser::ast::Value::Number(v.to_string(), false).into(),
                     ),
                 )))),
-                ScalarValue::UInt64(None) | ScalarValue::Int64(None) => {
-                    Ok(SqlBound::Preceding(None))
-                } // UNBOUNDED PRECEDING
+                ScalarValue::IntervalMonthDayNano(Some(v)) => {
+                    let months = v.months;
+                    let days = v.days;
+                    let nanos = v.nanoseconds;
+
+                    if let Some(expr) = self
+                        .dialect
+                        .capabilities
+                        .format_interval(months, days, nanos)
+                    {
+                        Ok(SqlBound::Preceding(Some(Box::new(expr))))
+                    } else {
+                        Err(SqlGenError::UnsupportedPlan {
+                            message: "Dialect does not support IntervalMonthDayNano".to_string(),
+                            node_type: "WindowBound".to_string(),
+                        })
+                    }
+                }
+                ScalarValue::UInt64(None)
+                | ScalarValue::Int64(None)
+                | ScalarValue::IntervalMonthDayNano(None) => Ok(SqlBound::Preceding(None)), // UNBOUNDED PRECEDING
                 ScalarValue::Null => Err(SqlGenError::UnsupportedPlan {
                     message: "NULL is not a valid window frame bound".to_string(),
                     node_type: "WindowBound".to_string(),
@@ -210,9 +222,27 @@ impl<'a> ExprTranslator<'a> {
                         sqlparser::ast::Value::Number(v.to_string(), false).into(),
                     ),
                 )))),
-                ScalarValue::UInt64(None) | ScalarValue::Int64(None) => {
-                    Ok(SqlBound::Following(None))
-                } // UNBOUNDED FOLLOWING
+                ScalarValue::IntervalMonthDayNano(Some(v)) => {
+                    let months = v.months;
+                    let days = v.days;
+                    let nanos = v.nanoseconds;
+
+                    if let Some(expr) = self
+                        .dialect
+                        .capabilities
+                        .format_interval(months, days, nanos)
+                    {
+                        Ok(SqlBound::Following(Some(Box::new(expr))))
+                    } else {
+                        Err(SqlGenError::UnsupportedPlan {
+                            message: "Dialect does not support IntervalMonthDayNano".to_string(),
+                            node_type: "WindowBound".to_string(),
+                        })
+                    }
+                }
+                ScalarValue::UInt64(None)
+                | ScalarValue::Int64(None)
+                | ScalarValue::IntervalMonthDayNano(None) => Ok(SqlBound::Following(None)), // UNBOUNDED FOLLOWING
                 ScalarValue::Null => Err(SqlGenError::UnsupportedPlan {
                     message: "NULL is not a valid window frame bound".to_string(),
                     node_type: "WindowBound".to_string(),
@@ -229,6 +259,11 @@ impl<'a> ExprTranslator<'a> {
         &self,
         op: datafusion::logical_expr::Operator,
     ) -> Result<sqlparser::ast::BinaryOperator, SqlGenError> {
+        // Check dialect-specific mapping first
+        if let Some(sql_op) = self.dialect.capabilities.map_operator(&op) {
+            return Ok(sql_op);
+        }
+
         use datafusion::logical_expr::Operator;
         match op {
             Operator::Eq => Ok(sqlparser::ast::BinaryOperator::Eq),
@@ -257,19 +292,41 @@ impl<'a> ExprTranslator<'a> {
     ) -> Result<sqlparser::ast::Expr, SqlGenError> {
         use datafusion::scalar::ScalarValue;
         let sql_value = match val {
-            ScalarValue::Int8(Some(v)) => sqlparser::ast::Value::Number(v.to_string(), false),
-            ScalarValue::Int16(Some(v)) => sqlparser::ast::Value::Number(v.to_string(), false),
-            ScalarValue::Int32(Some(v)) => sqlparser::ast::Value::Number(v.to_string(), false),
-            ScalarValue::Int64(Some(v)) => sqlparser::ast::Value::Number(v.to_string(), false),
-            ScalarValue::UInt8(Some(v)) => sqlparser::ast::Value::Number(v.to_string(), false),
-            ScalarValue::UInt16(Some(v)) => sqlparser::ast::Value::Number(v.to_string(), false),
-            ScalarValue::UInt32(Some(v)) => sqlparser::ast::Value::Number(v.to_string(), false),
-            ScalarValue::UInt64(Some(v)) => sqlparser::ast::Value::Number(v.to_string(), false),
-            ScalarValue::Float32(Some(v)) => sqlparser::ast::Value::Number(v.to_string(), false),
-            ScalarValue::Float64(Some(v)) => sqlparser::ast::Value::Number(v.to_string(), false),
-            ScalarValue::Utf8(Some(v)) => sqlparser::ast::Value::SingleQuotedString(v.clone()),
-            ScalarValue::Boolean(Some(v)) => sqlparser::ast::Value::Boolean(*v),
-            ScalarValue::Null => sqlparser::ast::Value::Null,
+            ScalarValue::Int8(Some(v)) => {
+                sqlparser::ast::Value::Number(v.to_string(), false).into()
+            }
+            ScalarValue::Int16(Some(v)) => {
+                sqlparser::ast::Value::Number(v.to_string(), false).into()
+            }
+            ScalarValue::Int32(Some(v)) => {
+                sqlparser::ast::Value::Number(v.to_string(), false).into()
+            }
+            ScalarValue::Int64(Some(v)) => {
+                sqlparser::ast::Value::Number(v.to_string(), false).into()
+            }
+            ScalarValue::UInt8(Some(v)) => {
+                sqlparser::ast::Value::Number(v.to_string(), false).into()
+            }
+            ScalarValue::UInt16(Some(v)) => {
+                sqlparser::ast::Value::Number(v.to_string(), false).into()
+            }
+            ScalarValue::UInt32(Some(v)) => {
+                sqlparser::ast::Value::Number(v.to_string(), false).into()
+            }
+            ScalarValue::UInt64(Some(v)) => {
+                sqlparser::ast::Value::Number(v.to_string(), false).into()
+            }
+            ScalarValue::Float32(Some(v)) => {
+                sqlparser::ast::Value::Number(v.to_string(), false).into()
+            }
+            ScalarValue::Float64(Some(v)) => {
+                sqlparser::ast::Value::Number(v.to_string(), false).into()
+            }
+            ScalarValue::Utf8(Some(v)) => {
+                sqlparser::ast::Value::SingleQuotedString(v.clone()).into()
+            }
+            ScalarValue::Boolean(Some(v)) => sqlparser::ast::Value::Boolean(*v).into(),
+            ScalarValue::Null => sqlparser::ast::Value::Null.into(),
             _ => {
                 return Err(SqlGenError::UnsupportedPlan {
                     message: format!("Literal value: {:?}", val),
@@ -277,7 +334,7 @@ impl<'a> ExprTranslator<'a> {
                 })
             }
         };
-        Ok(sqlparser::ast::Expr::Value(sql_value.into()))
+        Ok(sqlparser::ast::Expr::Value(sql_value))
     }
 
     pub fn translate_function(
@@ -304,8 +361,19 @@ impl<'a> ExprTranslator<'a> {
             }
         }
 
-        // Standard function handling with normalized name
-        let normalized_name = self.normalize_function_name(name);
+        // Check DialectCapabilities mappings next
+        let mapped_name = if over.is_some()
+            || name.eq_ignore_ascii_case("count")
+            || name.eq_ignore_ascii_case("sum")
+        {
+            // Likely an aggregate or window function
+            self.dialect.capabilities.map_aggregate_function(name)
+        } else {
+            self.dialect.capabilities.map_scalar_function(name)
+        };
+
+        let final_name =
+            mapped_name.unwrap_or_else(|| self.dialect.capabilities.normalize_function_name(name));
 
         let mut sql_args = Vec::new();
         for arg in args {
@@ -321,9 +389,9 @@ impl<'a> ExprTranslator<'a> {
         });
 
         Ok(sqlparser::ast::Expr::Function(Function {
-            name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new(
-                normalized_name,
-            ))]),
+            name: ObjectName(vec![ObjectNamePart::Identifier(safe_ident_unquoted(
+                final_name.as_str(),
+            )?)]),
             args: func_args,
             filter: None,
             null_treatment: None,
@@ -332,30 +400,5 @@ impl<'a> ExprTranslator<'a> {
             parameters: FunctionArguments::None,
             uses_odbc_syntax: false,
         }))
-    }
-
-    fn normalize_function_name(&self, name: &str) -> String {
-        match self.dialect.dialect_name.to_lowercase().as_str() {
-            "postgres" | "postgresql" => name.to_lowercase(),
-            "oracle" | "snowflake" => name.to_uppercase(),
-            _ => {
-                // Default behavior for other dialects
-                match name.to_lowercase().as_str() {
-                    // Aggregate functions
-                    "sum" | "count" | "avg" | "min" | "max" | "stddev" | "variance" |
-                    // Window functions  
-                    "row_number" | "rank" | "dense_rank" | "lead" | "lag" | "first_value" | "last_value" |
-                    "nth_value" | "cume_dist" | "percent_rank" | "ntile" |
-                    // Common scalar functions that should be uppercase
-                    "coalesce" | "nullif" | "greatest" | "least" | "concat" | "substring" | "substr" |
-                    "length" | "char_length" | "upper" | "lower" | "trim" | "abs" | "ceil" | "floor" |
-                    "round" | "trunc" | "sqrt" | "power" | "exp" | "ln" | "log" | "sin" | "cos" | "tan" |
-                    "cast" | "date_part" | "extract" | "to_char" | "to_date" | "to_timestamp" => {
-                        name.to_uppercase()
-                    }
-                    _ => name.to_string(),
-                }
-            }
-        }
     }
 }

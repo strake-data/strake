@@ -11,3 +11,4 @@
 
 pub mod defensive_trace;
 pub mod flatten_federated;
+pub mod join_flattener;

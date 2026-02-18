@@ -52,10 +52,10 @@ async fn test_join_column_collision() -> Result<()> {
     with_generator!(gen, {
         let sql = gen.generate(&plan).unwrap();
         println!("JOIN COLLISION SQL: {}", sql);
-        // Should use systematic aliases t0, t1 for source tables
-        assert!(sql.contains("\"t0\".\"id\""));
-        assert!(sql.contains("\"t1\".\"id\""));
-        assert!(sql.contains("FROM \"t1\" AS \"t0\" INNER JOIN \"t2\" AS \"t1\""));
+        // Should use systematic aliases rel_0, rel_1 for source tables
+        assert!(sql.contains("\"rel_0\".\"id\""));
+        assert!(sql.contains("\"rel_1\".\"id\""));
+        assert!(sql.contains("FROM \"t1\" AS \"rel_0\" INNER JOIN \"t2\" AS \"rel_1\""));
     });
     Ok(())
 }
@@ -76,29 +76,36 @@ async fn test_nested_projection_aliases() -> Result<()> {
     with_generator!(gen, {
         let sql = gen.generate(&plan).unwrap();
         println!("NESTED PROJECTION SQL: {}", sql);
-        assert!(sql.contains("\"t0\".\"id\"") || sql.contains("\"t1\".\"id\""));
+        assert!(sql.contains("\"rel_0\".\"id\"") || sql.contains("\"rel_1\".\"id\""));
     });
     Ok(())
 }
 
 #[tokio::test]
 async fn test_limit_validation() -> Result<()> {
+    // This test originally checked that invalid LIMIT expressions (like column refs) were rejected.
+    // However, with P1 fixes, we now allow dynamic limits (subqueries, arithmetic, references).
+    // Whether the target DB accepts them is up to the DB, but the generator should not block them.
+
     let ctx = setup_ctx().await?;
     let table_plan = ctx.table("t1").await?.into_optimized_plan()?;
 
     let plan = LogicalPlan::Limit(datafusion::logical_expr::Limit {
         skip: None,
-        fetch: Some(Box::new(col("id"))), // Invalid: column ref in LIMIT
+        fetch: Some(Box::new(col("id"))), // Column ref in LIMIT (dynamic)
         input: Arc::new(table_plan),
     });
 
     with_generator!(gen, {
         let res = gen.generate(&plan);
-        assert!(res.is_err());
-        let err = res.unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("LIMIT/OFFSET must be non-negative integer"));
+        assert!(
+            res.is_ok(),
+            "Generator should allow dynamic limit expressions"
+        );
+        let sql = res.unwrap();
+        // It likely generates something like LIMIT "rel_0"."id"
+        // We just verify it generates *some* limit clause
+        assert!(sql.contains("LIMIT"));
     });
     Ok(())
 }
@@ -121,7 +128,7 @@ async fn test_recursion_limit() -> Result<()> {
         let err = res.unwrap_err();
         assert!(err
             .to_string()
-            .contains("Maximum recursion depth (100) exceeded"));
+            .contains("Maximum recursion depth (50) exceeded"));
     });
     Ok(())
 }
@@ -132,17 +139,21 @@ async fn test_scope_violation_context() -> Result<()> {
         let col = datafusion::common::Column::new(None::<String>, "non_existent");
         gen.context
             .enter_scope(
-                "t0".to_string(),
+                "rel_0".to_string(),
                 vec![
                     ColumnEntry {
                         name: "id".into(),
                         data_type: DataType::Int32,
-                        source_alias: "t0".into(),
+                        source_alias: "rel_0".into(),
+                        provenance: vec!["rel_0".to_string()],
+                        unique_id: 0,
                     },
                     ColumnEntry {
                         name: "name".into(),
                         data_type: DataType::Utf8,
-                        source_alias: "t0".into(),
+                        source_alias: "rel_0".into(),
+                        provenance: vec!["rel_0".to_string()],
+                        unique_id: 1,
                     },
                 ]
                 .into(),
@@ -154,8 +165,8 @@ async fn test_scope_violation_context() -> Result<()> {
         assert!(res.is_err());
         let err = res.unwrap_err();
         assert!(err.to_string().contains("Column 'non_existent' not found"));
-        assert!(err.to_string().contains("t0.id"));
-        assert!(err.to_string().contains("t0.name"));
+        assert!(err.to_string().contains("rel_0.id"));
+        assert!(err.to_string().contains("rel_0.name"));
     });
     Ok(())
 }
@@ -236,9 +247,9 @@ async fn test_join_isolation() -> Result<()> {
     with_generator!(gen, {
         let sql = gen.generate(&plan).unwrap();
         println!("JOIN ISOLATION SQL: {}", sql);
-        assert!(!sql.starts_with("SELECT \"t0\"") && !sql.starts_with("SELECT \"t1\""));
-        assert!(sql.contains("\"t1\" AS \"t0\""));
-        assert!(sql.contains("\"t2\" AS \"t1\""));
+        assert!(!sql.starts_with("SELECT \"rel_0\"") && !sql.starts_with("SELECT \"rel_1\""));
+        assert!(sql.contains("\"t1\" AS \"rel_0\""));
+        assert!(sql.contains("\"t2\" AS \"rel_1\""));
     });
     Ok(())
 }
@@ -267,18 +278,26 @@ async fn test_function_mapper_security() -> Result<()> {
         })
     });
 
-    let dialect = GeneratorDialect::new(&PostgreSqlDialect {}, Some(&mapper), "postgres");
+    let dialect = GeneratorDialect::new(
+        &PostgreSqlDialect {},
+        Some(&mapper),
+        std::sync::Arc::new(strake_sql::sql_generator::dialect::DefaultDialectCapabilities),
+        std::sync::Arc::new(strake_sql::sql_generator::dialect::DefaultTypeMapper),
+        "postgres",
+    );
     let mut gen = SqlGenerator::new(dialect);
 
     let evil_input = "foo\"bar";
 
     gen.context
         .enter_scope(
-            "t0".to_string(),
+            "rel_0".to_string(),
             vec![ColumnEntry {
                 name: evil_input.into(),
                 data_type: DataType::Int32,
-                source_alias: "t0".into(),
+                source_alias: "rel_0".into(),
+                provenance: vec!["rel_0".to_string()],
+                unique_id: 0,
             }]
             .into(),
             vec![],
@@ -287,14 +306,12 @@ async fn test_function_mapper_security() -> Result<()> {
 
     let mut translator =
         strake_sql::sql_generator::expr::ExprTranslator::new(&mut gen.context, &gen.dialect);
-    let sql_expr = translator
-        .translate_function("UNSAFE_FUNC", &[col(evil_input)], None)
-        .unwrap();
+    let res = translator.translate_function("UNSAFE_FUNC", &[col(evil_input)], None);
 
-    let sql_str = sql_expr.to_string();
-    println!("SECURITY SQL: {}", sql_str);
-
-    assert!(sql_str.contains("\"foo\"\"bar\"") || sql_str.contains("\"t0\".\"foo\"\"bar\""));
+    // The security fix should reject identifiers with quotes
+    assert!(res.is_err());
+    let err = res.unwrap_err().to_string();
+    assert!(err.contains("forbidden characters"));
 
     Ok(())
 }
@@ -304,6 +321,8 @@ async fn test_context_underflow_guard() -> Result<()> {
     let mut gen = SqlGenerator::new(GeneratorDialect::new(
         &PostgreSqlDialect {},
         None,
+        std::sync::Arc::new(strake_sql::sql_generator::dialect::DefaultDialectCapabilities),
+        std::sync::Arc::new(strake_sql::sql_generator::dialect::DefaultTypeMapper),
         "postgres",
     ));
 
@@ -354,5 +373,26 @@ async fn test_kitchen_sink_query() -> Result<()> {
         assert!(sql.contains("ORDER BY"));
         assert!(sql.contains("LIMIT 10"));
     });
+    Ok(())
+}
+#[tokio::test]
+async fn test_identifier_injection_rejection() -> Result<()> {
+    let payloads = vec![
+        "users\" UNION SELECT",
+        "x; DROP TABLE users",
+        "name\0hidden",
+        "\"\"\"", // Triple quotes
+        "back`tick",
+        "back\\slash",
+    ];
+
+    for payload in payloads {
+        let res = strake_sql::sql_generator::sanitize::safe_ident(payload);
+        assert!(
+            res.is_err(),
+            "Payload '{}' should have been rejected",
+            payload
+        );
+    }
     Ok(())
 }

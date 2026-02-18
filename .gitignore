@@ -56,6 +56,8 @@ data/
 strake-core/data/
 scripts/
 config/
+config/strake_test.yaml
+.test-secrets
 finance.yaml
 
 # Tests & Internal Scripts
@@ -75,5 +77,8 @@ strake_deploy_key
 site/
 .env
 /keys
-#/productmanagement
-*.md
+# Exclude product management files, but allow markdown docs in repo
+/productmanagement
+
+*.db
+/target-check
