@@ -28,12 +28,19 @@ impl EmbeddedBackend {
         } else {
             Path::new(config_path_str)
                 .parent()
-                .unwrap_or(Path::new(""))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Config path '{}' has no parent directory", config_path_str)
+                })?
                 .join("sources.yaml")
         };
 
-        let config = Config::from_file(config_path_final.to_str().unwrap_or("config/sources.yaml"))
-            .map_err(|e| anyhow::anyhow!("Failed to load sources config: {}", e))?;
+        let config_str = config_path_final.to_str().ok_or_else(|| {
+            anyhow::anyhow!("Invalid character in config path: {:?}", config_path_final)
+        })?;
+
+        let config = Config::from_file(config_str).map_err(|e| {
+            anyhow::anyhow!("Failed to load sources config from {}: {}", config_str, e)
+        })?;
 
         let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
             config,
@@ -84,5 +91,12 @@ impl StrakeQueryExecutor for EmbeddedBackend {
 
     async fn explain_tree(&mut self, query: &str) -> anyhow::Result<String> {
         self.engine.explain_tree(query).await
+    }
+
+    async fn shutdown(&mut self) -> anyhow::Result<()> {
+        // FederationEngine does not expose an explicit shutdown API.
+        // Resources are released when the Arc reference count drops to zero.
+        tracing::info!("EmbeddedBackend shutdown: deferring to Arc drop.");
+        Ok(())
     }
 }

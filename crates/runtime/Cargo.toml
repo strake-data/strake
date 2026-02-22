@@ -33,6 +33,7 @@ sha2 = { workspace = true }
 nix = { workspace = true, features = ["signal", "process"] }
 parquet = "57.1.0"  # For cache serialization
 moka = { version = "0.12", features = ["future"] }  # Concurrent LRU cache
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

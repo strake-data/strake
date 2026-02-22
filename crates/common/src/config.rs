@@ -46,6 +46,24 @@ pub struct QueryLimits {
     pub query_timeout_seconds: Option<u64>,
 }
 
+#[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq)]
+pub enum StrakeEnvironment {
+    #[default]
+    #[serde(rename = "development")]
+    Development,
+    #[serde(rename = "production")]
+    Production,
+}
+
+impl std::fmt::Display for StrakeEnvironment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StrakeEnvironment::Development => write!(f, "development"),
+            StrakeEnvironment::Production => write!(f, "production"),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
 pub struct RetrySettings {
     #[serde(default = "default_max_attempts")]
@@ -83,6 +101,8 @@ pub struct AppConfig {
     pub resources: ResourceConfig,
     #[serde(default)]
     pub cache: QueryCacheConfig,
+    #[serde(default)]
+    pub environment: StrakeEnvironment,
     #[serde(default)]
     pub mcp: McpConfig,
     #[serde(default)]
@@ -124,8 +144,10 @@ fn default_service_name_config() -> String {
     DEFAULT_SERVER_NAME.to_string()
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Validate)]
 pub struct McpConfig {
+    #[serde(default)]
+    pub environment: StrakeEnvironment,
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_mcp_port")]
@@ -140,13 +162,34 @@ pub struct McpConfig {
     pub shutdown_timeout_ms: u64,
     #[serde(default)]
     pub python_bin: Option<String>,
+    #[serde(default = "default_sidecar_health_check_interval_ms")]
+    #[validate(range(min = 1000, max = 300000))] // 1s to 5min
+    pub health_check_interval_ms: u64,
+    #[serde(default = "default_max_output_rows")]
+    pub max_output_rows: usize,
+    #[serde(default = "default_sidecar_cooldown_secs")]
+    pub cooldown_secs: u64,
     #[serde(default)]
+    #[validate(custom(function = "validate_health_url_opt"))]
     pub health_check_url: Option<String>,
+    #[serde(default = "default_use_firecracker")]
+    pub use_firecracker: bool,
+}
+
+fn validate_health_url_opt(url: &str) -> Result<(), validator::ValidationError> {
+    if url.is_empty() {
+        return Ok(());
+    }
+    match url::Url::parse(url) {
+        Ok(_) => Ok(()),
+        Err(_) => Err(validator::ValidationError::new("invalid_health_url")),
+    }
 }
 
 impl Default for McpConfig {
     fn default() -> Self {
         Self {
+            environment: StrakeEnvironment::Development,
             enabled: false,
             port: default_mcp_port(),
             max_retries: default_sidecar_max_retries(),
@@ -154,9 +197,17 @@ impl Default for McpConfig {
             startup_delay_ms: default_sidecar_startup_delay_ms(),
             shutdown_timeout_ms: default_sidecar_shutdown_timeout_ms(),
             python_bin: None,
+            health_check_interval_ms: default_sidecar_health_check_interval_ms(),
+            max_output_rows: default_max_output_rows(),
+            cooldown_secs: default_sidecar_cooldown_secs(),
             health_check_url: None,
+            use_firecracker: default_use_firecracker(),
         }
     }
+}
+
+fn default_use_firecracker() -> bool {
+    false
 }
 
 fn default_mcp_port() -> u16 {
@@ -177,6 +228,18 @@ fn default_sidecar_startup_delay_ms() -> u64 {
 
 fn default_sidecar_shutdown_timeout_ms() -> u64 {
     5000
+}
+
+fn default_sidecar_health_check_interval_ms() -> u64 {
+    10000
+}
+
+fn default_max_output_rows() -> usize {
+    1000
+}
+
+fn default_sidecar_cooldown_secs() -> u64 {
+    30
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -337,6 +400,7 @@ impl AppConfig {
         let builder = if std::path::Path::new(path).exists() {
             builder.add_source(config::File::with_name(path))
         } else {
+            tracing::warn!("Configuration file not found: {}. Proceeding with environment variables and defaults.", path);
             builder
         };
 

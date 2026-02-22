@@ -1,4 +1,4 @@
-use arrow::array::Array;
+use arrow::array::{Array, StringBuilder};
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
 use arrow_flight::sql::client::FlightSqlServiceClient;
@@ -102,8 +102,6 @@ impl StrakeQueryExecutor for RemoteBackend {
 
         // Formatting Logic
         if include_schema {
-            let mut pretty_columns = Vec::new();
-
             let output_schema = Arc::new(Schema::new(vec![
                 arrow::datatypes::Field::new(
                     "column_name",
@@ -113,74 +111,58 @@ impl StrakeQueryExecutor for RemoteBackend {
                 arrow::datatypes::Field::new("data_type", arrow::datatypes::DataType::Utf8, false),
             ]));
 
+            let mut col_names = StringBuilder::new();
+            let mut col_types = StringBuilder::new();
+            let mut row_count: usize = 0;
+
             for batch in &batches {
                 let schema_col_idx = batch.schema().index_of("table_schema")?;
                 let schema_col = batch
                     .column(schema_col_idx)
                     .as_any()
                     .downcast_ref::<arrow::array::BinaryArray>()
-                    .ok_or(anyhow::anyhow!("table_schema not binary"))?;
+                    .ok_or_else(|| anyhow::anyhow!("table_schema column is not a BinaryArray"))?;
 
-                for i in 0..batch.num_rows() {
-                    if schema_col.is_valid(i) {
-                        let bytes = schema_col.value(i);
+                // Columnar iteration over the binary column
+                for bytes in schema_col.iter().flatten() {
+                    // SAFETY: IPC framing: first 4 bytes are continuation marker [0xFF, 0xFF, 0xFF, 0xFF]
+                    // per Arrow IPC spec. Following 4 bytes are message length (little-endian).
+                    let slice = if bytes.len() >= 8 && bytes[0..4] == [0xff, 0xff, 0xff, 0xff] {
+                        &bytes[8..]
+                    } else {
+                        bytes
+                    };
 
-                        // Bytes from server might be an IPC Message (with prefix) or raw Schema.
-                        // Check for CONTINUATION token [0xFF, 0xFF, 0xFF, 0xFF] at start.
-                        let slice = if bytes.len() >= 8 && bytes[0..4] == [0xff, 0xff, 0xff, 0xff] {
-                            &bytes[8..]
-                        } else {
-                            bytes
-                        };
+                    // Use direct flatbuffer access without intermediate Buffer allocation
+                    let fb_schema = if let Ok(msg) = arrow::ipc::root_as_message(slice) {
+                        msg.header_as_schema().ok_or_else(|| {
+                            anyhow::anyhow!("IPC message does not contain a schema")
+                        })?
+                    } else {
+                        arrow::ipc::root_as_schema(slice).map_err(|e| {
+                            anyhow::anyhow!("Failed to parse bytes as direct IPC schema: {}", e)
+                        })?
+                    };
 
-                        let buffer = arrow::buffer::Buffer::from(slice); // Ensure 64-byte alignment
-
-                        // Try to read as Message first (most likely if it had prefix)
-                        // But we need to handle potential parsing errors defensively
-                        let schema = if let Ok(msg) = arrow::ipc::root_as_message(buffer.as_slice())
-                        {
-                            if let Some(s) = msg.header_as_schema() {
-                                s
-                            } else {
-                                // Header is not schema, maybe it's raw schema?
-                                arrow::ipc::root_as_schema(buffer.as_slice()).map_err(|e| {
-                                    anyhow::anyhow!(
-                                        "Invalid IPC schema (message header mismatch): {}",
-                                        e
-                                    )
-                                })?
-                            }
-                        } else {
-                            // Not a message, try as raw schema
-                            arrow::ipc::root_as_schema(buffer.as_slice())
-                                .map_err(|e| anyhow::anyhow!("Invalid IPC schema (raw): {}", e))?
-                        };
-
-                        let arrow_schema = arrow::ipc::convert::fb_to_schema(schema);
-
-                        let mut col_names = Vec::new();
-                        let mut col_types = Vec::new();
-
-                        for field in arrow_schema.fields() {
-                            col_names.push(field.name().clone());
-                            col_types.push(format!("{}", field.data_type()));
-                        }
-
-                        let name_array = arrow::array::StringArray::from(col_names);
-                        let type_array = arrow::array::StringArray::from(col_types);
-
-                        let rb = RecordBatch::try_new(
-                            output_schema.clone(),
-                            vec![Arc::new(name_array), Arc::new(type_array)],
-                        )?;
-                        pretty_columns.push(rb);
+                    let arrow_schema = arrow::ipc::convert::fb_to_schema(fb_schema);
+                    for field in arrow_schema.fields() {
+                        col_names.append_value(field.name());
+                        col_types.append_value(field.data_type().to_string());
+                        row_count += 1;
                     }
                 }
             }
-            if pretty_columns.is_empty() {
+
+            if row_count == 0 {
                 return Ok("Table found but no schema information available.".to_string());
             }
-            Ok(arrow::util::pretty::pretty_format_batches(&pretty_columns)?.to_string())
+
+            let rb = RecordBatch::try_new(
+                output_schema,
+                vec![Arc::new(col_names.finish()), Arc::new(col_types.finish())],
+            )?;
+
+            Ok(arrow::util::pretty::pretty_format_batches(&[rb])?.to_string())
         } else {
             Ok(arrow::util::pretty::pretty_format_batches(&batches)?.to_string())
         }
@@ -192,5 +174,11 @@ impl StrakeQueryExecutor for RemoteBackend {
         // Full tree visualization requires the physical plan which is only
         // available in embedded mode.
         self.trace(query).await
+    }
+
+    async fn shutdown(&mut self) -> anyhow::Result<()> {
+        tracing::info!("RemoteBackend shutting down...");
+        // Drop the client to close the connection
+        Ok(())
     }
 }

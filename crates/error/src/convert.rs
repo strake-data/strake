@@ -40,6 +40,16 @@ impl From<DataFusionError> for StrakeError {
     }
 }
 
+impl From<anyhow::Error> for StrakeError {
+    fn from(err: anyhow::Error) -> Self {
+        // Attempt to downcast to a StrakeError if it's already one
+        match err.downcast::<StrakeError>() {
+            Ok(strake_err) => strake_err,
+            Err(err) => StrakeError::new(ErrorCode::DataFusionInternal, err.to_string()),
+        }
+    }
+}
+
 impl From<std::io::Error> for StrakeError {
     fn from(err: std::io::Error) -> Self {
         StrakeError::new(ErrorCode::DataFusionInternal, err.to_string())

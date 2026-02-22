@@ -19,6 +19,8 @@ pub trait StrakeQueryExecutor: Send + Sync {
     async fn explain_tree(&mut self, query: &str) -> anyhow::Result<String>;
     /// Returns a list of available tables and sources
     async fn describe(&mut self, table_name: Option<String>) -> anyhow::Result<String>;
+    /// Perform graceful shutdown of the executor and its resources
+    async fn shutdown(&mut self) -> anyhow::Result<()>;
 }
 
 /// The backend implementations available
@@ -56,6 +58,13 @@ impl Backend {
         match self {
             Backend::Embedded(e) => e.explain_tree(query).await,
             Backend::Remote(r) => r.explain_tree(query).await,
+        }
+    }
+
+    pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+        match self {
+            Backend::Embedded(e) => e.shutdown().await,
+            Backend::Remote(r) => r.shutdown().await,
         }
     }
 }
