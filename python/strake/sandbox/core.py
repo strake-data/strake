@@ -5,6 +5,7 @@ import logging
 import json
 import ast
 import types
+import time
 import threading
 from typing import Any, Dict, List, Optional
 import pyarrow as pa
@@ -273,13 +274,17 @@ class StrakeShim:
         """Get the schema indexer, initializing it lazily and thread-safely."""
         sandbox = object.__getattribute__(self, "_sandbox_ref")
         conn = object.__getattribute__(self, "_conn")
-        if sandbox._indexer is None:
+        
+        if not hasattr(sandbox, "_indexer_thread_lock"):
+            object.__setattr__(sandbox, "_indexer_thread_lock", threading.Lock())
+            
+        if not hasattr(sandbox, "_indexer") or sandbox._indexer is None:
             with sandbox._indexer_thread_lock:
-                if sandbox._indexer is None:
+                if not hasattr(sandbox, "_indexer") or sandbox._indexer is None:
                     # Note: Need explicit access to strake root search module
                     from strake.search import SchemaIndexer
 
-                    sandbox._indexer = SchemaIndexer(conn)
+                    object.__setattr__(sandbox, "_indexer", SchemaIndexer(conn))
         return sandbox._indexer
 
     def sql(self, query: str):
@@ -288,7 +293,31 @@ class StrakeShim:
         """
         conn = object.__getattribute__(self, "_conn")
         logger.info(f"Sandbox SQL: {query}")
-        return SafeTableProxy(conn.sql(query))
+        start = time.monotonic_ns()
+        status = "ok"
+        result_rows = 0
+        try:
+            table = conn.sql(query)
+            result_rows = table.num_rows
+            return SafeTableProxy(table)
+        except Exception as exc:
+            status = f"error:{type(exc).__name__}"
+            raise
+        finally:
+            elapsed_ms = (time.monotonic_ns() - start) / 1_000_000
+            try:
+                from strake.tracing import get_emitter
+                get_emitter().emit({
+                    "event": "span",
+                    "span_type": "sandbox_sql",
+                    "name": "sql",
+                    "query": query,
+                    "result_rows": result_rows,
+                    "latency_ms": round(elapsed_ms, 2),
+                    "status": status,
+                })
+            except Exception:
+                pass  # tracing must never break execution
 
     def sql_json(self, query: str, max_rows: int = 1000) -> str:
         """
@@ -327,8 +356,32 @@ class StrakeShim:
         Runs inside asyncio.to_thread, so it must be thread-safe for indexer init.
         """
         logger.info(f"Sandbox Search: {query}")
-        indexer = object.__getattribute__(self, "get_indexer")()
-        return indexer.search_tables(query)
+        start = time.monotonic_ns()
+        status = "ok"
+        result_count = 0
+        try:
+            indexer = object.__getattribute__(self, "get_indexer")()
+            results = indexer.search_tables(query)
+            result_count = len(results)
+            return results
+        except Exception as exc:
+            status = f"error:{type(exc).__name__}"
+            raise
+        finally:
+            elapsed_ms = (time.monotonic_ns() - start) / 1_000_000
+            try:
+                from strake.tracing import get_emitter
+                get_emitter().emit({
+                    "event": "span",
+                    "span_type": "sandbox_search",
+                    "name": "search",
+                    "query": query,
+                    "result_count": result_count,
+                    "latency_ms": round(elapsed_ms, 2),
+                    "status": status,
+                })
+            except Exception:
+                pass  # tracing must never break execution
 
 
 # TEST_INTERNAL: Exposed strictly for synchronous testing limits inside `test_mcp.py`
@@ -338,6 +391,10 @@ def _sandbox_worker_inner(code: str, queue: Any, connection: Any) -> None:
     # Capture stdout
     stdout_cap = LimitedStringIO(MAX_OUTPUT_SIZE)
     stderr_cap = io.StringIO()
+
+    exec_start = time.monotonic_ns()
+    exec_status = "ok"
+    error_type = None
 
     try:
 
@@ -389,6 +446,8 @@ def _sandbox_worker_inner(code: str, queue: Any, connection: Any) -> None:
         )
 
     except Exception as e:
+        exec_status = "error"
+        error_type = type(e).__name__
         logger.debug("Sandbox exception", exc_info=True)
         import traceback
 
@@ -403,3 +462,20 @@ def _sandbox_worker_inner(code: str, queue: Any, connection: Any) -> None:
         queue.put(
             SandboxResult(stdout=stdout_cap.getvalue(), stderr=err_msg, result=None)
         )
+    finally:
+        # Emit sandbox_exec span — best effort, must not break execution
+        elapsed_ms = (time.monotonic_ns() - exec_start) / 1_000_000
+        try:
+            from strake.tracing import get_emitter
+            from strake.tracing.session import code_field
+            get_emitter().emit({
+                "event": "span",
+                "span_type": "sandbox_exec",
+                "name": "_sandbox_worker_inner",
+                **code_field(code),
+                "latency_ms": round(elapsed_ms, 2),
+                "status": exec_status,
+                "error_type": error_type,
+            })
+        except Exception:
+            pass

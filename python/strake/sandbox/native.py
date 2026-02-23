@@ -27,6 +27,38 @@ def _sandbox_worker(
 ):
     sandbox_id = str(uuid.uuid4())
 
+    # IMPORTANT: Create the StrakeConnection BEFORE applying sandbox constraints.
+    # The connection constructor launches a Tokio runtime that needs network access
+    # to reach remote data sources (e.g., Postgres). Applying seccomp/Landlock first
+    # would block those connections, causing silent source registration failures.
+    try:
+        from strake import StrakeConnection
+
+        if config_path:
+            connection = StrakeConnection(config_path)
+            # Remove configuration from env if it was present
+            os.environ.pop("STRAKE_CONFIG", None)
+        else:
+            token = os.environ.pop("STRAKE_TOKEN", None)
+            url = os.environ.pop("STRAKE_URL", "grpc://127.0.0.1:50051")
+            connection = StrakeConnection(url, api_key=token)
+
+            # Explicitly delete the token variable so it cannot be accidentally captured
+            # in a closure deeper down.
+            del token
+    except Exception as e:
+        import traceback
+
+        logger.error(
+            f"Sandbox initialization failed: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        )
+        queue.put(
+            "Runtime Error: Sandbox could not connect to the data engine. Check server logs."
+        )
+        return
+
+    # Now apply sandbox constraints (seccomp, Landlock, etc.) to lock down the process
+    # for the duration of user code execution.
     try:
         from strake.policy import SandboxPolicy, SandboxAttestation
 
@@ -45,32 +77,7 @@ def _sandbox_worker(
     except Exception as e:
         logger.warning(f"Could not apply sandbox constraints via policy: {e}")
 
-    try:
-        from strake import StrakeConnection
-
-        if config_path:
-            connection = StrakeConnection(config_path)
-            # Remove configuration from env if it was present
-            os.environ.pop("STRAKE_CONFIG", None)
-        else:
-            token = os.environ.pop("STRAKE_TOKEN", None)
-            url = os.environ.pop("STRAKE_URL", "grpc://127.0.0.1:50051")
-            connection = StrakeConnection(url, api_key=token)
-
-            # Explicitly delete the token variable so it cannot be accidentally captured
-            # in a closure deeper down.
-            del token
-
-        _sandbox_worker_inner(code, queue, connection)
-    except Exception as e:
-        import traceback
-
-        logger.error(
-            f"Sandbox initialization failed: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-        )
-        queue.put(
-            "Runtime Error: Sandbox could not connect to the data engine. Check server logs."
-        )
+    _sandbox_worker_inner(code, queue, connection)
 
 
 class NativeOSSandboxManager(SandboxManager):

@@ -87,29 +87,16 @@ class SchemaIndexer:
                 logger.warning("No schema data found to index.")
                 return
 
-            # Currently FTS-only; vector search requires STRAKE_EMBEDDING_DEVICE to be configured
-            staging_name = f"{self.table_name}_staging"
-            if staging_name in self.db.table_names():
-                self.db.drop_table(staging_name)
-
-            staging_table = self.db.create_table(
-                staging_name, data=schemas, mode="overwrite"
+            # Overwrite the table directly, avoiding rename_table which is unsupported in OSS
+            table = self.db.create_table(
+                self.table_name, data=schemas, mode="overwrite"
             )
 
             # Create full-text search index as fallback if tantivy is present
             try:
-                staging_table.create_fts_index("text")
+                table.create_fts_index("text", replace=True)
             except Exception as e:
                 logger.warning(f"Could not create FTS index: {e}")
-
-            # Atomically swap table names
-            old_name = f"{self.table_name}_old"
-            if self.table_name in self.db.table_names():
-                self.db.rename_table(self.table_name, old_name)
-            self.db.rename_table(staging_name, self.table_name)
-
-            if old_name in self.db.table_names():
-                self.db.drop_table(old_name)
 
             logger.info("Schema index built successfully.")
         except Exception as e:

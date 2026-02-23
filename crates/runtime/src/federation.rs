@@ -364,7 +364,7 @@ impl FederationEngine {
             .state()
             .create_logical_plan(sql)
             .await
-            .context("Failed to create logical plan")?;
+            .map_err(|e| anyhow::anyhow!("Failed to create logical plan: {}", e))?;
 
         // --- Cache Lookup START ---
         // Resolve effective cache configuration

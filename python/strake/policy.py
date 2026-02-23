@@ -156,16 +156,12 @@ class SandboxPolicy:
         SECCOMP_RET_ERRNO_EPERM = 0x00050001
 
         # x86_64 syscall numbers for the deny-list
+        # NOTE: Network syscalls (socket, connect, accept, bind, listen, sendto,
+        # sendmsg, sendmmsg) are intentionally NOT blocked because the Strake
+        # runtime's Tokio-based federation engine requires network access to reach
+        # remote data sources (e.g., Postgres, gRPC). User code cannot make direct
+        # network calls because the import allowlist blocks socket/http/urllib modules.
         DENIED_SYSCALLS: list[int] = [
-            41,   # socket
-            42,   # connect
-            43,   # accept
-            288,  # accept4
-            49,   # bind
-            50,   # listen
-            44,   # sendto
-            46,   # sendmsg
-            307,  # sendmmsg
             59,   # execve
             322,  # execveat
         ]
@@ -470,6 +466,12 @@ class SandboxPolicy:
                     logger.warning(
                         f"Landlock: could not add write rule for workspace: {self.workspace_root}"
                     )
+            
+            # ── Add read+write rule for LanceDB cache ──
+            cache_dir = os.path.expanduser("~/.strake")
+            if os.path.exists(cache_dir):
+                if not _add_path_rule(cache_dir, write_access):
+                    logger.warning(f"Landlock: could not add write rule for cache: {cache_dir}")
 
             # ── Enforce the ruleset ──
             PR_SET_NO_NEW_PRIVS = 38
@@ -511,8 +513,12 @@ class SandboxPolicy:
             resource.setrlimit(
                 resource.RLIMIT_CPU, (self.cpu_cores * 5, self.cpu_cores * 5)
             )
-            mem_bytes = self.memory_limit_mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
+            
+            # Note: RLIMIT_AS (virtual memory limit) can break heavily multi-threaded frameworks 
+            # like Tokio and PyArrow because thread stacks and memory allocators reserve huge 
+            # virtual address spaces without actually using physical RAM. 
+            # We enforce memory via cgroups v2 instead where possible.
+            
             applied.append("rlimit")
         except Exception as e:
             msg = f"Could not apply strict rlimits: {e}"
