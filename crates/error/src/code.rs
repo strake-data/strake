@@ -1,3 +1,10 @@
+//! # Error Codes
+//!
+//! Numeric error codes and categories for the Strake system.
+//!
+//! This module defines the stable error code contract (STRAKE-XXXX) used for
+//! cross-component communication and user-facing error reporting.
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -46,6 +53,20 @@ pub enum ErrorCode {
     PushdownUnsupported = 2007,
     /// STRAKE-2008: Query cancelled by user
     QueryCancelled = 2008,
+    /// STRAKE-2009: Missing column in source (NULL-filled)
+    ///
+    /// Occurs when a projected column is missing from the underlying data source
+    /// during schema drift reconciliation.
+    SchemaDriftMissingColumn = 2009,
+    /// STRAKE-2010: Type changed in source (Coerced/NULL-filled)
+    ///
+    /// Occurs when a column type in the source differs from the expected schema,
+    /// triggering a cast or NULL-fill.
+    SchemaDriftTypeChanged = 2010,
+    /// STRAKE-2011: Extra column in source (Dropped)
+    ///
+    /// Occurs when a source contains columns not present in the expected schema.
+    SchemaDriftExtraColumn = 2011,
 
     // === Configuration Errors (3000-3999) ===
     /// STRAKE-3001: Invalid YAML syntax
@@ -157,6 +178,9 @@ impl TryFrom<u16> for ErrorCode {
             2006 => Ok(Self::BudgetExceeded),
             2007 => Ok(Self::PushdownUnsupported),
             2008 => Ok(Self::QueryCancelled),
+            2009 => Ok(Self::SchemaDriftMissingColumn),
+            2010 => Ok(Self::SchemaDriftTypeChanged),
+            2011 => Ok(Self::SchemaDriftExtraColumn),
             3001 => Ok(Self::InvalidYaml),
             3002 => Ok(Self::SchemaViolation),
             3003 => Ok(Self::MissingRequiredField),
@@ -211,6 +235,18 @@ mod tests {
             ErrorCode::try_from("STRAKE-9999".to_string()).unwrap(),
             ErrorCode::Unknown
         );
+        assert_eq!(
+            ErrorCode::try_from("STRAKE-2009".to_string()).unwrap(),
+            ErrorCode::SchemaDriftMissingColumn
+        );
+        assert_eq!(
+            ErrorCode::try_from("STRAKE-2010".to_string()).unwrap(),
+            ErrorCode::SchemaDriftTypeChanged
+        );
+        assert_eq!(
+            ErrorCode::try_from("STRAKE-2011".to_string()).unwrap(),
+            ErrorCode::SchemaDriftExtraColumn
+        );
     }
 
     #[test]
@@ -234,5 +270,9 @@ mod tests {
         );
         assert_eq!(ErrorCode::InternalPanic.category(), ErrorCategory::Internal);
         assert_eq!(ErrorCode::Unknown.category(), ErrorCategory::Internal);
+        assert_eq!(
+            ErrorCode::SchemaDriftMissingColumn.category(),
+            ErrorCategory::Query
+        );
     }
 }

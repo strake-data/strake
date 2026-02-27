@@ -1,3 +1,10 @@
+//! # SQL Connector Wrappers
+//!
+//! Middleware and decorators for SQL-based TableProviders.
+//!
+//! This module provides wrappers for concurrency limiting, circuit breaking,
+//! metadata enrichment, and schema drift detection.
+
 use anyhow::Result;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
@@ -7,7 +14,6 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
 use futures::stream::TryStreamExt;
-// use futures::TryFutureExt;
 use std::any::Any;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Semaphore;
@@ -98,7 +104,10 @@ pub fn wrap_provider(
     use strake_common::circuit_breaker::CircuitBreakerTableProvider;
 
     let enriched = Arc::new(MetadataEnrichedTableProvider::new(provider, metadata));
-    Arc::new(CircuitBreakerTableProvider::new(enriched, cb))
+    let with_cb = Arc::new(CircuitBreakerTableProvider::new(enriched, cb));
+    Arc::new(crate::sources::schema_drift::SchemaDriftTableProvider::new(
+        with_cb,
+    ))
 }
 
 #[derive(Debug)]
@@ -271,7 +280,7 @@ impl ExecutionPlan for ConcurrencyLimitedExec {
         self.inner.properties()
     }
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        self.inner.children()
+        vec![&self.inner]
     }
     fn with_new_children(
         self: Arc<Self>,

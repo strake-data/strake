@@ -1,8 +1,16 @@
-//! Data source abstractions and implementations.
+//! # Connector Sources
 //!
-//! Strake uses a pluggable source architecture where each data source implements
-//! the `SourceProvider` trait. This module manages the registration and lifecycle
-//! of these sources.
+//! Pluggable data source architecture for Strake.
+//!
+//! This module manages the registration and lifecycle of various data sources
+//! (SQL, REST, gRPC, etc.) and provides the necessary abstractions to
+//! integrate them with DataFusion.
+//!
+//! ## Overview
+//!
+//! Strake uses a `SourceRegistry` to manage `SourceProvider` implementations.
+//! Each provider is responsible for registering its specific tables or datasets
+//! with the DataFusion `SessionContext`.
 //!
 //! # Supported Sources
 //!
@@ -31,6 +39,7 @@ pub mod grpc;
 pub mod iceberg;
 pub mod rest;
 pub mod rest_auth;
+pub mod schema_drift;
 pub mod sql;
 
 #[async_trait]

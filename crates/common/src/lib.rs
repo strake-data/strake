@@ -6,6 +6,7 @@
 //! - **Error Handling**: Unified error types (`error`).
 //! - **Telemetry**: Observability setup (`telemetry`).
 //! - **Resilience**: Circuit breakers for fault tolerance (`circuit_breaker`).
+//! - **Logging**: Contextual warning collection (`warnings`).
 pub mod auth;
 pub mod circuit_breaker;
 pub mod config;
@@ -14,3 +15,4 @@ pub mod models;
 pub mod retry;
 pub mod scrubber;
 pub mod telemetry;
+pub mod warnings;

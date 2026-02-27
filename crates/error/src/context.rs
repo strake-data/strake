@@ -1,3 +1,7 @@
+//! # Error Contexts
+//!
+//! Structured metadata for errors to enable programmatic analysis and AI parsing.
+
 use serde::{Deserialize, Serialize};
 
 /// Structured context for AI-parseable errors.
@@ -70,9 +74,54 @@ pub enum ErrorContext {
         suggestion: String,
     },
 
+    /// Context for Schema Drift (STRAKE-2009, 2010, 2011)
+    ///
+    /// Provides detailed diff between the expected schema and the actual source schema.
+    SchemaDrift {
+        /// Name of the data source
+        source_name: String,
+        /// Table identifier
+        table: String,
+        /// Columns defined in the catalog
+        expected_columns: Vec<String>,
+        /// Columns actually present in the source
+        actual_columns: Vec<String>,
+        /// Columns missing from the source
+        missing_columns: Vec<String>,
+        /// Columns where types have changed
+        type_mismatches: Vec<String>,
+    },
+
     /// Generic key-value context for extensibility
     Generic {
         #[serde(flatten)]
         data: std::collections::HashMap<String, serde_json::Value>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_schema_drift_context_serde_roundtrip() {
+        let ctx = ErrorContext::SchemaDrift {
+            source_name: "test_source".to_string(),
+            table: "test_table".to_string(),
+            expected_columns: vec!["a".to_string()],
+            actual_columns: vec!["a".to_string(), "b".to_string()],
+            missing_columns: vec![],
+            type_mismatches: vec![],
+        };
+
+        let json = serde_json::to_string(&ctx).unwrap();
+        let de: ErrorContext = serde_json::from_str(&json).unwrap();
+
+        match de {
+            ErrorContext::SchemaDrift { source_name, .. } => {
+                assert_eq!(source_name, "test_source");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
 }
