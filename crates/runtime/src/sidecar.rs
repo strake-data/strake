@@ -1,3 +1,14 @@
+//! MCP Python sidecar management.
+//!
+//! Provides a supervisor for the Python-based MCP (Model Context Protocol)
+//! agents, handling automatic lifecycle management, health checks,
+//! and jittered exponential backoff retries.
+//!
+//! # Safety
+//!
+//! The supervisor uses `kill_on_drop(true)` to ensure child processes
+//! are cleaned up even if the runtime task is aborted.
+
 use anyhow::Context;
 use std::process::Stdio;
 use std::time::Duration;
@@ -128,7 +139,8 @@ pub async fn spawn_sidecar(config: &AppConfig) -> anyhow::Result<Option<SidecarH
                     Err(e) => {
                         tracing::error!(error = %e, "Could not resolve Python binary for MCP Sidecar");
                         consecutive_failures += 1;
-                        tokio::time::sleep(Duration::from_millis(1000)).await;
+                        let sleep_ms = calculate_backoff(consecutive_failures);
+                        tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
                         continue;
                     }
                 };
@@ -138,7 +150,8 @@ pub async fn spawn_sidecar(config: &AppConfig) -> anyhow::Result<Option<SidecarH
                     Err(e) => {
                         tracing::error!(error = %e, "Could not resolve PYTHONPATH for MCP Sidecar");
                         consecutive_failures += 1;
-                        tokio::time::sleep(Duration::from_millis(1000)).await;
+                        let sleep_ms = calculate_backoff(consecutive_failures);
+                        tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
                         continue;
                     }
                 };
@@ -160,6 +173,7 @@ pub async fn spawn_sidecar(config: &AppConfig) -> anyhow::Result<Option<SidecarH
                     .arg(mcp_config.port.to_string())
                     .stdout(Stdio::inherit())
                     .stderr(Stdio::inherit())
+                    .kill_on_drop(true) // Required to prevent process leaks on task abort
                     .spawn()
                     .context("Failed to spawn MCP Sidecar process")
                 {
@@ -167,7 +181,8 @@ pub async fn spawn_sidecar(config: &AppConfig) -> anyhow::Result<Option<SidecarH
                     Err(e) => {
                         tracing::error!(error = %e, "MCP Sidecar spawn failed");
                         consecutive_failures += 1;
-                        tokio::time::sleep(Duration::from_millis(2000)).await;
+                        let sleep_ms = calculate_backoff(consecutive_failures);
+                        tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
                         continue;
                     }
                 };
@@ -204,7 +219,8 @@ pub async fn spawn_sidecar(config: &AppConfig) -> anyhow::Result<Option<SidecarH
                     Err(e) => {
                         tracing::error!(error = %e, "Failed to build HTTP client for MCP health checks. Retrying sidecar spawn...");
                         consecutive_failures += 1;
-                        tokio::time::sleep(Duration::from_millis(2000)).await;
+                        let sleep_ms = calculate_backoff(consecutive_failures);
+                        tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
                         continue;
                     }
                 };
@@ -225,7 +241,8 @@ pub async fn spawn_sidecar(config: &AppConfig) -> anyhow::Result<Option<SidecarH
                                 Err(e) => tracing::error!(error = %e, "MCP Sidecar child wait failed"),
                             }
                             consecutive_failures += 1;
-                            tokio::time::sleep(Duration::from_millis(1000)).await;
+                            let sleep_ms = calculate_backoff(consecutive_failures);
+                            tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
                             break;
                         }
                         _ = health_interval.tick() => {
@@ -285,6 +302,24 @@ async fn graceful_shutdown(mut child: Child, config: &McpConfig) -> std::io::Res
     child.kill().await?;
     child.wait().await?;
     Ok(())
+}
+
+/// Calculates jittered exponential backoff duration in milliseconds.
+fn calculate_backoff(consecutive_failures: u32) -> u64 {
+    use rand::Rng;
+    let base_delay = 1000u64;
+    let max_delay = 30000u64;
+    let exponential_delay = base_delay.saturating_mul(2u64.pow(consecutive_failures.min(10)));
+    let delay = exponential_delay.min(max_delay);
+
+    // Apply 25% jitter
+    let mut rng = rand::thread_rng();
+    let jitter_range = (delay as f64 * 0.25) as u64;
+    if jitter_range > 0 {
+        delay - jitter_range + rng.gen_range(0..jitter_range * 2)
+    } else {
+        delay
+    }
 }
 
 async fn resolve_python_bin(override_bin: Option<&str>) -> Result<String> {

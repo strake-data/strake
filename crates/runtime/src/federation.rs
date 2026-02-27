@@ -148,8 +148,8 @@ impl FederationEngine {
         })
     }
 
-    pub fn get_source_config(&self, name: &str) -> Option<SourceConfig> {
-        self.source_configs.get(name).cloned()
+    pub fn get_source_config(&self, name: &str) -> Option<&SourceConfig> {
+        self.source_configs.get(name)
     }
 
     pub fn list_sources(&self) -> Vec<SourceConfig> {
@@ -333,6 +333,21 @@ impl FederationEngine {
         Vec<String>,
     )> {
         self.active_queries.fetch_add(1, Ordering::Relaxed);
+        let result = self.execute_with_cache(sql, user).await;
+        self.active_queries.fetch_sub(1, Ordering::Relaxed);
+        result
+    }
+
+    /// Extracted cache middleware logic to satisfy Single Responsibility Principle.
+    async fn execute_with_cache(
+        &self,
+        sql: &str,
+        user: Option<strake_common::auth::AuthenticatedUser>,
+    ) -> Result<(
+        arrow::datatypes::SchemaRef,
+        Vec<arrow::record_batch::RecordBatch>,
+        Vec<String>,
+    )> {
         let start = Instant::now();
 
         let state = self.context.state();
@@ -342,9 +357,10 @@ impl FederationEngine {
             config.options_mut().extensions.insert(u);
         }
 
+        let collector = strake_common::warnings::WarningCollector::new();
+        config.options_mut().extensions.insert(collector.clone());
+
         // Re-construct state to ensure QueryPlanner is present and config is updated.
-        // We observe that QueryPlanner might be lost during default state transitions,
-        // so we explicitly re-register it here.
         let state = SessionStateBuilder::new_from_existing(state)
             .with_config(config)
             .with_query_planner(Arc::new(crate::query::planner::QueryPlanner::new()))
@@ -369,7 +385,7 @@ impl FederationEngine {
         // --- Cache Lookup START ---
         // Resolve effective cache configuration
         let should_cache = self.should_cache_query(&plan);
-        let cache_key = crate::query::cache::CacheKey::from_plan(&plan, user.as_ref())?;
+        let cache_key = crate::query::cache::CacheKey::from_plan(&plan, user.as_ref());
 
         let mut cached_batches_opt = None;
         if should_cache {
@@ -377,9 +393,7 @@ impl FederationEngine {
         }
 
         if let Some(cached_batches) = cached_batches_opt {
-            self.active_queries.fetch_sub(1, Ordering::Relaxed);
             let duration = start.elapsed();
-
             let user_id = user.as_ref().map(|u| u.id.as_str()).unwrap_or("anonymous");
 
             info!(
@@ -401,38 +415,47 @@ impl FederationEngine {
         let timeout_seconds = self.query_limits.query_timeout_seconds.unwrap_or(300);
         let timeout_duration = std::time::Duration::from_secs(timeout_seconds);
 
-        let result = tokio::time::timeout(timeout_duration, async {
-            let df = context
-                .execute_logical_plan(plan.clone())
+        let my_warnings = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let result = strake_common::warnings::QUERY_WARNINGS
+            .scope(my_warnings.clone(), async {
+                tokio::time::timeout(timeout_duration, async {
+                    let df = context
+                        .execute_logical_plan(plan.clone())
+                        .await
+                        .context("Failed to execute logical plan")?;
+
+                    let schema: arrow::datatypes::SchemaRef =
+                        Arc::new(df.schema().as_arrow().clone());
+
+                    let batches = df.collect().await?;
+
+                    let mut local_warnings = collector.take_all();
+                    if let Ok(w) = strake_common::warnings::QUERY_WARNINGS.try_with(|x| x.clone()) {
+                        if let Ok(mut lock) = w.lock() {
+                            local_warnings.append(&mut *lock);
+                        }
+                    }
+
+                    Ok::<
+                        (
+                            arrow::datatypes::SchemaRef,
+                            Vec<arrow::record_batch::RecordBatch>,
+                            Vec<String>,
+                        ),
+                        anyhow::Error,
+                    >((schema, batches, local_warnings))
+                })
                 .await
-                .context("Failed to execute logical plan")?;
-
-            let schema: arrow::datatypes::SchemaRef = Arc::new(df.schema().as_arrow().clone());
-
-            // Check for injected limits (Defensive Limits)
-            // Note: Since we don't have easy access to the optimized plan structure here without re-inspecting
-            // or modifying how we execute, we omit the defensive limit warning for now to keep this robust.
-
-            let batches = df.collect().await?;
-            Ok::<
-                (
-                    arrow::datatypes::SchemaRef,
-                    Vec<arrow::record_batch::RecordBatch>,
-                    Vec<String>,
-                ),
-                anyhow::Error,
-            >((schema, batches, vec![]))
-        })
-        .await;
+            })
+            .await;
 
         let (schema, batches, mut warnings) = match result {
             Ok(Ok((s, b, w))) => (s, b, w),
             Ok(Err(e)) => {
                 tracing::error!("Detailed execution error: {:#}", e);
                 return Err(anyhow::anyhow!(e));
-            } // Propagate execution error
+            }
             Err(_) => {
-                // Timeout occurred
                 return Err(strake_error::StrakeError::new(
                     strake_error::ErrorCode::QueryCancelled,
                     format!("Query timed out after {} seconds", timeout_seconds),
@@ -444,18 +467,15 @@ impl FederationEngine {
 
         // --- Cache Store START ---
         if should_cache {
-            // Store in cache (defensive: errors logged internally)
             let _ = self.cache.put(cache_key, &batches).await;
             warnings.push("x-strake-cache: miss".to_string());
         }
         // --- Cache Store END ---
 
-        self.active_queries.fetch_sub(1, Ordering::Relaxed);
         let duration = start.elapsed();
-
         let user_id = user.as_ref().map(|u| u.id.as_str()).unwrap_or("anonymous");
-
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
         info!(
             target: "queries",
             user_id = %user_id,

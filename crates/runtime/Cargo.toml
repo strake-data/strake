@@ -27,6 +27,7 @@ async-trait = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 parking_lot = "0.12.5"
 bytes = "1.0"
+rand = "0.8"
 
 # Query result caching
 sha2 = { workspace = true }

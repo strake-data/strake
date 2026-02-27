@@ -46,7 +46,7 @@ use datafusion::physical_plan::{
 };
 use futures::StreamExt;
 
-use strake_common::warnings::add_warning;
+use strake_common::warnings::{add_warning, WarningCollector};
 
 #[derive(Debug, Clone)]
 pub enum DriftWarning {
@@ -284,11 +284,24 @@ impl ExecutionPlan for SchemaDriftExec {
         partition: usize,
         context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
-        let inner_stream = self.inner.execute(partition, context)?;
+        let inner_stream = self.inner.execute(partition, context.clone())?;
         let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
 
         // Use stream combinator instead of custom Stream impl
         let expected_schema = self.expected_schema.clone();
+
+        let collector = context
+            .session_config()
+            .options()
+            .extensions
+            .get::<WarningCollector>()
+            .cloned();
+
+        if collector.is_none() {
+            println!("DEBUG: WarningCollector NOT FOUND in TaskContext extensions!");
+        } else {
+            println!("DEBUG: WarningCollector FOUND in TaskContext extensions.");
+        }
 
         let mapped = inner_stream.map(move |batch_res| match batch_res {
             Ok(batch) => {
@@ -296,7 +309,11 @@ impl ExecutionPlan for SchemaDriftExec {
                 match reconcile_batch(&expected_schema, &batch) {
                     Ok((reconciled, warnings)) => {
                         for warning in warnings {
-                            add_warning(warning.to_string());
+                            let w_str = warning.to_string();
+                            if let Some(c) = &collector {
+                                c.add(w_str.clone());
+                            }
+                            add_warning(w_str);
                         }
                         baseline_metrics.record_output(reconciled.num_rows());
                         Ok(reconciled)

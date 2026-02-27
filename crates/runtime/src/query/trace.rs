@@ -40,17 +40,16 @@ pub async fn execute_and_report(context: &SessionContext, sql: &str) -> Result<S
     let results = df.collect().await.context("Failed to collect results")?;
     let duration = start_time.elapsed();
 
-    // Create a limited version of results for display
-    let display_df = context
-        .sql(sql)
-        .await
-        .context("Failed to create display query")?
-        .limit(0, Some(10))
-        .context("Failed to apply limit")?;
-    let display_results = display_df
-        .collect()
-        .await
-        .context("Failed to collect display results")?;
+    // Create a limited version of results for display without re-executing
+    let display_results = if results.is_empty() {
+        vec![]
+    } else {
+        // Zero-copy slice of the first batch up to 10 rows
+        // If results has multiple batches, we just take the first one and slice it
+        let batch = &results[0];
+        let take_rows = batch.num_rows().min(10);
+        vec![batch.slice(0, take_rows)]
+    };
 
     let pretty_results = datafusion::arrow::util::pretty::pretty_format_batches(&display_results)
         .context("Failed to format display results")?

@@ -1,3 +1,16 @@
+//! Budget-based query validation.
+//!
+//! Provides a `CostBasedValidator` rule that rejects execution plans
+//! estimated to process too many rows or bytes. This acts as a safety
+//! net for expensive queries in multi-tenant environments.
+//!
+//! # Usage
+//!
+//! ```rust
+//! // use strake_runtime::query::cost_validator::CostBasedValidator;
+//! // let validator = CostBasedValidator::new(Some(1_000_000), Some(100_000_000));
+//! ```
+
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
@@ -41,9 +54,9 @@ impl PhysicalOptimizerRule for CostBasedValidator {
 
         // Validate against thresholds
         if let Some(max_rows) = self.max_rows {
-            if cost_visitor.total_rows > max_rows {
+            if cost_visitor.max_rows > max_rows {
                 let context = strake_error::ErrorContext::BudgetExceeded {
-                    estimated_rows: cost_visitor.total_rows,
+                    estimated_rows: cost_visitor.max_rows,
                     limit: max_rows,
                     suggestion:
                         "Add a LIMIT clause or increase the 'max_output_rows' in query limits"
@@ -55,7 +68,7 @@ impl PhysicalOptimizerRule for CostBasedValidator {
                         strake_error::ErrorCode::BudgetExceeded,
                         format!(
                             "Query estimated {} rows exceeds limit of {}",
-                            cost_visitor.total_rows, max_rows
+                            cost_visitor.max_rows, max_rows
                         ),
                     )
                     .with_context(context),
@@ -64,7 +77,7 @@ impl PhysicalOptimizerRule for CostBasedValidator {
         }
 
         if let Some(max_bytes) = self.max_bytes {
-            if cost_visitor.total_bytes > max_bytes {
+            if cost_visitor.max_bytes > max_bytes {
                 // Note: BudgetExceeded context for bytes could be added to ErrorContext in future
                 // For now using the same error code but generic message
                 return Err(DataFusionError::External(Box::new(
@@ -72,7 +85,7 @@ impl PhysicalOptimizerRule for CostBasedValidator {
                         strake_error::ErrorCode::BudgetExceeded,
                         format!(
                             "Query estimated {} bytes exceeds limit of {}",
-                            cost_visitor.total_bytes, max_bytes
+                            cost_visitor.max_bytes, max_bytes
                         ),
                     )
                     .with_hint("Refine your query to select fewer columns or use filters"),
@@ -84,12 +97,15 @@ impl PhysicalOptimizerRule for CostBasedValidator {
     }
 }
 
-/// Helper visitor to sum up statistics from the plan.
-/// Designed to be extensible for future cost checks (e.g. Join cardinality).
+/// Helper visitor to calculate max statistics from the plan.
+///
+/// Instead of summing row counts (which would double-count data in pipelines),
+/// we track the maximum observed row count across all nodes. This provides
+/// a more accurate representation of the "largest" stage of processing.
 #[derive(Default)]
 struct CostVisitor {
-    pub total_rows: usize,
-    pub total_bytes: usize,
+    pub max_rows: usize,
+    pub max_bytes: usize,
 }
 
 impl ExecutionPlanVisitor for CostVisitor {
@@ -99,19 +115,14 @@ impl ExecutionPlanVisitor for CostVisitor {
         // Access statistics from the physical plan node
         #[allow(deprecated)]
         if let Ok(stats) = plan.statistics() {
-            // Permissive mode: if stats are missing (None), we treat as 0 for now.
-            // Future work: Add strict mode config.
-
+            // Treat as max encountered in the pipeline rather than sum to avoid double counting
             if let Some(rows) = stats.num_rows.get_value() {
-                self.total_rows = self.total_rows.saturating_add(*rows);
+                self.max_rows = self.max_rows.max(*rows);
             }
             if let Some(bytes) = stats.total_byte_size.get_value() {
-                self.total_bytes = self.total_bytes.saturating_add(*bytes);
+                self.max_bytes = self.max_bytes.max(*bytes);
             }
         }
-
-        // Future Extension Point:
-        // if let Some(join) = plan.as_any().downcast_ref::<HashJoinExec>() { ... }
 
         Ok(true)
     }

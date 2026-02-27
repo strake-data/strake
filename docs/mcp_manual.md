@@ -4,7 +4,9 @@ The Strake Federation Engine now supports a hybrid **Python Sidecar MCP** archit
 
 ## Architecture
 
-When you enable the MCP feature, the Rust server (`strake-server`) acts as a "Supervisor." It automatically spans a child Python process running the `strake.mcp` module.
+We use a **Code Mode** architecture. Instead of exposing hundreds of individual "tools" to the LLM context, we expose a single tool: a sandboxed Python runtime (`run_python`).
+
+When you enable the MCP feature, the Rust server (`strake-server`) acts as a "Supervisor." It automatically spans a child Python process running the `strake.mcp` module, which manages the sandbox.
 
 ```mermaid
 classDiagram
@@ -14,10 +16,14 @@ classDiagram
     }
     class PythonMCPSidecar {
         +stdio/SSE Transport
-        +Uses strake-python lib
+        +Manages Sandbox
+    }
+    class Sandbox {
+        +execute_python()
     }
     StrakeServer --> PythonMCPSidecar : Spawns
-    PythonMCPSidecar --> StrakeServer : Queries (Flight SQL)
+    PythonMCPSidecar --> Sandbox : Runs Agent Code
+    Sandbox --> StrakeServer : Queries (Flight SQL / Zero Copy)
 ```
 
 ## Prerequisites

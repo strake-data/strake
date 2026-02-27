@@ -1,3 +1,20 @@
+//! Transparent query result caching.
+//!
+//! Provides a `QueryCache` that stores query results (Arrow `RecordBatch`es)
+//! in Parquet files on disk with a `moka`-based LRU in-memory index.
+//!
+//! # Safety
+//!
+//! Cache keys include user context and permissions to ensure results are
+//! never leaked across RBAC boundaries (RLS isolation).
+//!
+//! # Usage
+//!
+//! ```rust
+//! // let cache = QueryCache::new(config).await?;
+//! // if let Some(batches) = cache.get(&key).await { ... }
+//! ```
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -46,11 +63,11 @@ pub struct CacheKey {
 
 impl CacheKey {
     /// Generate a cache key from a logical plan and user context
-    pub fn from_plan(plan: &LogicalPlan, user: Option<&AuthenticatedUser>) -> Result<Self> {
+    pub fn from_plan(plan: &LogicalPlan, user: Option<&AuthenticatedUser>) -> Self {
         // Generate STABLE hash of logical plan
-        // Using Display trait provides a stable representation
-        // (more stable than Debug which can change across Rust versions)
-        let plan_str = format!("{}", plan.display_indent());
+        // Use deterministic serialization to avoid regressions from display_indent()
+        // For now, we use a more robust representation but long-term Substrait is preferred.
+        let plan_str = format!("{:?}", plan);
 
         let mut hasher = Sha256::new();
         hasher.update(plan_str.as_bytes());
@@ -67,18 +84,20 @@ impl CacheKey {
             ("anonymous".to_string(), "none".to_string())
         };
 
-        Ok(Self {
+        Self {
             plan_hash,
             user_id,
             permissions_hash,
-        })
+        }
     }
 
     /// Convert to filesystem-safe filename
     pub fn to_filename(&self) -> String {
         let mut hasher = Sha256::new();
         hasher.update(self.plan_hash.as_bytes());
+        hasher.update(b"|"); // Delimiter to prevent boundary shifting collisions
         hasher.update(self.user_id.as_bytes());
+        hasher.update(b"|");
         hasher.update(self.permissions_hash.as_bytes());
         format!("query_{:x}.parquet", hasher.finalize())
     }

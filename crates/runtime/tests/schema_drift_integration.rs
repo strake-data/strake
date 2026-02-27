@@ -202,6 +202,9 @@ async fn test_schema_drift_federation() -> Result<()> {
 
     // Warnings should contain the 3 drift warnings
     let warnings_str = warnings.join("\n");
+    println!("--- ACTUAL WARNINGS START ---");
+    println!("{}", warnings_str);
+    println!("--- ACTUAL WARNINGS END ---");
     assert!(warnings_str.contains("STRAKE-2009"));
     assert!(warnings_str.contains("STRAKE-2010"));
     assert!(warnings_str.contains("STRAKE-2011"));

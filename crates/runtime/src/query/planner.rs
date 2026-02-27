@@ -1,3 +1,9 @@
+//! Federated physical query planning.
+//!
+//! Integrates Strake's custom physical extension planners into the
+//! DataFusion lifecycle, enabling support for federated subqueries
+//! and schema adapters.
+
 use async_trait::async_trait;
 use datafusion::error::Result;
 use datafusion::execution::context::{QueryPlanner as DFQueryPlanner, SessionState};
