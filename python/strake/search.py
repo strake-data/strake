@@ -3,18 +3,22 @@ import pyarrow as pa
 import os
 import logging
 import threading
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from strake import StrakeConnection
+from .utils import get_strake_dir
 
 logger = logging.getLogger("strake.search")
 
 
 class SchemaIndexer:
-    def __init__(
-        self, connection: StrakeConnection, db_path: str = "~/.strake/lancedb_cache"
-    ):
+    def __init__(self, connection: StrakeConnection, db_path: Optional[str] = None):
         self.connection = connection
-        self.db_path = os.path.expanduser(db_path)
+
+        if db_path:
+            self.db_path = os.path.expanduser(db_path)
+        else:
+            self.db_path = str(get_strake_dir("lancedb_cache"))
+
         self.table_name = "table_schemas"
         self._db = None
         self._db_lock = threading.Lock()

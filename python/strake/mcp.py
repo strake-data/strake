@@ -111,13 +111,15 @@ class MCPServer:
                             )
 
                     # Emit sandbox init trace event
-                    get_emitter().emit({
-                        "event": "sandbox_init",
-                        "sandbox_type": sandbox_type,
-                        "platform": sys.platform,
-                        "config_path": self._config_path,
-                        "environment": env,
-                    })
+                    get_emitter().emit(
+                        {
+                            "event": "sandbox_init",
+                            "sandbox_type": sandbox_type,
+                            "platform": sys.platform,
+                            "config_path": self._config_path,
+                            "environment": env,
+                        }
+                    )
 
                 except ImportError as e:
                     logger.error(f"Failed to import Strake bindings: {e}")
@@ -161,15 +163,17 @@ async def search_schemas(query: str) -> List[Dict[str, Any]]:
         raise
     finally:
         elapsed_ms = (time.monotonic_ns() - start) / 1_000_000
-        get_emitter().emit({
-            "event": "span",
-            "span_type": "tool_call",
-            "name": "search_schemas",
-            "query": query,
-            "result_count": result_count,
-            "latency_ms": round(elapsed_ms, 2),
-            "status": status,
-        })
+        get_emitter().emit(
+            {
+                "event": "span",
+                "span_type": "tool_call",
+                "name": "search_schemas",
+                "query": query,
+                "result_count": result_count,
+                "latency_ms": round(elapsed_ms, 2),
+                "status": status,
+            }
+        )
 
 
 @mcp.tool()
@@ -207,15 +211,17 @@ async def run_python(script: str) -> str:
         raise
     finally:
         elapsed_ms = (time.monotonic_ns() - start) / 1_000_000
-        get_emitter().emit({
-            "event": "span",
-            "span_type": "tool_call",
-            "name": "run_python",
-            **code_field(script),
-            "result_size_bytes": len(result_str.encode("utf-8")),
-            "latency_ms": round(elapsed_ms, 2),
-            "status": status,
-        })
+        get_emitter().emit(
+            {
+                "event": "span",
+                "span_type": "tool_call",
+                "name": "run_python",
+                **code_field(script),
+                "result_size_bytes": len(result_str.encode("utf-8")),
+                "latency_ms": round(elapsed_ms, 2),
+                "status": status,
+            }
+        )
 
 
 def main():

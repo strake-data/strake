@@ -2,38 +2,59 @@
   <img src="docs/assets/logo.png" width="200" height="auto" alt="Strake Logo">
   <h1>Strake</h1>
   <p>
-    <strong>High-Performance Federated SQL Engine</strong>
+    <strong>The AI Data Layer</strong>
   </p>
   <p>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache_2.0-blue.svg" alt="License"></a>
     <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"></a>
+    <a href="https://strake-data.github.io/strake/"><img src="https://img.shields.io/badge/docs-latest-blue.svg" alt="Docs"></a>
   </p>
 </div>
 
 <br>
 
-**Strake** is a high-performance federated SQL engine built on [Apache Arrow DataFusion](https://github.com/apache/arrow-datafusion). It enables users to query across disparate data sources—including PostgreSQL, Parquet, and JSON—using a single SQL interface without the need for data movement or ETL.
+**Strake** is the AI Data Layer. Not just a query tool, and not a RAG pipeline. It's the sandboxed execution environment where agents meet your data and return answers, not rows.
+
+Built on [Apache Arrow DataFusion](https://github.com/apache/arrow-datafusion), Strake enables AI agents to discover, query, and process data across your entire stack (PostgreSQL, Snowflake, S3, and more) without the need for data movement or ETL.
 
 > 📚 **Full Documentation**: Check out the [complete documentation](https://strake-data.github.io/strake/) for installation, architecture, and API references.
 
 ---
 
-##  Overview
+##  Key Features
 
-Strake acts as an "Intelligent Pipe," sitting between your data sources and your analysis tools. It focuses on operational stability, ensuring that federated queries are executed efficiently and safely through aggressive pushdown optimization and memory-limit enforcement.
-
-### Key Features
-
-- **GitOps Native**: Manage your data mesh configuration as code. Version control your sources, policies, and metrics.
 - **Developer First**: Built for engineers. Type-safe configuration, rich CLI tooling, and local development workflows.
+- **Secure Execution Layer**: Run untrusted Python code safely using Firecracker MicroVMs or Native OS Sandboxing (Landlock, Seccomp, Namespaces).
 - **High Performance**: Sub-second latency for federated joins using Apache Arrow.
 - **Pluggable Sources**: Postgres, S3, Local Files, REST, gRPC, and more.
-- **Enterprise Governance**: Row-Level Security (RLS), Column Masking, and OIDC Authentication (Enterprise Edition).
+- **MCP-Native Discovery**: Built for the Model Context Protocol. Your agents discover your entire data catalog and schemas instantly.
 - **Python Native**: Zero-copy integration with Pandas and Polars via PyO3.
+- **Enterprise Governance**: Row-Level Security (RLS), Column Masking, and OIDC Authentication (Enterprise Edition).
 - **Observability**: Built-in OpenTelemetry tracing and Prometheus metrics.
+- **GitOps Native**: Manage your data mesh configuration as code. Version control your sources, policies, and metrics.
 - **Enterprise Features**: OIDC, Row-Level Security, and Data Contracts (see [Enterprise Edition](https://strake-data.github.io/strake/enterprise/)).
 
-## Quick Start
+## Code Mode: Don't Compute in Context
+
+Most agents fail by swallowing thousands of raw SQL rows. Strake's **Code Mode** lets them process data in Python inside a secure sandbox, sending only the parsed results to the LLM.
+
+```python
+import strake
+from strake.mcp import run_python
+
+# Query 10M rows instantly via DataFusion
+# Aggregate in Python to prevent context bloat
+script = """
+df = strake.sql("SELECT * FROM user_events")
+summary = df.groupby('feature_flag')['latency'].median()
+print(summary.to_json())
+"""
+
+# Runs isolated with OS Sandboxing or Firecracker VMs
+result = await run_python(script)
+```
+
+## Quick Start (5-Minute Setup)
 
 ### 1. Installation
 
@@ -55,7 +76,7 @@ pip install strake
 
 ### 2. Configuration (GitOps)
 
-Initialize and apply your data source configuration:
+Initialize a new config and validate your sources:
 
 ```bash
 # Initialize a new config
@@ -68,9 +89,7 @@ strake-cli validate sources.yaml
 strake-cli apply sources.yaml --force
 ```
 
-### 3. Usage (Python)
-
-Strake provides a seamless interface for data scientists and engineers:
+### 3. Query with Python
 
 ```python
 import strake
@@ -88,7 +107,6 @@ print(conn.describe("measurements"))
 
 print("\n--- Query PyArrow Table ---")
 data = conn.sql("SELECT * FROM measurements LIMIT 5")
-# Convert to Polars DataFrame
 print(pl.from_arrow(data))
 ```
 

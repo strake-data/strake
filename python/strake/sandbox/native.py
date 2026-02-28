@@ -127,7 +127,13 @@ class NativeOSSandboxManager(SandboxManager):
         # It handles the connection setup and then calls _sandbox_worker_inner.
         p = _MP_CTX.Process(
             target=_sandbox_worker,
-            args=(self._get_os_type(), code, queue, self.config_path, self.workspace_root),
+            args=(
+                self._get_os_type(),
+                code,
+                queue,
+                self.config_path,
+                self.workspace_root,
+            ),
         )
 
         SANDBOX_TIMEOUT_SECS = int(os.environ.get("SANDBOX_TIMEOUT_SECS", 30))
@@ -257,8 +263,11 @@ class MacOSSandboxManager(NativeOSSandboxManager):
         # We pass the code via stdin to avoid shell escaping issues
         cmd = [
             self._SEATBELT_EXECUTABLE,
-            "-f", profile_path,
-            sys.executable, "-c", code,
+            "-f",
+            profile_path,
+            sys.executable,
+            "-c",
+            code,
         ]
 
         # Pass environment variables for Strake connection
@@ -292,8 +301,12 @@ class MacOSSandboxManager(NativeOSSandboxManager):
                     result=None,
                 )
 
-            stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-            stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+            stdout = (
+                stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+            )
+            stderr = (
+                stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+            )
 
             if proc.returncode != 0:
                 logger.error(
@@ -301,7 +314,8 @@ class MacOSSandboxManager(NativeOSSandboxManager):
                 )
                 return SandboxResult(
                     stdout=stdout,
-                    stderr=stderr or f"Runtime Error: Sandbox process exited with code {proc.returncode}",
+                    stderr=stderr
+                    or f"Runtime Error: Sandbox process exited with code {proc.returncode}",
                     result=None,
                 )
 

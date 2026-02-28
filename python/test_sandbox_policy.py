@@ -114,7 +114,9 @@ class TestSeccompDenyList(unittest.TestCase):
 
         # Verify the offset (k field) is 0, not 4
         code, jt, jf, k = struct.unpack("HBBI", first_insn)
-        self.assertEqual(k, 0, "BPF filter must load from offset 0 (syscall nr), not 4 (arch)")
+        self.assertEqual(
+            k, 0, "BPF filter must load from offset 0 (syscall nr), not 4 (arch)"
+        )
 
 
 class TestSeatbeltAvailability(unittest.TestCase):
@@ -217,12 +219,8 @@ class TestAttestationEnrichment(unittest.TestCase):
 
     def test_attestation_includes_abi_version(self):
         """Attestation hash changes when landlock_abi_version changes."""
-        a1 = SandboxAttestation(
-            "id1", ["landlock"], 1.0, landlock_abi_version=1
-        )
-        a2 = SandboxAttestation(
-            "id1", ["landlock"], 1.0, landlock_abi_version=5
-        )
+        a1 = SandboxAttestation("id1", ["landlock"], 1.0, landlock_abi_version=1)
+        a2 = SandboxAttestation("id1", ["landlock"], 1.0, landlock_abi_version=5)
         self.assertNotEqual(a1.sign(), a2.sign())
 
     def test_attestation_includes_seatbelt_hash(self):

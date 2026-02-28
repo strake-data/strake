@@ -162,7 +162,7 @@ class SandboxPolicy:
         # remote data sources (e.g., Postgres, gRPC). User code cannot make direct
         # network calls because the import allowlist blocks socket/http/urllib modules.
         DENIED_SYSCALLS: list[int] = [
-            59,   # execve
+            59,  # execve
             322,  # execveat
         ]
 
@@ -190,9 +190,7 @@ class SandboxPolicy:
             remaining = n_denied - i - 1
             # jt = jump over remaining checks + ALLOW to reach DENY
             # jf = 0 (fall through to next check)
-            filters.append(
-                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, nr, remaining + 1, 0)
-            )
+            filters.append(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, nr, remaining + 1, 0))
 
         # Default: ALLOW
         filters.append(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW))
@@ -322,9 +320,9 @@ class SandboxPolicy:
         LANDLOCK_ACCESS_FS_MAKE_FIFO = 1 << 10
         LANDLOCK_ACCESS_FS_MAKE_BLOCK = 1 << 11
         LANDLOCK_ACCESS_FS_MAKE_SYM = 1 << 12
-        LANDLOCK_ACCESS_FS_REFER = 1 << 13        # ABI 2+
-        LANDLOCK_ACCESS_FS_TRUNCATE = 1 << 14      # ABI 3+
-        LANDLOCK_ACCESS_FS_IOCTL_DEV = 1 << 15     # ABI 5+
+        LANDLOCK_ACCESS_FS_REFER = 1 << 13  # ABI 2+
+        LANDLOCK_ACCESS_FS_TRUNCATE = 1 << 14  # ABI 3+
+        LANDLOCK_ACCESS_FS_IOCTL_DEV = 1 << 15  # ABI 5+
 
         LANDLOCK_RULE_PATH_BENEATH = 1
 
@@ -388,7 +386,11 @@ class SandboxPolicy:
             return False
 
         # ── Helper: add a path rule to the ruleset ──
-        read_access = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR
+        read_access = (
+            LANDLOCK_ACCESS_FS_EXECUTE
+            | LANDLOCK_ACCESS_FS_READ_FILE
+            | LANDLOCK_ACCESS_FS_READ_DIR
+        )
         write_access = (
             read_access
             | LANDLOCK_ACCESS_FS_WRITE_FILE
@@ -441,7 +443,9 @@ class SandboxPolicy:
                 )
                 if ret < 0:
                     errno = ctypes.get_errno()
-                    logger.warning(f"landlock_add_rule failed for {path}: errno={errno}")
+                    logger.warning(
+                        f"landlock_add_rule failed for {path}: errno={errno}"
+                    )
                     return False
                 return True
             except OSError as e:
@@ -466,12 +470,14 @@ class SandboxPolicy:
                     logger.warning(
                         f"Landlock: could not add write rule for workspace: {self.workspace_root}"
                     )
-            
+
             # ── Add read+write rule for LanceDB cache ──
             cache_dir = os.path.expanduser("~/.strake")
             if os.path.exists(cache_dir):
                 if not _add_path_rule(cache_dir, write_access):
-                    logger.warning(f"Landlock: could not add write rule for cache: {cache_dir}")
+                    logger.warning(
+                        f"Landlock: could not add write rule for cache: {cache_dir}"
+                    )
 
             # ── Enforce the ruleset ──
             PR_SET_NO_NEW_PRIVS = 38
@@ -513,12 +519,12 @@ class SandboxPolicy:
             resource.setrlimit(
                 resource.RLIMIT_CPU, (self.cpu_cores * 5, self.cpu_cores * 5)
             )
-            
-            # Note: RLIMIT_AS (virtual memory limit) can break heavily multi-threaded frameworks 
-            # like Tokio and PyArrow because thread stacks and memory allocators reserve huge 
-            # virtual address spaces without actually using physical RAM. 
+
+            # Note: RLIMIT_AS (virtual memory limit) can break heavily multi-threaded frameworks
+            # like Tokio and PyArrow because thread stacks and memory allocators reserve huge
+            # virtual address spaces without actually using physical RAM.
             # We enforce memory via cgroups v2 instead where possible.
-            
+
             applied.append("rlimit")
         except Exception as e:
             msg = f"Could not apply strict rlimits: {e}"
@@ -575,7 +581,9 @@ class SandboxPolicy:
                 f"Sandbox Initialization: Landlock LSM (ABI v{self._landlock_abi_version}) is ACTIVE."
             )
         else:
-            msg = "Sandbox Initialization: Landlock LSM filesystem isolation NOT active."
+            msg = (
+                "Sandbox Initialization: Landlock LSM filesystem isolation NOT active."
+            )
             if self.strict:
                 raise RuntimeError(f"Sandbox Hardening Error: {msg}")
             logger.warning(msg)

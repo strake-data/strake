@@ -3,7 +3,7 @@ Core tracing primitives: sessions, spans, and pluggable emitters.
 
 Design goals:
   - Zero mandatory dependencies beyond stdlib + typing.
-  - JSON-lines file output by default (``~/.strake/traces/``).
+  - JSON-lines file output by default (``.strake/traces/`` relative to the script).
   - All public entry-points are safe to call even when tracing is disabled
     (via ``NullEmitter``).
   - The ``@span`` decorator works on both sync and async functions.
@@ -20,10 +20,12 @@ import logging
 import os
 import time
 import uuid
+import threading
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, TypeVar
+from ..utils import get_strake_dir
 
 logger = logging.getLogger("strake.tracing")
 
@@ -50,7 +52,11 @@ def _trace_code_capture() -> bool:
 
 
 def _trace_dir() -> Path:
-    return Path(os.environ.get("STRAKE_TRACE_DIR", os.path.expanduser("~/.strake/traces")))
+    env_dir = os.environ.get("STRAKE_TRACE_DIR")
+    if env_dir:
+        return Path(env_dir).resolve()
+
+    return get_strake_dir("traces")
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +95,11 @@ class JsonLinesFileEmitter(TraceEmitter):
         self._file = None
         self._path: Optional[Path] = None
 
+    @property
+    def trace_dir(self) -> Path:
+        """The directory where traces are being written."""
+        return self._dir
+
     def _ensure_file(self, session_id: str) -> None:
         if self._file is None:
             today = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -117,19 +128,47 @@ class JsonLinesFileEmitter(TraceEmitter):
 
 # Module-level singleton — created lazily.
 _emitter: Optional[TraceEmitter] = None
+_emitter_lock = threading.Lock()
 
 
-def get_emitter() -> TraceEmitter:
-    """Return the module-level emitter, creating it on first call."""
+def get_emitter(trace_dir: Optional[Path | str] = None) -> TraceEmitter:
+    """Return the module-level emitter, creating or reconfiguring it on call.
+
+    If *trace_dir* is provided, the emitter is updated to write to that
+    location if it's not already doing so.
+    """
     global _emitter
-    if _emitter is None:
-        if _trace_enabled():
-            _emitter = JsonLinesFileEmitter()
-            logger.info("Tracing enabled — writing to %s", _trace_dir())
+
+    with _emitter_lock:
+        if not _trace_enabled():
+            if not isinstance(_emitter, NullEmitter):
+                _emitter = NullEmitter()
+            return _emitter
+
+        # Determine target directory
+        if trace_dir:
+            target_dir = Path(trace_dir).resolve()
+        elif isinstance(_emitter, JsonLinesFileEmitter):
+            # If already initialized with a file emitter and no override requested, keep current.
+            return _emitter
         else:
-            _emitter = NullEmitter()
-            logger.debug("Tracing disabled (STRAKE_TRACE_ENABLED != true)")
-    return _emitter
+            # First-time initialization without override
+            target_dir = _trace_dir()
+
+        # If we already have a file emitter pointing to the same place, we're done.
+        if (
+            isinstance(_emitter, JsonLinesFileEmitter)
+            and _emitter.trace_dir == target_dir
+        ):
+            return _emitter
+
+        # Re-initialize (closing old file if needed)
+        if isinstance(_emitter, JsonLinesFileEmitter):
+            _emitter.close()
+
+        _emitter = JsonLinesFileEmitter(trace_dir=target_dir)
+        logger.info("Tracing enabled — writing to %s", target_dir)
+        return _emitter
 
 
 def set_emitter(emitter: TraceEmitter) -> None:
@@ -201,7 +240,9 @@ class AgentSession:
 
     # -- public helpers --
 
-    def record_event(self, event_type: str, data: Optional[Dict[str, Any]] = None) -> None:
+    def record_event(
+        self, event_type: str, data: Optional[Dict[str, Any]] = None
+    ) -> None:
         """Emit an arbitrary event record under this session."""
         self.emitter.emit(
             {
@@ -372,7 +413,9 @@ def _add_result_meta(record: Dict[str, Any], result: Any) -> None:
     if result is None:
         return
     if isinstance(result, (str, bytes)):
-        record["result_size_bytes"] = len(result) if isinstance(result, bytes) else len(result.encode("utf-8"))
+        record["result_size_bytes"] = (
+            len(result) if isinstance(result, bytes) else len(result.encode("utf-8"))
+        )
     elif isinstance(result, (list, dict)):
         try:
             record["result_size_bytes"] = len(json.dumps(result))

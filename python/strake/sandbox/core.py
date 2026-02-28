@@ -274,10 +274,10 @@ class StrakeShim:
         """Get the schema indexer, initializing it lazily and thread-safely."""
         sandbox = object.__getattribute__(self, "_sandbox_ref")
         conn = object.__getattribute__(self, "_conn")
-        
+
         if not hasattr(sandbox, "_indexer_thread_lock"):
             object.__setattr__(sandbox, "_indexer_thread_lock", threading.Lock())
-            
+
         if not hasattr(sandbox, "_indexer") or sandbox._indexer is None:
             with sandbox._indexer_thread_lock:
                 if not hasattr(sandbox, "_indexer") or sandbox._indexer is None:
@@ -307,15 +307,18 @@ class StrakeShim:
             elapsed_ms = (time.monotonic_ns() - start) / 1_000_000
             try:
                 from strake.tracing import get_emitter
-                get_emitter().emit({
-                    "event": "span",
-                    "span_type": "sandbox_sql",
-                    "name": "sql",
-                    "query": query,
-                    "result_rows": result_rows,
-                    "latency_ms": round(elapsed_ms, 2),
-                    "status": status,
-                })
+
+                get_emitter().emit(
+                    {
+                        "event": "span",
+                        "span_type": "sandbox_sql",
+                        "name": "sql",
+                        "query": query,
+                        "result_rows": result_rows,
+                        "latency_ms": round(elapsed_ms, 2),
+                        "status": status,
+                    }
+                )
             except Exception:
                 pass  # tracing must never break execution
 
@@ -371,15 +374,18 @@ class StrakeShim:
             elapsed_ms = (time.monotonic_ns() - start) / 1_000_000
             try:
                 from strake.tracing import get_emitter
-                get_emitter().emit({
-                    "event": "span",
-                    "span_type": "sandbox_search",
-                    "name": "search",
-                    "query": query,
-                    "result_count": result_count,
-                    "latency_ms": round(elapsed_ms, 2),
-                    "status": status,
-                })
+
+                get_emitter().emit(
+                    {
+                        "event": "span",
+                        "span_type": "sandbox_search",
+                        "name": "search",
+                        "query": query,
+                        "result_count": result_count,
+                        "latency_ms": round(elapsed_ms, 2),
+                        "status": status,
+                    }
+                )
             except Exception:
                 pass  # tracing must never break execution
 
@@ -411,9 +417,7 @@ def _sandbox_worker_inner(code: str, queue: Any, connection: Any) -> None:
         # The import allowlist is still enforced at runtime via _safe_import_shim
         # injected as __import__.
         _builtins_dict = (
-            __builtins__
-            if isinstance(__builtins__, dict)
-            else vars(__builtins__)  # type: ignore[arg-type]
+            __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)  # type: ignore[arg-type]
         )
         global_context: Dict[str, Any] = {
             "__builtins__": {**_builtins_dict, "__import__": _safe_import_shim},
@@ -468,14 +472,17 @@ def _sandbox_worker_inner(code: str, queue: Any, connection: Any) -> None:
         try:
             from strake.tracing import get_emitter
             from strake.tracing.session import code_field
-            get_emitter().emit({
-                "event": "span",
-                "span_type": "sandbox_exec",
-                "name": "_sandbox_worker_inner",
-                **code_field(code),
-                "latency_ms": round(elapsed_ms, 2),
-                "status": exec_status,
-                "error_type": error_type,
-            })
+
+            get_emitter().emit(
+                {
+                    "event": "span",
+                    "span_type": "sandbox_exec",
+                    "name": "_sandbox_worker_inner",
+                    **code_field(code),
+                    "latency_ms": round(elapsed_ms, 2),
+                    "status": exec_status,
+                    "error_type": error_type,
+                }
+            )
         except Exception:
             pass

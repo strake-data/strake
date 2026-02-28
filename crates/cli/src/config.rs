@@ -142,9 +142,16 @@ fn get_config_path() -> PathBuf {
 }
 
 fn get_default_sqlite_path() -> PathBuf {
-    if let Some(home) = dirs::home_dir() {
-        home.join(".strake").join("metadata.db")
-    } else {
-        PathBuf::from(".strake/metadata.db")
+    // Default to .strake/metadata.db in the current directory for project isolation.
+    PathBuf::from(".strake").join("metadata.db")
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_sqlite_path() {
+        let path = get_default_sqlite_path();
+        assert_eq!(path, PathBuf::from(".strake").join("metadata.db"));
     }
 }

@@ -12,6 +12,7 @@ removed because those checks were removed from validate_ast — they were high-
 maintenance, trivially bypassed, and created false confidence. OS-level isolation
 is the real security boundary, not Python AST inspection.
 """
+
 import sys
 import os
 from strake.sandbox.core import validate_ast, ALLOWED_IMPORTS, MAX_CODE_SIZE

@@ -12,6 +12,7 @@ def connect(
     sources_config: Optional[str] = None,
     api_key: Optional[str] = None,
     mode: Optional[str] = None,
+    trace_dir: Optional[str] = None,
 ) -> "StrakeConnection":
     """
     Convenience function to connect to Strake.
@@ -21,7 +22,14 @@ def connect(
     :param sources_config: Optional path to sources.yaml.
     :param api_key: Optional API key for authenticating with remote servers.
     :param mode: If "embedded", forces local execution. If "remote", requires a grpc:// URL.
+    :param trace_dir: Optional directory to store session traces. Defaults to
+                      ``.strake/traces/`` relative to the running script.
     """
+    if trace_dir:
+        from .tracing import get_emitter
+
+        get_emitter(trace_dir=trace_dir)
+
     if dsn_or_config is None:
         dsn_or_config = "strake.yaml"
     elif mode == "embedded" and not dsn_or_config:
