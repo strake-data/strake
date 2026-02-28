@@ -58,3 +58,5 @@ dashmap = "6.1.0"
 wiremock = "0.6"
 tempfile = "3.10"
 tokio-test = "0.4"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+strake-runtime = { path = "../runtime" }

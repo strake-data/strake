@@ -7665,6 +7665,7 @@ dependencies = [
  "serde_yaml",
  "strake-common",
  "strake-error",
+ "strake-runtime",
  "strake-sql",
  "tempfile",
  "thiserror 2.0.18",
