@@ -41,6 +41,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Setup Enterprise Key
+        shell: bash
         run: |
           mkdir -p keys
           echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem
@@ -80,6 +81,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       
       - name: Setup Enterprise Key
+        shell: bash
         run: |
           mkdir -p keys
           echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem

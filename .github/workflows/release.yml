@@ -44,6 +44,7 @@ jobs:
           token: ${{ steps.generate-token.outputs.token }}
       
       - name: Setup Enterprise Key
+        shell: bash
         run: |
           mkdir -p keys
           echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem
@@ -101,6 +102,7 @@ jobs:
           token: ${{ steps.generate-token.outputs.token }}
       
       - name: Setup Enterprise Key
+        shell: bash
         run: |
           mkdir -p keys
           echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem
@@ -148,6 +150,7 @@ jobs:
           token: ${{ steps.generate-token.outputs.token }}
       
       - name: Setup Enterprise Key
+        shell: bash
         run: |
           mkdir -p keys
           echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem
