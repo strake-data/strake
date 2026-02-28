@@ -91,23 +91,34 @@ strake-cli apply sources.yaml --force
 
 ### 3. Query with Python
 
+First, define your data sources in a `sources.yaml` file:
+
+```yaml
+sources:
+  - name: local_files
+    type: csv
+    path: "data/*.csv"
+    has_header: true
+    tables:
+      - name: measurements
+```
+
+Then, query using the Strake Python client:
+
 ```python
 import strake
 import polars as pl
 
-# Connect using a local configuration file (Embedded Mode)
-LOCAL_CONFIG = "config/strake.yaml" 
-conn = strake.StrakeConnection(LOCAL_CONFIG)
+# Connect using your source configuration
+conn = strake.connect(sources_config="sources.yaml")
 
-print("\n--- List Tables ---")
-print(conn.describe())
+# Query across sources using standard SQL
+query = "SELECT * FROM measurements LIMIT 5"
+data = conn.sql(query)
 
-print("\n--- Describe Table ---")
-print(conn.describe("measurements"))
-
-print("\n--- Query PyArrow Table ---")
-data = conn.sql("SELECT * FROM measurements LIMIT 5")
-print(pl.from_arrow(data))
+# Zero-copy integration with Polars/Pandas
+df = pl.from_arrow(data)
+print(df)
 ```
 
 ## Project Structure
