@@ -9,8 +9,24 @@ classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-version = "0.1.2"
+version = "0.2.0"
+description = "The AI Data Layer: Secure, sandboxed environment for AI agents to query and process data."
+readme = "../README.md"
+authors = [
+    { name = "Strake Data", email = "hello@strakedata.com" },
+]
+keywords = ["ai", "data", "sandbox", "mcp", "datafusion", "arrow", "agent"]
+
+[project.urls]
+Homepage = "https://strakedata.com"
+Documentation = "https://strake-data.github.io/strake/"
+Repository = "https://github.com/strake-data/strake"
+Issues = "https://github.com/strake-data/strake/issues"
 dependencies = [
     "mcp>=0.1.0",
     "pyarrow>=14.0.0",

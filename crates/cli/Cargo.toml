@@ -36,3 +36,7 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 serde_json = "1.0"
 serial_test = { workspace = true }
 tempfile = "3.17.1"
+
+[[test]]
+name = "log_locations"
+path = "../../tests/rust/log_locations.rs"
