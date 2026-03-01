@@ -59,6 +59,9 @@ jobs:
         with:
           key: ${{ matrix.target }}
       
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Install cross
         if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'x86_64-unknown-linux-musl'
         run: cargo install cross --git https://github.com/cross-rs/cross
