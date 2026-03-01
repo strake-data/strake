@@ -82,3 +82,5 @@ site/
 
 *.db
 /target-check
+/test_init
+/.agent/

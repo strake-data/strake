@@ -60,20 +60,47 @@ jobs:
           key: ${{ matrix.target }}
       
       - name: Install protoc
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: |
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y protobuf-compiler
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            brew install protobuf
+          elif [ "$RUNNER_OS" == "Windows" ]; then
+            choco install protoc
+          fi
+        shell: bash
 
-      - name: Install cross
+      - name: Install cross compilers
         if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'x86_64-unknown-linux-musl'
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: |
+          sudo apt-get update
+          if [ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+            echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
+          elif [ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]; then
+            sudo apt-get install -y musl-tools
+            echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> $GITHUB_ENV
+            echo "CC_x86_64_unknown_linux_musl=musl-gcc" >> $GITHUB_ENV
+          fi
       
-      - name: Build (native)
-        if: matrix.target != 'aarch64-unknown-linux-gnu' && matrix.target != 'x86_64-unknown-linux-musl'
+      - name: Build (native & aarch64 cross)
+        if: matrix.target != 'x86_64-unknown-linux-musl'
         run: cargo build --release -p strake-cli -p strake-server --target ${{ matrix.target }}
-      
-      - name: Build (cross)
-        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'x86_64-unknown-linux-musl'
-        run: cross build --release -p strake-cli -p strake-server --target ${{ matrix.target }}
+        
+      - name: Build (x86_64 musl in Docker)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          export HOST_UID=$(id -u)
+          export HOST_GID=$(id -g)
+          docker run --rm -v ${{ github.workspace }}:/build -v ~/.cargo:/usr/local/cargo -w /build rust:1.93-alpine3.21 \
+            sh -c "apk add --no-cache cmake clang protoc protobuf-dev g++ make perl linux-headers openssl-dev git \
+            && export CC_x86_64_unknown_linux_musl=gcc \
+            && export CXX_x86_64_unknown_linux_musl=g++ \
+            && export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS='-C target-feature=+crt-static' \
+            && cargo build --release -p strake-cli -p strake-server --target x86_64-unknown-linux-musl \
+            && chown -R ${HOST_UID}:${HOST_GID} target /usr/local/cargo/registry || true"
       
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -113,6 +140,17 @@ jobs:
           echo "MCowBQYDK2VwAyEAYTi9PtvXVWepOcLdKgBPe/TcZxat3g4f7nRR6My7QM0=" >> keys/public.pem
           echo "-----END PUBLIC KEY-----" >> keys/public.pem
       
+      - name: Install protoc
+        run: |
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y protobuf-compiler
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            brew install protobuf
+          elif [ "$RUNNER_OS" == "Windows" ]; then
+            choco install protoc
+          fi
+        shell: bash
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
@@ -124,7 +162,14 @@ jobs:
           args: --release --out dist --find-interpreter
           sccache: 'true'
           manylinux: 2_28
-          before-script-linux: yum install -y perl-IPC-Cmd perl-Time-Piece
+          before-script-linux: |
+            yum install -y perl-IPC-Cmd perl-Time-Piece clang lld pkg-config openssl-devel wget unzip
+            ARCH=$(uname -m)
+            if [ "$ARCH" = "x86_64" ]; then PROTOC_ARCH="x86_64"; else PROTOC_ARCH="aarch_64"; fi
+            wget https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-${PROTOC_ARCH}.zip
+            unzip protoc-25.2-linux-${PROTOC_ARCH}.zip -d /usr/local
+            ln -sf /usr/local/bin/protoc /usr/bin/protoc
+            protoc --version
           
       - name: Upload Wheels
         uses: actions/upload-artifact@v4
