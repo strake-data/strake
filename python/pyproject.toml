@@ -21,12 +21,6 @@ authors = [
     { name = "Strake Data", email = "hello@strakedata.com" },
 ]
 keywords = ["ai", "data", "sandbox", "mcp", "datafusion", "arrow", "agent"]
-
-[project.urls]
-Homepage = "https://strakedata.com"
-Documentation = "https://strake-data.github.io/strake/"
-Repository = "https://github.com/strake-data/strake"
-Issues = "https://github.com/strake-data/strake/issues"
 dependencies = [
     "mcp>=0.1.0",
     "pyarrow>=14.0.0",
@@ -34,6 +28,12 @@ dependencies = [
     "lancedb>=0.6.0",
     "tantivy>=0.21.0"
 ]
+
+[project.urls]
+Homepage = "https://strakedata.com"
+Documentation = "https://strake-data.github.io/strake/"
+Repository = "https://github.com/strake-data/strake"
+Issues = "https://github.com/strake-data/strake/issues"
 
 [tool.maturin]
 python-source = "."
