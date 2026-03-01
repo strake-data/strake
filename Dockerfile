@@ -6,34 +6,29 @@
 # Run enterprise: docker run -p 8080:8080 strake:latest enterprise
 # Run CLI: docker run strake:latest cli --help
 
-ARG RUST_VERSION=1.88
-ARG DEBIAN_VERSION=bookworm
+ARG RUST_VERSION=1.93
+ARG ALPINE_VERSION=3.21
 
 # ===== Builder Stage =====
-FROM rust:${RUST_VERSION}-${DEBIAN_VERSION} AS builder
+FROM rust:${RUST_VERSION}-alpine${ALPINE_VERSION} AS builder
 
 ARG TARGETARCH
-RUN echo "Building for arch: $TARGETARCH"
+RUN echo "Building natively for arch: $TARGETARCH on Alpine"
 
-# Determine Rust target based on Docker target architecture
-# amd64 -> x86_64-unknown-linux-musl
-# arm64 -> aarch64-unknown-linux-musl
-ENV RUST_TARGET=${TARGETARCH:-amd64}
-ENV RUST_TARGET=${RUST_TARGET/amd64/x86_64-unknown-linux-musl}
-ENV RUST_TARGET=${RUST_TARGET/arm64/aarch64-unknown-linux-musl}
-
+# Alpine natively builds static musl binaries
 # Install build dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    musl-tools \
+RUN apk add --no-cache \
+    pkgconfig \
+    openssl-dev \
+    musl-dev \
     cmake \
     clang \
-    protobuf-compiler \
-    && rm -rf /var/lib/apt/lists/*
-
-# Add musl target for static linking
-RUN rustup target add $RUST_TARGET
+    protoc \
+    protobuf-dev \
+    g++ \
+    make \
+    perl \
+    linux-headers
 
 WORKDIR /build
 
@@ -47,52 +42,50 @@ COPY python/ ./python/
 COPY strake-enterprise/ ./strake-enterprise/
 
 # Create public key for enterprise build
-# This is safe to include in the Dockerfile as it is a public key
 RUN mkdir -p keys && \
     echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem && \
     echo "MCowBQYDK2VwAyEAYTi9PtvXVWepOcLdKgBPe/TcZxat3g4f7nRR6My7QM0=" >> keys/public.pem && \
     echo "-----END PUBLIC KEY-----" >> keys/public.pem
 
-ENV STRAKE_LICENSE_PUBKEY_PATH=keys/public.pem
+ENV STRAKE_LICENSE_PUBKEY_PATH=/build/keys/public.pem
 
-# Build all binaries with musl for static linking
-# Use vendored OpenSSL to avoid runtime dependencies
+# Build all binaries with musl for static linking automatically via Alpine
 ENV OPENSSL_VENDORED=1
-ENV RUSTFLAGS="-C target-feature=+crt-static"
+ENV CARGO_TARGET_APPLIES_TO_HOST=false
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static"
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static"
+ENV CC_x86_64_unknown_linux_musl=gcc
+ENV CXX_x86_64_unknown_linux_musl=g++
+ENV CC_aarch64_unknown_linux_musl=gcc
+ENV CXX_aarch64_unknown_linux_musl=g++
 
-# Build dependencies
-RUN cargo build --release \
-    --target $RUST_TARGET \
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        export TARGET=aarch64-unknown-linux-musl; \
+    else \
+        export TARGET=x86_64-unknown-linux-musl; \
+    fi && \
+    cargo build --release --target $TARGET \
     -p strake-cli \
     -p strake-server \
-    && cargo build --release \
-    --target $RUST_TARGET \
-    --manifest-path strake-enterprise/Cargo.toml
-
-# Verify binaries are statically linked
-RUN ldd /build/target/$RUST_TARGET/release/strake-cli || true
-RUN ldd /build/target/$RUST_TARGET/release/strake-server || true
-RUN ldd /build/target/$RUST_TARGET/release/strake-enterprise || true
+    && cargo build --release --target $TARGET \
+    --manifest-path strake-enterprise/Cargo.toml && \
+    mkdir -p /out && \
+    cp /build/target/$TARGET/release/strake-cli /out/ && \
+    cp /build/target/$TARGET/release/strake-server /out/ && \
+    cp /build/target/$TARGET/release/strake-enterprise /out/
 
 # Strip binaries to reduce size
-RUN strip /build/target/$RUST_TARGET/release/strake-cli
-RUN strip /build/target/$RUST_TARGET/release/strake-server
-RUN strip /build/target/$RUST_TARGET/release/strake-enterprise
+RUN strip /out/strake-cli
+RUN strip /out/strake-server
+RUN strip /out/strake-enterprise
 
 # ===== Runtime Stage =====
 FROM scratch
 
-# Need to redefine ARG in new stage or rely on copying
-# Since we can't easily pass variable between stages in COPY --from, 
-# we'll use a trick or just wildcard since we only built one target.
-# Actually, we can use the ARG again if passed. 
-# But let's stick to the simpler wildcard approach for COPY source path:
-# target/*/release/...
-
-# Copy binaries from builder
-COPY --from=builder /build/target/*/release/strake-cli /bin/strake-cli
-COPY --from=builder /build/target/*/release/strake-server /bin/strake-server
-COPY --from=builder /build/target/*/release/strake-enterprise /bin/strake-enterprise
+# Copy binaries from builder for the native architecture
+COPY --from=builder /out/strake-cli /bin/strake-cli
+COPY --from=builder /out/strake-server /bin/strake-server
+COPY --from=builder /out/strake-enterprise /bin/strake-enterprise
 
 # Copy CA certificates for TLS
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/

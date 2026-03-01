@@ -84,3 +84,4 @@ site/
 /target-check
 /test_init
 /.agent/
+strake_agent.py
