@@ -95,7 +95,7 @@ jobs:
           export HOST_UID=$(id -u)
           export HOST_GID=$(id -g)
           mkdir -p ~/.cargo/registry ~/.cargo/git
-          docker run --rm -v ${{ github.workspace }}:/build -v ~/.cargo/registry:/usr/local/cargo/registry -v ~/.cargo/git:/usr/local/cargo/git -w /build rust:alpine \
+          docker run --rm -e STRAKE_LICENSE_PUBKEY_PATH=/build/keys/public.pem -v ${{ github.workspace }}:/build -v ~/.cargo/registry:/usr/local/cargo/registry -v ~/.cargo/git:/usr/local/cargo/git -w /build rust:alpine \
             sh -c "apk add --no-cache cmake clang protoc protobuf-dev g++ make perl linux-headers openssl-dev git \
             && export CC_x86_64_unknown_linux_musl=gcc \
             && export CXX_x86_64_unknown_linux_musl=g++ \
