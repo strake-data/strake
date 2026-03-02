@@ -50,8 +50,11 @@ fn test_diff_sources_url_change() {
 
     let changes = diff_sources(&local, &db);
     assert_eq!(changes.len(), 1);
-    assert_eq!(changes[0].change_type, "MODIFY");
-    assert_eq!(changes[0].category, "source");
+    assert_eq!(
+        changes[0].change_type,
+        crate::commands::helpers::ChangeType::Modified
+    );
+    assert_eq!(changes[0].path, "sources[test].url");
 }
 
 #[test]
@@ -79,9 +82,14 @@ fn test_diff_tables_add_column() {
         partition_column: None,
     };
 
-    let changes = diff_tables(&local, &db);
+    let changes = diff_tables("test_source", &local, &db);
     assert_eq!(changes.len(), 1);
-    assert_eq!(changes[0].change_type, "ADD");
-    assert_eq!(changes[0].category, "column");
-    assert_eq!(changes[0].name, "new_col");
+    assert_eq!(
+        changes[0].change_type,
+        crate::commands::helpers::ChangeType::Added
+    );
+    assert_eq!(
+        changes[0].path,
+        "sources[test_source].tables[public.users].columns[new_col]"
+    );
 }

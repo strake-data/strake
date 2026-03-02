@@ -87,20 +87,20 @@ jobs:
       
       - name: Build (native & aarch64 cross)
         if: matrix.target != 'x86_64-unknown-linux-musl'
-        run: cargo build --release -p strake-cli -p strake-server --target ${{ matrix.target }}
+        run: cargo build --release -p strake-cli -p strake-server -p strake-enterprise --target ${{ matrix.target }}
         
       - name: Build (x86_64 musl in Docker)
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           export HOST_UID=$(id -u)
           export HOST_GID=$(id -g)
-          docker run --rm -v ${{ github.workspace }}:/build -v ~/.cargo:/usr/local/cargo -w /build rust:1.93-alpine3.21 \
+          docker run --rm -v ${{ github.workspace }}:/build -v ~/.cargo:/usr/local/cargo -w /build rust:alpine \
             sh -c "apk add --no-cache cmake clang protoc protobuf-dev g++ make perl linux-headers openssl-dev git \
             && export CC_x86_64_unknown_linux_musl=gcc \
             && export CXX_x86_64_unknown_linux_musl=g++ \
             && export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS='-C target-feature=+crt-static' \
-            && cargo build --release -p strake-cli -p strake-server --target x86_64-unknown-linux-musl \
-            && chown -R ${HOST_UID}:${HOST_GID} target /usr/local/cargo/registry || true"
+            && cargo build --release -p strake-cli -p strake-server -p strake-enterprise --target x86_64-unknown-linux-musl \
+            && chown -R ${HOST_UID}:${HOST_GID} target /usr/local/cargo/registry"
       
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -109,8 +109,7 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/strake-cli*
             target/${{ matrix.target }}/release/strake-server*
-
-
+            target/${{ matrix.target }}/release/strake-enterprise*
 
   python-build:
     name: Build Python Wheels (${{ matrix.os }})
@@ -180,6 +179,7 @@ jobs:
 
   docker-build:
     name: Build Docker Image
+    needs: [build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -198,6 +198,12 @@ jobs:
           submodules: 'recursive'
           token: ${{ steps.generate-token.outputs.token }}
       
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*-unknown-linux-gnu
+          path: downloaded-binaries
+
       - name: Setup Enterprise Key
         shell: bash
         run: |
@@ -235,6 +241,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: Dockerfile.release
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

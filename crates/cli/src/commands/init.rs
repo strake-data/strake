@@ -14,7 +14,6 @@
 
 use crate::output::OutputFormat;
 use anyhow::{Context, Result};
-use std::fs;
 use std::path::Path;
 
 pub async fn init(
@@ -24,15 +23,15 @@ pub async fn init(
     _format: OutputFormat,
 ) -> Result<()> {
     // 1. Create sources.yaml
-    create_sources_yaml(template, output_path)?;
+    create_sources_yaml(template, output_path).await?;
 
     // 2. Additionally create strake.yaml and README.md unless --sources-only
     if !sources_only {
         let config_path = Path::new("strake.yaml");
-        create_strake_yaml(config_path)?;
+        create_strake_yaml(config_path).await?;
 
         let readme_path = Path::new("README.md");
-        create_readme(readme_path)?;
+        create_readme(readme_path).await?;
 
         // 3. Initialize metadata database
         println!("Initializing metadata database...");
@@ -51,10 +50,10 @@ pub async fn init(
     Ok(())
 }
 
-fn create_sources_yaml(template: Option<String>, output_path: &Path) -> Result<()> {
+async fn create_sources_yaml(template: Option<String>, output_path: &Path) -> Result<()> {
     if output_path.exists() {
         println!("sources.yaml already exists.");
-        if !confirm_overwrite() {
+        if !confirm_overwrite().await {
             return Ok(());
         }
     }
@@ -67,7 +66,9 @@ fn create_sources_yaml(template: Option<String>, output_path: &Path) -> Result<(
         _ => include_str!("../../templates/default.yaml"),
     };
 
-    fs::write(output_path, default_config).context(format!("Failed to write {:?}", output_path))?;
+    tokio::fs::write(output_path, default_config)
+        .await
+        .context(format!("Failed to write {:?}", output_path))?;
     println!(
         "✓ Created sources.yaml with {:?} template",
         template.as_deref().unwrap_or("default")
@@ -75,45 +76,51 @@ fn create_sources_yaml(template: Option<String>, output_path: &Path) -> Result<(
     Ok(())
 }
 
-fn create_strake_yaml(config_path: &Path) -> Result<()> {
+async fn create_strake_yaml(config_path: &Path) -> Result<()> {
     if config_path.exists() {
         println!("strake.yaml already exists.");
-        if !confirm_overwrite() {
+        if !confirm_overwrite().await {
             return Ok(());
         }
     }
 
     let config_template = include_str!("../../templates/strake.yaml");
-    fs::write(config_path, config_template)
+    tokio::fs::write(config_path, config_template)
+        .await
         .context(format!("Failed to write {:?}", config_path))?;
     println!("✓ Created strake.yaml");
     Ok(())
 }
 
-fn create_readme(readme_path: &Path) -> Result<()> {
+async fn create_readme(readme_path: &Path) -> Result<()> {
     if readme_path.exists() {
         println!("README.md already exists.");
-        if !confirm_overwrite() {
+        if !confirm_overwrite().await {
             return Ok(());
         }
     }
 
     let readme_template = include_str!("../../templates/README.md");
-    fs::write(readme_path, readme_template)
+    tokio::fs::write(readme_path, readme_template)
+        .await
         .context(format!("Failed to write {:?}", readme_path))?;
     println!("✓ Created README.md");
     Ok(())
 }
 
-fn confirm_overwrite() -> bool {
-    use std::io::{self, Write};
-    print!("File exists. Overwrite? (y/N): ");
-    let _ = io::stdout().flush();
+async fn confirm_overwrite() -> bool {
+    tokio::task::spawn_blocking(|| {
+        use std::io::{self, Write};
+        print!("File exists. Overwrite? (y/N): ");
+        let _ = io::stdout().flush();
 
-    let mut input = String::new();
-    if io::stdin().read_line(&mut input).is_err() {
-        return false;
-    }
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_err() {
+            return false;
+        }
 
-    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+        matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+    })
+    .await
+    .unwrap_or(false)
 }

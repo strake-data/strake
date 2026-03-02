@@ -120,7 +120,7 @@ pub async fn add(
 
     // Append to local sources.yaml
     let mut current_config = if std::path::Path::new(output_path).exists() {
-        parse_yaml(output_path)?
+        parse_yaml(output_path).await?
     } else {
         strake_common::models::SourcesConfig {
             domain: Some(domain.into()),

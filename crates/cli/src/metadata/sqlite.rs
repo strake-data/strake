@@ -1,3 +1,31 @@
+//! # SQLite Metadata Store
+//!
+//! SQLite implementation of the `MetadataStore` trait.
+//!
+//! ## Overview
+//!
+//! Handles local persistence of sources configuration using SQLite. Supports optimistic
+//! locking, audit history, and configuration extraction.
+//!
+//! ## Usage
+//!
+//! ```rust
+//! // let store = SqliteStore::new(path)?;
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Operations are handled via blocking `tokio::task::spawn_blocking` to prevent starving
+//! the async executor. Uses connection pooling/mutexes securely.
+//!
+//! ## Safety
+//!
+//! Standard safe Rust.
+//!
+//! ## References
+//!
+//! - SQLite backend design doc.
+
 use super::{
     models::{ApplyLogEntry, ApplyResult},
     MetadataStore,
@@ -5,7 +33,7 @@ use super::{
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use futures::future::BoxFuture;
-use rusqlite::{params, Connection, Row, ToSql};
+use rusqlite::{params, Connection, OptionalExtension, Row, ToSql};
 use secrecy::ExposeSecret;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -35,10 +63,26 @@ impl MetadataStore for SqliteStore {
         let conn = self.conn.clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let conn = conn.lock().expect("SQLite connection lock poisoned");
-                let schema_v1 = include_str!("../../migrations/sqlite/001_initial_schema.sql");
-                conn.execute_batch(schema_v1)
-                    .context("Failed to execute initial schema")?;
+                let conn = conn.lock().map_err(|e| anyhow::anyhow!("SQLite lock poisoned: {}", e))?;
+
+                const MIGRATIONS: &[(&str, &str)] = &[
+                    ("001_initial_schema", include_str!("../../migrations/sqlite/001_initial_schema.sql")),
+                    ("002_group_rbac",     include_str!("../../migrations/002_group_rbac.sql")),
+                ];
+
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT CURRENT_TIMESTAMP);"
+                ).context("Failed to create schema_migrations table")?;
+
+                for (name, sql) in MIGRATIONS {
+                    let applied: bool = conn.query_row(
+                        "SELECT 1 FROM schema_migrations WHERE name = ?", params![name], |_| Ok(true)
+                    ).optional().context("Failed to query schema_migrations")?.is_some();
+                    if !applied {
+                        conn.execute_batch(sql).context(format!("Failed to execute migration {}", name))?;
+                        conn.execute("INSERT INTO schema_migrations (name) VALUES (?)", params![name])?;
+                    }
+                }
                 Ok(())
             })
             .await?
@@ -50,7 +94,9 @@ impl MetadataStore for SqliteStore {
         let domain = domain.to_string();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let conn = conn.lock().expect("SQLite connection lock poisoned");
+                let conn = conn
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("SQLite lock poisoned: {}", e))?;
                 let mut stmt = conn.prepare("SELECT version FROM domains WHERE name = ?")?;
                 let mut rows = stmt.query(params![domain])?;
 
@@ -78,7 +124,7 @@ impl MetadataStore for SqliteStore {
         let domain = domain.to_string();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let conn = conn.lock().expect("SQLite connection lock poisoned");
+                let conn = conn.lock().map_err(|e| anyhow::anyhow!("SQLite lock poisoned: {}", e))?;
                 let rows = conn.execute(
                     "UPDATE domains SET version = version + 1 WHERE name = ? AND version = ?",
                     params![domain, expected_version],
@@ -99,13 +145,13 @@ impl MetadataStore for SqliteStore {
     fn apply_sources<'a>(
         &'a self,
         config: &'a SourcesConfig,
-        _force: bool,
+        force: bool,
     ) -> BoxFuture<'a, Result<ApplyResult>> {
         let conn = self.conn.clone();
         let config = config.clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let mut conn = conn.lock().expect("SQLite connection lock poisoned");
+                let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("SQLite lock poisoned: {}", e))?;
                 let tx = conn.transaction()?;
 
                 let domain = config.domain.as_deref().unwrap_or(DEFAULT_DOMAIN);
@@ -116,20 +162,18 @@ impl MetadataStore for SqliteStore {
                 let mut sources_added = Vec::new();
 
                 for source in &config.sources {
-                    let mut stmt = tx.prepare(
-                        "INSERT INTO sources (name, type, url, username, password, domain_name)
-                         VALUES (?, ?, ?, ?, ?, ?)
-                         ON CONFLICT (domain_name, name) DO UPDATE SET type=excluded.type, url=excluded.url, username=excluded.username, password=excluded.password
-                         RETURNING id"
-                    )?;
 
                     let exists: bool = tx.query_row(
                         "SELECT 1 FROM sources WHERE domain_name = ? AND name = ?",
                         params![domain, source.name],
                         |_| Ok(true)
-                    ).unwrap_or(false);
+                    ).optional().context("Failed to query sources")?.is_some();
 
-                    let source_id: i64 = stmt.query_row(
+                    let source_id: i64 = tx.query_row(
+                        "INSERT INTO sources (name, type, url, username, password, domain_name)
+                         VALUES (?, ?, ?, ?, ?, ?)
+                         ON CONFLICT (domain_name, name) DO UPDATE SET type=excluded.type, url=excluded.url, username=excluded.username, password=excluded.password
+                         RETURNING id",
                         params![
                             source.name,
                             source.source_type,
@@ -149,15 +193,14 @@ impl MetadataStore for SqliteStore {
                     let mut active_table_ids: Vec<i64> = Vec::new();
 
                     for table in &source.tables {
-                        let mut t_stmt = tx.prepare(
+
+
+                        let table_id: i64 = tx.query_row(
                             "INSERT INTO tables (source_id, name, schema_name, partition_column)
                              VALUES (?, ?, ?, ?)
                              ON CONFLICT (source_id, schema_name, name)
                              DO UPDATE SET partition_column=excluded.partition_column
-                             RETURNING id"
-                        )?;
-
-                        let table_id: i64 = t_stmt.query_row(
+                             RETURNING id",
                             params![source_id, table.name, table.schema, table.partition_column],
                             |row| row.get(0)
                         )?;
@@ -180,7 +223,7 @@ impl MetadataStore for SqliteStore {
 
                         if !active_column_names.is_empty() {
                             // Check for deletions if not forcing
-                            if !_force {
+                            if !force {
                                 let placeholders = vec!["?"; active_column_names.len()].join(",");
                                 let sql_sel = format!("SELECT name FROM columns WHERE table_id = ? AND name NOT IN ({})", placeholders);
                                 let mut params_vec: Vec<&dyn ToSql> = Vec::new();
@@ -216,7 +259,7 @@ impl MetadataStore for SqliteStore {
 
                     if !active_table_ids.is_empty() {
                         // Check for deletions if not forcing
-                        if !_force {
+                        if !force {
                             let placeholders = vec!["?"; active_table_ids.len()].join(",");
                             let sql_sel = format!("SELECT name FROM tables WHERE source_id = ? AND id NOT IN ({})", placeholders);
                             let mut params_vec: Vec<&dyn ToSql> = Vec::new();
@@ -273,7 +316,7 @@ impl MetadataStore for SqliteStore {
                      }
 
                      if !to_delete.is_empty() {
-                        if !_force {
+                        if !force {
                             return Err(anyhow!(
                                 "Safety guard: This update would delete sources {:?} in domain '{}'. Use --force to proceed.",
                                 to_delete, domain
@@ -295,7 +338,7 @@ impl MetadataStore for SqliteStore {
                     }
 
                     if !to_delete.is_empty() {
-                        if !_force {
+                        if !force {
                             return Err(anyhow!(
                                 "Safety guard: This update would delete ALL sources {:?} in domain '{}'. Use --force to proceed.",
                                 to_delete, domain
@@ -305,7 +348,6 @@ impl MetadataStore for SqliteStore {
                         tx.execute("DELETE FROM sources WHERE domain_name = ?", params![domain])?;
                     }
                 }
-
                 tx.commit()?;
                 Ok(ApplyResult {
                     sources_added,
@@ -319,7 +361,7 @@ impl MetadataStore for SqliteStore {
         let conn = self.conn.clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let conn = conn.lock().expect("SQLite connection lock poisoned");
+                let conn = conn.lock().map_err(|e| anyhow::anyhow!("SQLite lock poisoned: {}", e))?;
                 conn.execute(
                     "INSERT INTO apply_history (domain_name, version, user_id, sources_added, sources_deleted, tables_modified, config_hash, config_yaml)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -348,7 +390,7 @@ impl MetadataStore for SqliteStore {
         let domain = domain.to_string();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let conn = conn.lock().expect("SQLite connection lock poisoned");
+                let conn = conn.lock().map_err(|e| anyhow::anyhow!("SQLite lock poisoned: {}", e))?;
                 let mut stmt = conn.prepare(
                     "SELECT domain_name, version, user_id, sources_added, sources_deleted, tables_modified, config_hash, config_yaml, timestamp
                      FROM apply_history WHERE domain_name = ? ORDER BY version DESC LIMIT ?"
@@ -388,7 +430,7 @@ impl MetadataStore for SqliteStore {
 
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let conn = conn.lock().expect("SQLite connection lock poisoned");
+                let conn = conn.lock().map_err(|e| anyhow::anyhow!("SQLite lock poisoned: {}", e))?;
                 let mut sources = Vec::new();
 
                 let mut s_stmt = conn.prepare("SELECT id, name, type, url FROM sources WHERE domain_name = ?")?;
@@ -464,7 +506,9 @@ impl MetadataStore for SqliteStore {
         let domain = domain.to_string();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let conn = conn.lock().expect("SQLite connection lock poisoned");
+                let conn = conn
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("SQLite lock poisoned: {}", e))?;
                 let mut stmt = conn.prepare(
                     "SELECT config_yaml FROM apply_history WHERE domain_name = ? AND version = ?",
                 )?;
@@ -487,16 +531,33 @@ impl MetadataStore for SqliteStore {
         let conn = self.conn.clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let conn = conn.lock().expect("SQLite connection lock poisoned");
+                let conn = conn
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("SQLite lock poisoned: {}", e))?;
                 let mut stmt =
                     conn.prepare("SELECT name, version, created_at FROM domains ORDER BY name")?;
                 let rows = stmt.query_map([], |row: &Row| {
                     let created_at_str: Option<String> = row.get(2).ok();
-                    let created_at = created_at_str.and_then(|s: String| {
-                        NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
-                            .ok()
-                            .map(|dt| dt.and_utc())
-                    });
+                    let created_at = match created_at_str {
+                        Some(s) => {
+                            if let Ok(nd) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S") {
+                                Some(nd.and_utc())
+                            } else if let Ok(nd) =
+                                NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S.%f")
+                            {
+                                Some(nd.and_utc())
+                            } else if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&s) {
+                                Some(dt.with_timezone(&Utc))
+                            } else {
+                                return Err(rusqlite::Error::FromSqlConversionFailure(
+                                    2,
+                                    rusqlite::types::Type::Text,
+                                    Box::<dyn std::error::Error + Send + Sync>::from(format!("Unrecognized timestamp format: {}", s)),
+                                ));
+                            }
+                        }
+                        None => None,
+                    };
 
                     Ok(super::models::DomainStatus {
                         name: row.get(0)?,

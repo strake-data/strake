@@ -1,3 +1,31 @@
+//! # Postgres Metadata Store
+//!
+//! Postgres backend implementation of the `MetadataStore` trait.
+//!
+//! ## Overview
+//!
+//! Interacts with an upstream Postgres database to persist the domain configurations.
+//! Ideal for multi-tenant and distributed Strake deployments.
+//!
+//! ## Usage
+//!
+//! ```rust
+//! // let store = PostgresStore::new(db_url).await?;
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Uses `tokio-postgres` for fully asynchronous, pipelined database access. Handles
+//! background connections via detached Tokio tasks.
+//!
+//! ## Safety
+//!
+//! Standard safe Rust.
+//!
+//! ## References
+//!
+//! - Postgres backend architecture documentation.
+
 use super::{
     models::{ApplyLogEntry, ApplyResult},
     MetadataStore,
@@ -20,7 +48,7 @@ impl PostgresStore {
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {
-                eprintln!("connection error: {}", e);
+                tracing::error!(error = %e, "Postgres background connection task failed");
             }
         });
 
@@ -33,11 +61,38 @@ const DEFAULT_DOMAIN: &str = "default";
 impl MetadataStore for PostgresStore {
     fn init(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
-            let schema_v1 = include_str!("../../migrations/001_initial_schema.sql");
-            self.client
-                .batch_execute(schema_v1)
-                .await
-                .context("Failed to execute initial schema")?;
+            const MIGRATIONS: &[(&str, &str)] = &[
+                (
+                    "001_initial_schema",
+                    include_str!("../../migrations/001_initial_schema.sql"),
+                ),
+                (
+                    "002_group_rbac",
+                    include_str!("../../migrations/002_group_rbac.sql"),
+                ),
+            ];
+
+            self.client.batch_execute(
+                "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"
+            ).await.context("Failed to create schema_migrations table")?;
+
+            for (name, sql) in MIGRATIONS {
+                let row_count = self
+                    .client
+                    .query("SELECT 1 FROM schema_migrations WHERE name = $1", &[&name])
+                    .await?
+                    .len();
+
+                if row_count == 0 {
+                    self.client
+                        .batch_execute(sql)
+                        .await
+                        .context(format!("Failed to execute migration {}", name))?;
+                    self.client
+                        .execute("INSERT INTO schema_migrations (name) VALUES ($1)", &[&name])
+                        .await?;
+                }
+            }
             Ok(())
         })
     }
@@ -95,7 +150,7 @@ impl MetadataStore for PostgresStore {
     fn apply_sources<'a>(
         &'a self,
         config: &'a SourcesConfig,
-        _force: bool,
+        force: bool,
     ) -> BoxFuture<'a, Result<ApplyResult>> {
         Box::pin(async move {
             let domain = config.domain.as_deref().unwrap_or(DEFAULT_DOMAIN);
@@ -169,7 +224,7 @@ impl MetadataStore for PostgresStore {
 
                     if !active_column_names.is_empty() {
                         // Check for deletions if not forcing
-                        if !_force {
+                        if !force {
                             let to_delete = self.client.query(
                                 "SELECT name FROM columns WHERE table_id = $1 AND name != ALL($2)",
                                 &[&table_id, &active_column_names],
@@ -197,7 +252,7 @@ impl MetadataStore for PostgresStore {
 
                 if !active_table_ids.is_empty() {
                     // Check for deletions if not forcing
-                    if !_force {
+                    if !force {
                         let to_delete = self
                             .client
                             .query(
@@ -238,7 +293,7 @@ impl MetadataStore for PostgresStore {
                     .await?;
 
                 if !to_delete.is_empty() {
-                    if !_force {
+                    if !force {
                         let names: Vec<String> = to_delete.iter().map(|r| r.get(0)).collect();
                         return Err(anyhow!(
                             "Safety guard: This update would delete sources {:?} in domain '{}'. Use --force to proceed.",
@@ -267,7 +322,7 @@ impl MetadataStore for PostgresStore {
                     .await?;
 
                 if !to_delete.is_empty() {
-                    if !_force {
+                    if !force {
                         let names: Vec<String> = to_delete.iter().map(|r| r.get(0)).collect();
                         return Err(anyhow!(
                             "Safety guard: This update would delete ALL sources {:?} in domain '{}'. Use --force to proceed.",

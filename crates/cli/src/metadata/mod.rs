@@ -1,3 +1,31 @@
+//! # Metadata Traits
+//!
+//! Trait definitions for Metadata database backends.
+//!
+//! ## Overview
+//!
+//! Defines the generic `MetadataStore` interface that concrete implementations (e.g.,
+//! SQLite, Postgres) must conform to. This separation permits transparent driver switching
+//! in the CLI via configuration.
+//!
+//! ## Usage
+//!
+//! ```rust
+//! // pub trait MetadataStore: Send + Sync { ... }
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Trait abstraction uses dynamic dispatch (`BoxFuture`) at async API boundaries, which adds minimal boxing overhead.
+//!
+//! ## Safety
+//!
+//! Trait objects are strictly `Send + Sync`.
+//!
+//! ## References
+//!
+//! - Core Interfaces Doc.
+
 use anyhow::Result;
 use futures::future::BoxFuture;
 use strake_common::models::SourcesConfig;

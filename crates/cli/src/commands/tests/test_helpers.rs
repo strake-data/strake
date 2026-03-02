@@ -49,8 +49,8 @@ fn create_temp_config(content: &str) -> PathBuf {
     path
 }
 
-#[test]
-fn test_parse_yaml_valid() {
+#[tokio::test]
+async fn test_parse_yaml_valid() {
     let content = r#"
 domain: test_domain
 sources:
@@ -60,7 +60,7 @@ sources:
     tables: []
 "#;
     let path = create_temp_config(content);
-    let result = parse_yaml(path.to_str().unwrap());
+    let result = parse_yaml(path.to_str().unwrap()).await;
     fs::remove_file(&path).unwrap(); // Cleanup
 
     assert!(result.is_ok());
@@ -70,9 +70,9 @@ sources:
     assert_eq!(config.sources[0].name, "source1");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
-fn test_parse_yaml_with_secrets() {
+async fn test_parse_yaml_with_secrets() {
     env::set_var("DB_URL", "postgres://secret:5432/db");
     let content = r#"
 domain: test_domain
@@ -83,7 +83,7 @@ sources:
     tables: []
 "#;
     let path = create_temp_config(content);
-    let result = parse_yaml(path.to_str().unwrap());
+    let result = parse_yaml(path.to_str().unwrap()).await;
     fs::remove_file(&path).unwrap();
 
     assert!(result.is_ok());
@@ -94,14 +94,14 @@ sources:
     );
 }
 
-#[test]
-fn test_parse_yaml_invalid_syntax() {
+#[tokio::test]
+async fn test_parse_yaml_invalid_syntax() {
     let content = r#"
 domain: [ unclosed brackets
 sources:
 "#;
     let path = create_temp_config(content);
-    let result = parse_yaml(path.to_str().unwrap());
+    let result = parse_yaml(path.to_str().unwrap()).await;
     fs::remove_file(&path).unwrap();
 
     assert!(result.is_err());

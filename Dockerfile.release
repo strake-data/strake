@@ -1,0 +1,34 @@
+FROM debian:bookworm-slim
+
+ARG TARGETARCH
+
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+COPY downloaded-binaries /downloaded-binaries
+
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+        export ARCH="x86_64"; \
+    elif [ "$TARGETARCH" = "arm64" ]; then \
+        export ARCH="aarch64"; \
+    else \
+        echo "Unsupported architecture: $TARGETARCH" && exit 1; \
+    fi && \
+    cp /downloaded-binaries/binaries-${ARCH}-unknown-linux-gnu/strake-cli /bin/ && \
+    cp /downloaded-binaries/binaries-${ARCH}-unknown-linux-gnu/strake-server /bin/ && \
+    cp /downloaded-binaries/binaries-${ARCH}-unknown-linux-gnu/strake-enterprise /bin/ && \
+    chmod +x /bin/strake-* && \
+    rm -rf /downloaded-binaries
+
+# Default to server mode
+ENTRYPOINT ["/bin/strake-server"]
+
+# Expose default ports
+# 50051: Flight SQL (strake-server)
+# 8080: HTTP/gRPC (strake-enterprise)
+EXPOSE 50051 8080
+
+LABEL org.opencontainers.image.title="Strake"
+LABEL org.opencontainers.image.description="Unified data platform with CLI, server, and enterprise capabilities"
+LABEL org.opencontainers.image.source="https://github.com/strake-data/strake"
+LABEL org.opencontainers.image.url="https://strakedata.com"
+LABEL org.opencontainers.image.vendor="Strake Data"

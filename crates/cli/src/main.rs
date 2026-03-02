@@ -171,6 +171,9 @@ enum DomainCommands {
         /// The version to rollback to
         #[arg(long)]
         to_version: i32,
+        /// Force operation (bypass safety guards)
+        #[arg(long, default_value_t = false)]
+        force: bool,
     },
 }
 
@@ -275,13 +278,15 @@ async fn run_cli(cli: &Cli, config: &CliConfig) -> Result<(), anyhow::Error> {
             let store = metadata::init_store(config).await?;
             commands::apply(
                 &*store,
-                file,
-                *force,
-                *dry_run,
-                *expected_version,
-                cli.output,
+                commands::ApplyOptions {
+                    file_path: file.clone(),
+                    force: *force,
+                    dry_run: *dry_run,
+                    expected_version: *expected_version,
+                    format: cli.output,
+                    notify_url: notify_url.clone(),
+                },
                 config,
-                notify_url.clone(),
             )
             .await?;
         }
@@ -323,8 +328,12 @@ async fn run_cli(cli: &Cli, config: &CliConfig) -> Result<(), anyhow::Error> {
                 DomainCommands::History { name } => {
                     commands::show_domain_history(&*store, name.to_string(), cli.output).await?;
                 }
-                DomainCommands::Rollback { name, to_version } => {
-                    commands::rollback(&*store, name, *to_version, cli.output).await?;
+                DomainCommands::Rollback {
+                    name,
+                    to_version,
+                    force,
+                } => {
+                    commands::rollback(&*store, name, *to_version, *force, cli.output).await?;
                 }
             }
         }

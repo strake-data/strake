@@ -13,7 +13,7 @@
 //!    - Existence (do the tables/columns exist?)
 //!    - Schema match (do types match?)
 
-use super::helpers::{expand_secrets, get_client, ValidateResult};
+use super::helpers::{get_client, ValidateResult};
 use crate::config::CliConfig;
 use crate::models;
 use crate::{
@@ -23,7 +23,6 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
-use std::fs;
 use std::path::Path;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
@@ -51,7 +50,7 @@ pub async fn validate(
         file_path.yellow(),
         "] Validating...".bold().cyan()
     );
-    let config_yaml = parse_yaml(file_path)?;
+    let config_yaml = super::helpers::parse_yaml(file_path).await?;
 
     println!("Structure is valid.");
 
@@ -73,12 +72,12 @@ pub async fn validate(
         pb.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner:.green} {msg}")
-                .unwrap(),
+                .context("Failed to parse progress style template")?,
         );
         pb.set_message("Checking Data Contracts (Server-Side)...");
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
-        let sources_yaml = fs::read_to_string(file_path)?;
+        let sources_yaml = tokio::fs::read_to_string(file_path).await?;
         if let Err(e) = validate_contracts(&sources_yaml, "contracts.yaml", config).await {
             pb.finish_with_message(format!("{} Contract Validation Failed", "✘".red()));
             validation_errors.push(format!("Contract Validation Failed: {}", e));
@@ -92,7 +91,7 @@ pub async fn validate(
         pb.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner:.green} {msg}")
-                .unwrap(),
+                .context("Failed to parse progress style template")?,
         );
         pb.set_message(format!("Checking source '{}'...", source.name));
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
@@ -126,7 +125,7 @@ async fn validate_internal(
     config: &CliConfig,
 ) -> Result<ValidateResult> {
     let mut validation_errors = Vec::new();
-    let config_yaml = parse_yaml(file_path)?;
+    let config_yaml = super::helpers::parse_yaml(file_path).await?;
 
     if offline {
         return Ok(ValidateResult {
@@ -135,7 +134,7 @@ async fn validate_internal(
         });
     }
 
-    let sources_yaml = fs::read_to_string(file_path)?;
+    let sources_yaml = tokio::fs::read_to_string(file_path).await?;
     if let Err(e) = validate_contracts(&sources_yaml, "contracts.yaml", config).await {
         validation_errors.push(format!("Contract Validation Failed: {}", e));
     }
@@ -161,47 +160,12 @@ async fn validate_internal(
 
 pub(crate) async fn validate_source(source: &models::SourceConfig) -> Result<()> {
     let url = source.url.as_deref().unwrap_or("");
-
-    if source.source_type == "JDBC" && url.contains("postgresql") {
-        validate_postgres_source(source, url).await
-    } else if source.source_type == "JSON" || url.starts_with("file://") {
-        validate_file_source(url).await
-    } else {
-        // Unknown or unsupported type for validation, just skip or warn
-        Ok(())
+    match source.source_type.as_str() {
+        "JDBC" if url.contains("postgresql") => validate_postgres_source(source, url).await,
+        "JSON" => validate_file_source(url).await,
+        _ if url.starts_with("file://") => validate_file_source(url).await,
+        _ => Ok(()),
     }
-}
-
-async fn validate_file_source(url: &str) -> Result<()> {
-    let path_str = url.trim_start_matches("file://");
-    let path = Path::new(path_str);
-
-    if !path.exists() {
-        return Err(anyhow!("File not found: {}", path_str));
-    }
-
-    let file = tokio::fs::File::open(path)
-        .await
-        .context(format!("Failed to open file: {}", path_str))?;
-    let mut reader = BufReader::new(file);
-    let mut buffer = String::new();
-
-    // Read up to 3 lines to verify readability and header presence
-    for _ in 0..3 {
-        let bytes = reader
-            .read_line(&mut buffer)
-            .await
-            .context("Failed to read line from file")?;
-        if bytes == 0 {
-            break; // EOF
-        }
-    }
-
-    if buffer.trim().is_empty() {
-        return Err(anyhow!("File is empty or not readable: {}", path_str));
-    }
-
-    Ok(())
 }
 
 async fn validate_postgres_source(source: &models::SourceConfig, url: &str) -> Result<()> {
@@ -262,13 +226,45 @@ async fn validate_postgres_source(source: &models::SourceConfig, url: &str) -> R
     Ok(())
 }
 
+async fn validate_file_source(url: &str) -> Result<()> {
+    let path_str = url.trim_start_matches("file://");
+    let path = Path::new(path_str);
+
+    if !path.exists() {
+        return Err(anyhow!("File not found: {}", path_str));
+    }
+
+    let file = tokio::fs::File::open(path)
+        .await
+        .context(format!("Failed to open file: {}", path_str))?;
+    let mut reader = BufReader::new(file);
+    let mut buffer = String::new();
+
+    // Read up to 3 lines to verify readability and header presence
+    for _ in 0..3 {
+        let bytes = reader
+            .read_line(&mut buffer)
+            .await
+            .context("Failed to read line from file")?;
+        if bytes == 0 {
+            break; // EOF
+        }
+    }
+
+    if buffer.trim().is_empty() {
+        return Err(anyhow!("File is empty or not readable: {}", path_str));
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn validate_contracts(
     sources_yaml: &str,
     contracts_path: &str,
     config: &CliConfig,
 ) -> Result<()> {
     let contracts_yaml = if std::path::Path::new(contracts_path).exists() {
-        Some(fs::read_to_string(contracts_path)?)
+        Some(tokio::fs::read_to_string(contracts_path).await?)
     } else {
         None
     };
@@ -299,11 +295,4 @@ pub(crate) async fn validate_contracts(
             result.errors.join("\n      - ")
         ))
     }
-}
-
-fn parse_yaml(path: &str) -> Result<models::SourcesConfig> {
-    let raw_content =
-        fs::read_to_string(path).context(format!("Failed to read config file: {}", path))?;
-    let content = expand_secrets(&raw_content);
-    serde_yaml::from_str(&content).context("Failed to parse YAML structure")
 }
