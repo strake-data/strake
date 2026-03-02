@@ -273,11 +273,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
+      - name: Rename binaries
+        run: |
+          mkdir -p release_assets
+          for dir in binaries-*/; do
+            # the folder name is like binaries-x86_64-unknown-linux-gnu/
+            target=$(basename "$dir" | sed 's/binaries-//')
+            for file in "$dir"*; do
+              # skip if directory is empty
+              [ -e "$file" ] || continue
+              filename=$(basename "$file")
+              extension="${filename##*.}"
+              basename="${filename%.*}"
+              if [ "$extension" = "$filename" ]; then
+                new_name="${filename}-${target}"
+              else
+                new_name="${basename}-${target}.${extension}"
+              fi
+              cp "$file" "release_assets/${new_name}"
+            done
+          done
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            binaries-*/*
+            release_assets/*
             python-wheels-*/*
           generate_release_notes: true
           body: |
