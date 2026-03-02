@@ -94,13 +94,14 @@ jobs:
         run: |
           export HOST_UID=$(id -u)
           export HOST_GID=$(id -g)
-          docker run --rm -v ${{ github.workspace }}:/build -v ~/.cargo:/usr/local/cargo -w /build rust:alpine \
+          mkdir -p ~/.cargo/registry ~/.cargo/git
+          docker run --rm -v ${{ github.workspace }}:/build -v ~/.cargo/registry:/usr/local/cargo/registry -v ~/.cargo/git:/usr/local/cargo/git -w /build rust:alpine \
             sh -c "apk add --no-cache cmake clang protoc protobuf-dev g++ make perl linux-headers openssl-dev git \
             && export CC_x86_64_unknown_linux_musl=gcc \
             && export CXX_x86_64_unknown_linux_musl=g++ \
             && export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS='-C target-feature=+crt-static' \
             && cargo build --release -p strake-cli -p strake-server -p strake-enterprise --target x86_64-unknown-linux-musl \
-            && chown -R ${HOST_UID}:${HOST_GID} target /usr/local/cargo/registry"
+            && chown -R ${HOST_UID}:${HOST_GID} target /usr/local/cargo/registry /usr/local/cargo/git"
       
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
