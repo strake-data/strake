@@ -38,6 +38,11 @@ jobs:
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
+      - name: Verify GitHub Token
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh auth status
+
       - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
@@ -272,6 +277,8 @@ jobs:
     name: Create GitHub Release
     needs: [build, python-build, docker-build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
       - name: Rename binaries
@@ -294,8 +301,11 @@ jobs:
               cp "$file" "release_assets/${new_name}"
             done
           done
+
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           files: |
             release_assets/*
