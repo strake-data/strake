@@ -1,4 +1,5 @@
 from mcp.server.fastmcp import FastMCP
+import mcp.types as types
 import os
 import logging
 import argparse
@@ -139,7 +140,7 @@ async def get_sandbox() -> SandboxManager:
 
 
 @mcp.tool()
-async def search_schemas(query: str) -> List[Dict[str, Any]]:
+async def search_schemas(query: str) -> Any:
     """
     Search semantic index of available database schemas (tables and columns).
     Use this to find which tables contain the data you need.
@@ -160,7 +161,10 @@ async def search_schemas(query: str) -> List[Dict[str, Any]]:
         return results
     except Exception as exc:
         status = f"error:{type(exc).__name__}"
-        raise
+        return types.CallToolResult(
+            isError=True,
+            content=[types.TextContent(type="text", text=f"Error: {exc}")]
+        )
     finally:
         elapsed_ms = (time.monotonic_ns() - start) / 1_000_000
         get_emitter().emit(
@@ -177,7 +181,7 @@ async def search_schemas(query: str) -> List[Dict[str, Any]]:
 
 
 @mcp.tool()
-async def run_python(script: str) -> str:
+async def run_python(script: str) -> Any:
     """
     Execute a Python script in the Strake Safe Runtime.
 
@@ -208,7 +212,10 @@ async def run_python(script: str) -> str:
         return result_str
     except Exception as exc:
         status = f"error:{type(exc).__name__}"
-        raise
+        return types.CallToolResult(
+            isError=True,
+            content=[types.TextContent(type="text", text=f"Error: {exc}")]
+        )
     finally:
         elapsed_ms = (time.monotonic_ns() - start) / 1_000_000
         get_emitter().emit(
