@@ -2,10 +2,11 @@
 members = ["crates/*", "python", "strake-enterprise"]
 resolver = "2"
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "Apache-2.0"
 license-file = "LICENSE"
+repository = "https://github.com/strake-data/strake"
 
 [workspace.dependencies]
 # Pin exact versions to avoid dependency hell
