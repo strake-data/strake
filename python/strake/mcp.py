@@ -185,18 +185,17 @@ async def run_python(script: str) -> Any:
     """
     Execute a Python script in the Strake Safe Runtime.
 
-    The script has access to a `strake` module with the following methods:
-    - `strake.sql(query: str) -> List[Dict]`: Execute a SQL query and return results.
-    - `strake.search(query: str) -> List[Dict]`: Search for tables relevant to your query.
-
-    Standard output (print) is captured and returned.
+    CRITICAL INSTRUCTIONS FOR THE AI AGENT:
+    1. The script has access to a `strake` module. Use `strake.sql('SELECT * FROM xxx')` to execute SQL. The result is a Table proxy.
+    2. Accessible methods on the Table proxy: `df.to_pylist()`, `df.to_pydict()`, `df.column_values('col')`, `print(df)`.
+    3. You can also use `strake.search(query: str) -> List[Dict]` to search for relevant tables.
+    4. You MUST use `print()` to output the data you want to see. The tool captures and returns standard output.
+    5. Stop executing code and stop calling this tool once you have retrieved the final result needed to answer the user's query.
 
     Example:
     ```python
-    tables = strake.search("revenue")
-    print(f"Found tables: {tables}")
-    df = strake.sql("SELECT * FROM sales LIMIT 5")
-    print(df)
+    results = strake.sql("SELECT * FROM sales LIMIT 5")
+    print(results.to_pylist())
     ```
     """
     logger.info("Received run_python request")

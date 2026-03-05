@@ -9,13 +9,47 @@ import asyncio
 import json
 from typing import Optional, Union, Any
 
-from .base import SandboxManager, SandboxResult
+from .base import SandboxManager, SandboxResult, SandboxErrorMessages
 from .core import validate_ast, _sandbox_worker_inner
+from dataclasses import dataclass
 
 logger = logging.getLogger("strake.sandbox.native")
 
 # Single pre-spawned context to avoid module reinitialization overhead repeatedly.
 _MP_CTX = mp.get_context("spawn")
+
+
+@dataclass(frozen=True)
+class SandboxConfig:
+    """Centralized configuration for sandbox limits and parameters."""
+
+    timeout_secs: float = 30.0
+    memory_limit_bytes: int = 512 * 1024 * 1024
+    max_output_size: int = 10 * 1024 * 1024
+    max_code_size: int = 1024 * 1024
+    fc_socket_retries: int = 50
+    fc_retry_delay_secs: float = 0.01
+    marker_start: str = "===RESULT_START==="
+    marker_end: str = "===RESULT_END==="
+
+    @classmethod
+    def from_env(cls) -> "SandboxConfig":
+        """Loads configuration from environment variables with safe fallbacks."""
+        try:
+            timeout = float(os.environ.get("SANDBOX_TIMEOUT_SECS", "30.0"))
+        except ValueError:
+            logger.warning("Invalid SANDBOX_TIMEOUT_SECS, using default")
+            timeout = 30.0
+
+        try:
+            memory = int(
+                os.environ.get("SANDBOX_MEMORY_LIMIT", str(512 * 1024 * 1024))
+            )
+        except ValueError:
+            logger.warning("Invalid SANDBOX_MEMORY_LIMIT, using default")
+            memory = 512 * 1024 * 1024
+
+        return cls(timeout_secs=timeout, memory_limit_bytes=memory)
 
 
 def _sandbox_worker(
@@ -25,27 +59,22 @@ def _sandbox_worker(
     config_path: str,
     workspace_root: Optional[str] = None,
 ):
-    sandbox_id = str(uuid.uuid4())
 
     # IMPORTANT: Create the StrakeConnection BEFORE applying sandbox constraints.
-    # The connection constructor launches a Tokio runtime that needs network access
-    # to reach remote data sources (e.g., Postgres). Applying seccomp/Landlock first
-    # would block those connections, causing silent source registration failures.
     try:
         from strake import StrakeConnection
 
         if config_path:
             connection = StrakeConnection(config_path)
-            # Remove configuration from env if it was present
             os.environ.pop("STRAKE_CONFIG", None)
         else:
             token = os.environ.pop("STRAKE_TOKEN", None)
-            url = os.environ.pop("STRAKE_URL", "grpc://127.0.0.1:50051")
-            connection = StrakeConnection(url, api_key=token)
+            try:
+                url = os.environ.pop("STRAKE_URL", "grpc://127.0.0.1:50051")
+                connection = StrakeConnection(url, api_key=token)
+            finally:
+                token = None  # Ensure token is cleared even if connection fails
 
-            # Explicitly delete the token variable so it cannot be accidentally captured
-            # in a closure deeper down.
-            del token
     except Exception as e:
         import traceback
 
@@ -53,12 +82,11 @@ def _sandbox_worker(
             f"Sandbox initialization failed: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
         )
         queue.put(
-            "Runtime Error: Sandbox could not connect to the data engine. Check server logs."
+            SandboxResult(stdout="", stderr=SandboxErrorMessages.CONNECTION_FAILED, result=None).to_dict()
         )
         return
 
-    # Now apply sandbox constraints (seccomp, Landlock, etc.) to lock down the process
-    # for the duration of user code execution.
+    # Now apply sandbox constraints
     try:
         from strake.policy import SandboxPolicy, SandboxAttestation
 
@@ -66,16 +94,23 @@ def _sandbox_worker(
         applied = policy.apply_for_os(os_type)
         if not applied and os_type != "none":
             logger.warning(f"Failed to apply any sandbox constraints for {os_type}!")
+            if os.environ.get("SANDBOX_FAIL_CLOSED", "false").lower() == "true":
+                queue.put(SandboxResult(
+                    stdout="", 
+                    stderr=f"Security Error: Sandbox constraints failed to apply for {os_type}", 
+                    result=None
+                ).to_dict())
+                return
 
-        attestation = SandboxAttestation(
-            sandbox_id,
-            applied,
-            time.time(),
-            landlock_abi_version=policy._landlock_abi_version,
-        )
-        # In an enterprise product, we might pass the attestation signature back the queue
     except Exception as e:
         logger.warning(f"Could not apply sandbox constraints via policy: {e}")
+        if os.environ.get("SANDBOX_FAIL_CLOSED", "false").lower() == "true":
+            queue.put(SandboxResult(
+                stdout="", 
+                stderr=f"Security Error: Sandbox constraints failed: {e}", 
+                result=None
+            ).to_dict())
+            return
 
     _sandbox_worker_inner(code, queue, connection)
 
@@ -94,6 +129,19 @@ class NativeOSSandboxManager(SandboxManager):
     ):
         super().__init__(connection, config_path)
         self.workspace_root = workspace_root or os.getcwd()
+        import concurrent.futures
+        import weakref
+        # Dedicated executor for blocking queue operations
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self._finalizer = weakref.finalize(self, self._cleanup_executor, self._executor)
+
+    @staticmethod
+    def _cleanup_executor(executor):
+        """Clean up the thread executor securely."""
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
 
     def _get_sandbox_name(self) -> str:
         return "Native OS Sandbox"
@@ -101,17 +149,20 @@ class NativeOSSandboxManager(SandboxManager):
     def _get_os_type(self) -> str:
         return "none"
 
+    def _get_timeout(self, timeout_secs: Optional[float]) -> float:
+        config = SandboxConfig.from_env()
+        return timeout_secs if timeout_secs is not None else config.timeout_secs
+
     async def run(
         self, code: str, timeout_secs: Optional[float] = None
     ) -> "SandboxResult":
         logger.info(f"Initializing {self._get_sandbox_name()}...")
 
         # 1. AST Validation (Defense in Depth)
-        # Check AST first as it's fast and doesn't need a process
+        # This is a fast-path layer 1 guardrail.
         ast_error = validate_ast(code)
         if ast_error:
             import hashlib
-
             logger.warning(
                 "Sandbox security violation: %s (hash=%s)",
                 ast_error,
@@ -136,30 +187,49 @@ class NativeOSSandboxManager(SandboxManager):
             ),
         )
 
-        SANDBOX_TIMEOUT_SECS = int(os.environ.get("SANDBOX_TIMEOUT_SECS", 30))
-        timeout = timeout_secs if timeout_secs is not None else SANDBOX_TIMEOUT_SECS
+        timeout = self._get_timeout(timeout_secs)
 
         try:
             p.start()
-            # Use to_thread to wait for the process without blocking the event loop
-            await asyncio.to_thread(p.join, timeout=timeout)
+            
+            # The parent MUST read from the queue before calling process.join() to
+            # prevent deadlock if the child writes a large result payload to the pipe.
+            def _get_result_from_queue():
+                import queue as q
+                try:
+                    return queue.get(timeout=timeout)
+                except q.Empty:
+                    return None
+
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(self._executor, _get_result_from_queue)
 
             if p.is_alive():
-                p.kill()
-                p.join()  # Ensure the process is fully terminated
-                return SandboxResult(
-                    stdout="",
-                    stderr="Resource Error: Execution timed out.",
-                    result=None,
-                )
+                # Give the process a brief moment to exit cleanly after putting its result
+                p.join(timeout=0.1)
+                if p.is_alive():
+                    p.kill()
+                    p.join(timeout=5.0)  # Ensure the process is fully terminated but don't block forever
+                    if p.is_alive():
+                        logger.critical(f"Failed to terminate sandbox process {p.pid}")
+            
+            # [Robustness] Check queue after process death to catch race conditions.
+            # We drain multiple times with a small timeout to ensure we capture the full payload.
+            if result is None:
+                import queue as q
+                for _ in range(3):
+                    try:
+                        result = queue.get(timeout=0.2)
+                        if result:
+                            break
+                    except q.Empty:
+                        continue
 
-            # Check queue only if process exited cleanly or was killed
-            if not queue.empty():
-                result = queue.get()
-                # The _sandbox_worker puts a SandboxResult object directly
+            if result is not None:
+                if isinstance(result, dict):
+                    return SandboxResult.from_dict(result)
                 if isinstance(result, SandboxResult):
                     return result
-                # If it's a string (e.g., error message), wrap it
                 return SandboxResult(stdout="", stderr=str(result), result=None)
 
             # If process exited but queue is empty
@@ -180,9 +250,18 @@ class NativeOSSandboxManager(SandboxManager):
             logger.error(f"Error retrieving result from sandbox queue: {e}")
             return SandboxResult(
                 stdout="",
-                stderr=f"Execution Error: Failed to retrieve sandbox output: {str(e)}",
+                stderr=SandboxErrorMessages.INTERNAL_FAILURE if "Internal" in str(e) else f"Execution Error: Failed to retrieve sandbox output: {str(e)}",
                 result=None,
             )
+        finally:
+            try:
+                queue.close()
+            except Exception as e:
+                logger.debug(f"Queue close error (may be harmless): {e}")
+            try:
+                queue.join_thread()
+            except Exception as e:
+                logger.debug(f"Queue join error: {e}")
 
 
 class LinuxSandboxManager(NativeOSSandboxManager):
@@ -223,18 +302,13 @@ class MacOSSandboxManager(NativeOSSandboxManager):
     ) -> "SandboxResult":
         """
         Execute code inside a macOS Seatbelt sandbox.
-
-        Instead of multiprocessing.Process (which applies restrictions
-        after fork), this spawns the child through sandbox-exec so the
-        Seatbelt profile is active before the Python interpreter starts.
         """
         logger.info(f"Initializing {self._get_sandbox_name()}...")
 
-        # 1. AST Validation
+        # 1. AST Validation (Defense in Depth)
         ast_error = validate_ast(code)
         if ast_error:
             import hashlib
-
             logger.warning(
                 "Sandbox security violation: %s (hash=%s)",
                 ast_error,
@@ -260,66 +334,117 @@ class MacOSSandboxManager(NativeOSSandboxManager):
         profile_path = policy._seatbelt_profile_path
 
         # 3. Build the sandbox-exec command
-        # We pass the code via stdin to avoid shell escaping issues
         cmd = [
             self._SEATBELT_EXECUTABLE,
             "-f",
             profile_path,
             sys.executable,
-            "-c",
-            code,
+            "-v",  # Standardize for some environments
+            "-m",
+            "strake.sandbox.macos_worker",
         ]
 
-        # Pass environment variables for Strake connection
-        env = os.environ.copy()
+        # Pass limited environment variables to prevent leaking host secrets
+        # Token is now passed via stdin/pipe, not ENV.
+        ALLOWED_ENV_VARS = {
+            "PATH",
+            "HOME",
+            "USER",
+            "LANG",
+            "LC_ALL",
+            "STRAKE_CONFIG",
+            "STRAKE_URL",
+            "SANDBOX_TIMEOUT_SECS",
+            "SANDBOX_FAIL_CLOSED",
+        }
+        env = {k: v for k, v in os.environ.items() if k in ALLOWED_ENV_VARS}
+
+        token = os.environ.get("STRAKE_TOKEN")
+
         if self.config_path:
             env["STRAKE_CONFIG"] = self.config_path
         env["STRAKE_SANDBOX"] = "seatbelt"
 
-        SANDBOX_TIMEOUT_SECS = int(os.environ.get("SANDBOX_TIMEOUT_SECS", 30))
-        timeout = timeout_secs if timeout_secs is not None else SANDBOX_TIMEOUT_SECS
+        timeout = self._get_timeout(timeout_secs)
+
+        # 4. Apply Resource Limits to parent subprocess creation
+        # We set soft limits on the parent so the child inherits them.
+        import resource
+
+        old_cpu = resource.getrlimit(resource.RLIMIT_CPU)
+        old_mem = resource.getrlimit(resource.RLIMIT_AS)
+        config = SandboxConfig.from_env()
+
+        # Set parent soft limits to the requested sandbox bounds
+        resource.setrlimit(resource.RLIMIT_CPU, (int(timeout) + 2, old_cpu[1]))
+        resource.setrlimit(resource.RLIMIT_AS, (config.memory_limit_bytes, old_mem[1]))
 
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
                 cwd=self.workspace_root,
             )
+        finally:
+            # Restore parent limits immediately
+            resource.setrlimit(resource.RLIMIT_CPU, old_cpu)
+            resource.setrlimit(resource.RLIMIT_AS, old_mem)
 
+        try:
             try:
+                # [Hardening] Pass token and code via JSON payload over pipe
+                payload = json.dumps({"token": token, "code": code}).encode("utf-8")
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
+                    proc.communicate(input=payload), timeout=timeout
                 )
             except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
+                if proc and proc.returncode is None:
+                    try:
+                        proc.kill()
+                        await proc.wait()
+                    except ProcessLookupError:
+                        pass
                 return SandboxResult(
                     stdout="",
-                    stderr="Resource Error: Execution timed out.",
+                    stderr=SandboxErrorMessages.TIMEOUT,
                     result=None,
                 )
 
-            stdout = (
-                stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-            )
-            stderr = (
-                stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-            )
+            # [Security] Handle result serialization (worker uses JSON for SandboxResult)
+            import json
+            import re
 
-            if proc.returncode != 0:
-                logger.error(
-                    f"Seatbelt sandbox exited with code {proc.returncode}: {stderr[:500]}"
+            try:
+                # The macOS worker writes JSON SandboxResult to stdout wrapped in markers
+                decoded_stdout = stdout_bytes.decode("utf-8") if stdout_bytes else ""
+                
+                # Robust extraction using markers
+                pattern = f"{re.escape(config.marker_start)}(.*?){re.escape(config.marker_end)}"
+                match = re.search(pattern, decoded_stdout, re.DOTALL)
+                
+                if match:
+                    result_dict = json.loads(match.group(1).strip())
+                    result = SandboxResult.from_dict(result_dict)
+                else:
+                    # Fallback for older workers or direct output
+                    last_line = decoded_stdout.strip().split("\n")[-1]
+                    result_dict = json.loads(last_line)
+                    result = SandboxResult.from_dict(result_dict)
+                
+                # Combine stderr captured by subprocess with worker's internal stderr
+                result.stderr = (result.stderr or "") + (
+                    stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
                 )
-                return SandboxResult(
-                    stdout=stdout,
-                    stderr=stderr
-                    or f"Runtime Error: Sandbox process exited with code {proc.returncode}",
-                    result=None,
-                )
+                return result
+            except Exception:
+                # Fallback to plain string decoding if JSON fails
+                stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+                stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+                return SandboxResult(stdout=stdout, stderr=stderr, result=None)
 
-            return SandboxResult(stdout=stdout, stderr=stderr, result=None)
         except FileNotFoundError:
             logger.error(
                 f"sandbox-exec not found at {self._SEATBELT_EXECUTABLE}. "
@@ -336,10 +461,11 @@ class MacOSSandboxManager(NativeOSSandboxManager):
         finally:
             # Clean up the temporary profile file
             try:
-                if os.path.exists(profile_path):
-                    os.unlink(profile_path)
-            except OSError:
+                os.unlink(profile_path)
+            except FileNotFoundError:
                 pass
+            except OSError as e:
+                logger.warning(f"Failed to cleanup seatbelt profile {profile_path}: {e}")
 
 
 class WindowsSandboxManager(NativeOSSandboxManager):
@@ -347,6 +473,9 @@ class WindowsSandboxManager(NativeOSSandboxManager):
     Windows Native Sandbox using Job Objects for resource limits and
     AppContainer/Low Integrity Level for capability restriction.
     """
+
+    async def run(self, code: str, timeout_secs: Optional[float] = None) -> "SandboxResult":
+        raise NotImplementedError("WindowsSandboxManager is not yet implemented.")
 
     def _get_sandbox_name(self) -> str:
         return "Windows Sandbox (AppContainer + Job Objects)"

@@ -9,7 +9,7 @@ import time
 import threading
 from typing import Any, Dict, List, Optional
 import pyarrow as pa
-from .base import SandboxResult
+from .base import SandboxResult, SandboxErrorMessages
 
 logger = logging.getLogger("strake.sandbox.core")
 
@@ -59,10 +59,16 @@ ALLOWED_IMPORTS = frozenset(
 
 # CPython sets __builtins__ to the builtins *module* in non-__main__ modules
 # and to a *dict* in __main__. We normalize to the callable here.
-if hasattr(__builtins__, "__import__"):
-    _REAL_IMPORT = __builtins__.__import__  # type: ignore[union-attr]
-else:
-    _REAL_IMPORT = __builtins__["__import__"]  # type: ignore[index]
+try:
+    if hasattr(__builtins__, "__import__"):
+        _REAL_IMPORT = __builtins__.__import__  # type: ignore[union-attr]
+    else:
+        _REAL_IMPORT = __builtins__["__import__"]  # type: ignore[index]
+except (AttributeError, KeyError, TypeError):
+    # Fallback for restricted environments
+    import builtins
+
+    _REAL_IMPORT = builtins.__import__
 
 
 def _safe_import_shim(name, globals=None, locals=None, fromlist=(), level=0):
@@ -75,7 +81,7 @@ def _safe_import_shim(name, globals=None, locals=None, fromlist=(), level=0):
     """
     top = name.split(".")[0]
     if top not in ALLOWED_IMPORTS:
-        raise ImportError(f"Import of '{name}' is not permitted in the sandbox.")
+        raise ImportError(SandboxErrorMessages.IMPORT_NOT_PERMITTED.format(name))
     return _REAL_IMPORT(name, globals, locals, fromlist, level)
 
 
@@ -89,7 +95,7 @@ class LimitedStringIO(io.StringIO):
 
     def write(self, s: str) -> int:
         if self._size + len(s) > self.max_size:
-            raise MemoryError(f"Output exceeded maximum size of {self.max_size} bytes")
+            raise MemoryError(SandboxErrorMessages.MEMORY_EXHAUSTED.format(self.max_size))
         self._size += len(s)
         return super().write(s)
 
@@ -110,7 +116,7 @@ def validate_ast(code: str) -> Optional[str]:
     bypassed and create high maintenance burden for negligible benefit.
     """
     if len(code) > MAX_CODE_SIZE:
-        return f"Security Error: Code size exceeds limit of {MAX_CODE_SIZE} bytes"
+        return SandboxErrorMessages.CODE_SIZE_EXCEEDED
 
     try:
         # Block pattern matching as a niche, low-maintenance additional check.
@@ -123,7 +129,7 @@ def validate_ast(code: str) -> Optional[str]:
         tree = ast.parse(code)
         for node in ast.walk(tree):
             if _MATCH_TYPES and isinstance(node, _MATCH_TYPES):
-                return "Security Error: Pattern matching syntax not allowed"
+                return SandboxErrorMessages.PATTERN_MATCHING_NOT_ALLOWED
 
             # Check imports against the allowlist
             if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -134,7 +140,7 @@ def validate_ast(code: str) -> Optional[str]:
 
                 for name in names:
                     if name not in ALLOWED_IMPORTS:
-                        return f"Security Error: Import of '{name}' is not permitted in the sandbox."
+                        return SandboxErrorMessages.IMPORT_NOT_PERMITTED.format(name)
 
             # Check for direct getattr calls targeting dunder/dangerous attributes.
             # Catches the most naive introspection chains; does not block determined attackers.
@@ -150,7 +156,7 @@ def validate_ast(code: str) -> Optional[str]:
                                 "globals",
                                 "locals",
                             }:
-                                return f"Security Error: Dangerous getattr target '{arg.value}'."
+                                return SandboxErrorMessages.DANGEROUS_GETATTR.format(arg.value)
 
     except SyntaxError as e:
         return f"Syntax Error: {e.msg} (line {e.lineno})"
@@ -193,13 +199,6 @@ class SafeTableProxy:
     def __init__(self, table: pa.Table):
         object.__setattr__(self, "_table", table)
 
-    def __del__(self):
-        # Ensure underlying pyarrow table is cleared to hint for immediate GC
-        try:
-            object.__setattr__(self, "_table", None)
-        except Exception:
-            pass
-
     def __getattr__(self, name):
         raise AttributeError(
             f"Security Error: SafeTableProxy has no attribute '{name}'"
@@ -232,17 +231,30 @@ class SafeTableProxy:
         for i in range(0, table.num_rows, batch_size):
             yield SafeBatchProxy(table.slice(i, batch_size))
 
-    def to_pylist(self):
+    def to_pylist(self) -> List[Dict[str, Any]]:
         return object.__getattribute__(self, "_table").to_pylist()
 
+    def to_pydict(self) -> Dict[str, List[Any]]:
+        return object.__getattribute__(self, "_table").to_pydict()
+
     @property
-    def num_rows(self):
+    def num_rows(self) -> int:
         return object.__getattribute__(self, "_table").num_rows
 
     def __len__(self):
         return object.__getattribute__(self, "_table").num_rows
 
-    def column_values(self, name):
+    @property
+    def schema(self) -> pa.Schema:
+        return object.__getattribute__(self, "_table").schema
+
+    def column(self, name: str):
+        """Return a column as a ChunkedArray proxy or similar.
+        For simplicity in the sandbox, we return the internal column.
+        """
+        return object.__getattribute__(self, "_table").column(name)
+
+    def column_values(self, name: str) -> List[Any]:
         """Return a column as a Python list.
 
         WARNING: Materializes the entire column from Arrow memory into a Python
@@ -446,7 +458,7 @@ def _sandbox_worker_inner(code: str, queue: Any, connection: Any) -> None:
         queue.put(
             SandboxResult(
                 stdout=stdout_cap.getvalue(), stderr=stderr_cap.getvalue(), result=None
-            )
+            ).to_dict()
         )
 
     except Exception as e:
@@ -457,14 +469,14 @@ def _sandbox_worker_inner(code: str, queue: Any, connection: Any) -> None:
 
         err_msg = ""
         if isinstance(e, MemoryError):
-            err_msg = f"Resource Error: {str(e)}"
+            err_msg = str(e)  # Already formatted via SandboxErrorMessages
         elif isinstance(e, SyntaxError):
             err_msg = f"Syntax Error: {str(e)}"
         else:
-            err_msg = f"Runtime Error: {type(e).__name__}: {str(e)}"
+            err_msg = SandboxErrorMessages.INTERNAL_FAILURE if "Internal" in str(e) else f"Runtime Error: {type(e).__name__}: {str(e)}"
 
         queue.put(
-            SandboxResult(stdout=stdout_cap.getvalue(), stderr=err_msg, result=None)
+            SandboxResult(stdout=stdout_cap.getvalue(), stderr=err_msg, result=None).to_dict()
         )
     finally:
         # Emit sandbox_exec span — best effort, must not break execution
