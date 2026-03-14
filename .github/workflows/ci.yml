@@ -1,9 +1,14 @@
 name: CI
 on:
   push:
-    branches: [main]
+    branches: [main, dev-*]
   pull_request:
   workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for running CI'
+        required: false
+        default: 'Manual trigger'
 
 env:
   CARGO_TERM_COLOR: always
