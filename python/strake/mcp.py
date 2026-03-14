@@ -226,13 +226,12 @@ async def get_schema_details(fqn: str) -> Any:
                 indexer.build_index()
             table = indexer.db.open_table(indexer.table_name)
 
-            import pyarrow.compute as pc
-
-            # Use pyarrow programmatic filter instead of string interpolation
-            # to prevent SQL injection.
+            # Use SQL string with escaped single quotes to prevent injection
+            # since some lancedb versions expect a string for .where().
+            fqn_escaped = fqn.replace("'", "''")
             results = (
                 table.search()
-                .where(pc.field("table_id") == fqn)
+                .where(f"table_id = '{fqn_escaped}'")
                 .limit(1000)
                 .to_list()
             )
