@@ -67,6 +67,11 @@ pub enum ErrorCode {
     ///
     /// Occurs when a source contains columns not present in the expected schema.
     SchemaDriftExtraColumn = 2011,
+    /// STRAKE-2012: Prompt-injection pattern detected in query results
+    ///
+    /// Intended for agent-only execution contexts where query results are inspected
+    /// before being surfaced to an LLM.
+    PromptInjectionDetected = 2012,
 
     // === Configuration Errors (3000-3999) ===
     /// STRAKE-3001: Invalid YAML syntax
@@ -181,6 +186,7 @@ impl TryFrom<u16> for ErrorCode {
             2009 => Ok(Self::SchemaDriftMissingColumn),
             2010 => Ok(Self::SchemaDriftTypeChanged),
             2011 => Ok(Self::SchemaDriftExtraColumn),
+            2012 => Ok(Self::PromptInjectionDetected),
             3001 => Ok(Self::InvalidYaml),
             3002 => Ok(Self::SchemaViolation),
             3003 => Ok(Self::MissingRequiredField),
@@ -246,6 +252,10 @@ mod tests {
         assert_eq!(
             ErrorCode::try_from("STRAKE-2011".to_string()).unwrap(),
             ErrorCode::SchemaDriftExtraColumn
+        );
+        assert_eq!(
+            ErrorCode::try_from("STRAKE-2012".to_string()).unwrap(),
+            ErrorCode::PromptInjectionDetected
         );
     }
 

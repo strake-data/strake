@@ -1,3 +1,4 @@
+import os
 import sys
 import io
 import contextlib
@@ -95,7 +96,9 @@ class LimitedStringIO(io.StringIO):
 
     def write(self, s: str) -> int:
         if self._size + len(s) > self.max_size:
-            raise MemoryError(SandboxErrorMessages.MEMORY_EXHAUSTED.format(self.max_size))
+            raise MemoryError(
+                SandboxErrorMessages.MEMORY_EXHAUSTED.format(self.max_size)
+            )
         self._size += len(s)
         return super().write(s)
 
@@ -156,7 +159,9 @@ def validate_ast(code: str) -> Optional[str]:
                                 "globals",
                                 "locals",
                             }:
-                                return SandboxErrorMessages.DANGEROUS_GETATTR.format(arg.value)
+                                return SandboxErrorMessages.DANGEROUS_GETATTR.format(
+                                    arg.value
+                                )
 
     except SyntaxError as e:
         return f"Syntax Error: {e.msg} (line {e.lineno})"
@@ -294,9 +299,39 @@ class StrakeShim:
             with sandbox._indexer_thread_lock:
                 if not hasattr(sandbox, "_indexer") or sandbox._indexer is None:
                     # Note: Need explicit access to strake root search module
+                    import yaml
                     from strake.search import SchemaIndexer
+                    from strake.metadata import InformationSchemaEnricher, NullEnricher
 
-                    object.__setattr__(sandbox, "_indexer", SchemaIndexer(conn))
+                    enable_descriptions = True
+                    env_val = os.environ.get("STRAKE_ENABLE_SCHEMA_DESCRIPTIONS")
+                    if env_val is not None:
+                        enable_descriptions = env_val.lower() in ("1", "true", "yes")
+
+                    if hasattr(sandbox, "config_path") and sandbox.config_path:
+                        try:
+                            with open(sandbox.config_path, "r") as f:
+                                config = yaml.safe_load(f)
+                                if (
+                                    config
+                                    and "schema_indexing" in config
+                                    and "enable_descriptions"
+                                    in config["schema_indexing"]
+                                ):
+                                    enable_descriptions = bool(
+                                        config["schema_indexing"]["enable_descriptions"]
+                                    )
+                        except Exception as e:
+                            logger.warning(f"Failed to parse config for schema descriptions: {e}")
+
+                    if enable_descriptions:
+                        enricher = InformationSchemaEnricher(conn)
+                    else:
+                        enricher = NullEnricher()
+
+                    object.__setattr__(
+                        sandbox, "_indexer", SchemaIndexer(conn, enricher=enricher)
+                    )
         return sandbox._indexer
 
     def sql(self, query: str):
@@ -473,10 +508,16 @@ def _sandbox_worker_inner(code: str, queue: Any, connection: Any) -> None:
         elif isinstance(e, SyntaxError):
             err_msg = f"Syntax Error: {str(e)}"
         else:
-            err_msg = SandboxErrorMessages.INTERNAL_FAILURE if "Internal" in str(e) else f"Runtime Error: {type(e).__name__}: {str(e)}"
+            err_msg = (
+                SandboxErrorMessages.INTERNAL_FAILURE
+                if "Internal" in str(e)
+                else f"Runtime Error: {type(e).__name__}: {str(e)}"
+            )
 
         queue.put(
-            SandboxResult(stdout=stdout_cap.getvalue(), stderr=err_msg, result=None).to_dict()
+            SandboxResult(
+                stdout=stdout_cap.getvalue(), stderr=err_msg, result=None
+            ).to_dict()
         )
     finally:
         # Emit sandbox_exec span — best effort, must not break execution

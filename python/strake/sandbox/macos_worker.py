@@ -14,10 +14,11 @@ from strake import StrakeConnection
 # Avoid world-writable /tmp files to prevent symlink attacks.
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    stream=sys.stderr
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stderr,
 )
 logger = logging.getLogger("strake.sandbox.worker")
+
 
 class QueueAdapter:
     """Mock queue that writes JSON results to stdout for subprocess communication."""
@@ -26,10 +27,13 @@ class QueueAdapter:
         # result is already a dict from _sandbox_worker_inner
         config = SandboxConfig()
         try:
-            sys.stdout.write(config.marker_start + json.dumps(result) + config.marker_end + "\n")
+            sys.stdout.write(
+                config.marker_start + json.dumps(result) + config.marker_end + "\n"
+            )
             sys.stdout.flush()
         except Exception as e:
             logger.error(f"Worker IPC Error: {e}")
+
 
 def main():
     config = SandboxConfig()
@@ -58,6 +62,17 @@ def main():
             payload = json.loads(payload_raw)
             token = payload.get("token")
             code = payload.get("code", "")
+            ctx = payload.get("execution_context")
+            if isinstance(ctx, dict):
+                kind = ctx.get("kind")
+                guard_mode = ctx.get("guard_mode")
+                session_id = ctx.get("session_id")
+                if kind:
+                    os.environ["STRAKE_EXECUTION_CONTEXT"] = str(kind)
+                if guard_mode:
+                    os.environ["STRAKE_AGENT_GUARD_MODE"] = str(guard_mode)
+                if session_id:
+                    os.environ["STRAKE_AGENT_SESSION_ID"] = str(session_id)
         except json.JSONDecodeError:
             logger.error("Malformed IPC payload from parent")
             emit_error(SandboxErrorMessages.INTERNAL_FAILURE)
@@ -73,16 +88,18 @@ def main():
             timeout = float(timeout_env)
         except ValueError:
             timeout = 30.0
-            
+
         # RLIMIT_CPU is seconds of CPU time.
         # Hard == soft: sandboxed process cannot raise its own CPU limit.
         cpu_hard = int(timeout) + 1
         resource.setrlimit(resource.RLIMIT_CPU, (cpu_hard, cpu_hard))
-        
+
         # RLIMIT_AS (Address Space)
         # Hard limit == soft limit intentionally: prevents the sandboxed process
         # from raising its own memory ceiling.
-        memory_limit_env = os.environ.get("SANDBOX_MEMORY_LIMIT", str(512 * 1024 * 1024))
+        memory_limit_env = os.environ.get(
+            "SANDBOX_MEMORY_LIMIT", str(512 * 1024 * 1024)
+        )
         try:
             memory_limit = int(memory_limit_env)
         except ValueError:
@@ -110,6 +127,7 @@ def main():
         # Sanitize output to avoid leaking internal tracebacks to the AI
         logger.debug(f"Unhandled worker exception", exc_info=True)
         emit_error(SandboxErrorMessages.INTERNAL_FAILURE)
+
 
 if __name__ == "__main__":
     main()

@@ -1,27 +1,36 @@
+//! # Embedded Backend
+//!
+//! Provides a local query executor powered by DataFusion.
+//!
+//! ## Overview
+//! This module contains the `EmbeddedBackend` which directly drives a `FederationEngine`
+//! within the same process.
+//!
+//! ## Errors
+//! Methods return `anyhow::Result` mapped to Python exceptions on failure.
+
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use strake_common::config::{AppConfig, Config, QueryLimits, ResourceConfig};
+use strake_common::config::{Config, QueryLimits, ResourceConfig};
 use strake_runtime::federation::FederationEngine;
 
 use super::StrakeQueryExecutor;
 
+/// A local DataFusion-powered backend running inside the same process.
 pub struct EmbeddedBackend {
     engine: Arc<FederationEngine>,
 }
 
 impl EmbeddedBackend {
+    /// Create a new embedded execution engine with the given DSN and source configuration.
     pub async fn new(
         config_path_str: &str,
         sources_config: Option<String>,
     ) -> anyhow::Result<Self> {
-        // Load AppConfig (for side effects? original code loaded it but didn't use it except to map error)
-        let _app_config = AppConfig::from_file(config_path_str)
-            .map_err(|e| anyhow::anyhow!("Failed to load app config: {}", e))?;
-
         // Use provided sources path OR fall back to same directory as strake.yaml
         let config_path_final = if let Some(p) = sources_config {
             Path::new(&p).to_path_buf()
@@ -51,7 +60,7 @@ impl EmbeddedBackend {
             global_budget: 100,
             extra_optimizer_rules: vec![],
             extra_sources: vec![],
-            retry: _app_config.retry,
+            retry: Default::default(),
         })
         .await?;
 
@@ -79,7 +88,14 @@ impl StrakeQueryExecutor for EmbeddedBackend {
 
     async fn describe(&mut self, table_name: Option<String>) -> anyhow::Result<String> {
         let query = if let Some(name) = table_name {
-            format!("SHOW COLUMNS FROM {}", name)
+            if name
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+            {
+                format!("SHOW COLUMNS FROM {}", name)
+            } else {
+                return Err(anyhow::anyhow!("Invalid table identifier: {}", name));
+            }
         } else {
             "SHOW TABLES".to_string()
         };
@@ -91,6 +107,12 @@ impl StrakeQueryExecutor for EmbeddedBackend {
 
     async fn explain_tree(&mut self, query: &str) -> anyhow::Result<String> {
         self.engine.explain_tree(query).await
+    }
+
+    async fn list_sources(&mut self) -> anyhow::Result<String> {
+        let sources = self.engine.list_sources();
+        serde_json::to_string(&sources)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize sources: {}", e))
     }
 
     async fn shutdown(&mut self) -> anyhow::Result<()> {

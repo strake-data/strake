@@ -33,7 +33,6 @@ use regex::Regex;
 use serde::Serialize;
 use std::env;
 
-
 use std::sync::LazyLock;
 
 static SECRET_RE: LazyLock<Regex> = LazyLock::new(|| {

@@ -552,7 +552,10 @@ impl MetadataStore for SqliteStore {
                                 return Err(rusqlite::Error::FromSqlConversionFailure(
                                     2,
                                     rusqlite::types::Type::Text,
-                                    Box::<dyn std::error::Error + Send + Sync>::from(format!("Unrecognized timestamp format: {}", s)),
+                                    Box::<dyn std::error::Error + Send + Sync>::from(format!(
+                                        "Unrecognized timestamp format: {}",
+                                        s
+                                    )),
                                 ));
                             }
                         }

@@ -14,13 +14,13 @@ class SandboxErrorMessages:
     def __init_subclass__(cls, **kwargs):
         raise TypeError("SandboxErrorMessages cannot be subclassed")
 
-    CONNECTION_FAILED = (
-        "Runtime Error: Sandbox could not connect to the data engine. Check server logs."
-    )
+    CONNECTION_FAILED = "Runtime Error: Sandbox could not connect to the data engine. Check server logs."
     TIMEOUT = "Resource Error: Execution timed out."
     INTERNAL_FAILURE = "Runtime Error: Internal sandbox failure"
     CODE_SIZE_EXCEEDED = "Security Error: Code size exceeds limit."
-    IMPORT_NOT_PERMITTED = "Security Error: Import of '{}' is not permitted in the sandbox."
+    IMPORT_NOT_PERMITTED = (
+        "Security Error: Import of '{}' is not permitted in the sandbox."
+    )
     DANGEROUS_GETATTR = "Security Error: Dangerous getattr target '{}'."
     PATTERN_MATCHING_NOT_ALLOWED = "Security Error: Pattern matching syntax not allowed"
     MEMORY_EXHAUSTED = "Resource Error: Output exceeded maximum size of {} bytes"
@@ -59,7 +59,11 @@ class SandboxResult:
     def from_dict(cls, d: dict) -> "SandboxResult":
         """Reconstruct from JSON-compatible dictionary with basic validation."""
         if not isinstance(d, dict):
-            return cls(stdout="", stderr="Runtime Error: Invalid IPC response format", result=None)
+            return cls(
+                stdout="",
+                stderr="Runtime Error: Invalid IPC response format",
+                result=None,
+            )
 
         return cls(
             stdout=d.get("stdout") or "",
@@ -83,6 +87,16 @@ class SandboxManager(ABC):
         self.config_path = config_path
 
     @abstractmethod
-    async def run(self, code: str, timeout_secs: Optional[float] = None) -> "SandboxResult":
-        """Executes Python code in the sandbox and returns the result."""
+    async def run(
+        self,
+        code: str,
+        timeout_secs: Optional[float] = None,
+        *,
+        execution_context: Optional[dict[str, str]] = None,
+    ) -> "SandboxResult":
+        """Executes Python code in the sandbox and returns the result.
+
+        execution_context is an optional, per-call metadata envelope used to
+        propagate agent-only execution signals into the sandbox runtime.
+        """
         pass

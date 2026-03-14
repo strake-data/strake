@@ -242,7 +242,9 @@ impl StrakeServer {
             let audit_init_res = registry.with(queries_layer).with(audit_layer).try_init();
 
             if let Err(e) = audit_init_res {
-                if app_config.server.audit.failure_mode == "shutdown" {
+                if app_config.server.audit.failure_mode
+                    == strake_common::config::AuditFailureMode::Shutdown
+                {
                     panic!(
                         "Audit logging initialization failed and audit_failure_mode=shutdown: {}",
                         e

@@ -135,6 +135,17 @@ def run_vsock_server():
 
             payload = json.loads(payload_data.decode("utf-8"))
             code = payload.get("code", "")
+            ctx = payload.get("execution_context")
+            if isinstance(ctx, dict):
+                kind = ctx.get("kind")
+                guard_mode = ctx.get("guard_mode")
+                session_id = ctx.get("session_id")
+                if kind:
+                    os.environ["STRAKE_EXECUTION_CONTEXT"] = str(kind)
+                if guard_mode:
+                    os.environ["STRAKE_AGENT_GUARD_MODE"] = str(guard_mode)
+                if session_id:
+                    os.environ["STRAKE_AGENT_SESSION_ID"] = str(session_id)
 
             # [Hardening] Guest-side code size check
             MAX_CODE_SIZE = 1024 * 1024  # 1MB

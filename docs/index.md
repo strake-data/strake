@@ -1,6 +1,6 @@
 # Welcome to Strake
 
-**Strake** is a high-performance **federated query engine** built on [Apache Arrow DataFusion](https://github.com/apache/arrow-datafusion). It acts as an "Intelligent Pipe," enabling you to query and join data across disparate sources—PostgreSQL, S3 (Parquet/JSON/CSV), REST APIs, and more—using a single standard SQL interface.
+**Strake** is the AI Data Layer. It's the sandboxed execution environment where agents meet your data and return answers, not rows. It acts as an secure layer, enabling you to query and join data across disparate sources—PostgreSQL, S3 (Parquet/JSON/CSV), REST APIs, and more—using a single standard SQL interface without the need for data movement or ETL.
 
 ---
 

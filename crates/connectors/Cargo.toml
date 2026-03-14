@@ -32,7 +32,7 @@ opendal = { version = "0.55.0", features = ["services-s3", "services-azblob", "s
 object_store_opendal = "0.55.0"
 reqwest = { version = "0.11", features = ["json", "blocking"] }
 base64 = "0.22"
-jsonwebtoken = "9"
+jsonwebtoken = "9.3.1"
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 rand = "0.9.2"
