@@ -6,7 +6,7 @@ The Strake Federation Engine now supports a hybrid **Python Sidecar MCP** archit
 
 We use a **Code Mode** architecture. Instead of exposing hundreds of individual "tools" to the LLM context, we expose a single tool: a sandboxed Python runtime (`run_python`).
 
-When you enable the MCP feature, the Rust server (`strake-server`) acts as a "Supervisor." It automatically spans a child Python process running the `strake.mcp` module, which manages the sandbox.
+When you enable the MCP feature, the Rust server (`strake-server`) acts as a "Supervisor." It automatically spawns a child Python process running the `strake.mcp` module, which manages the sandbox.
 
 ```mermaid
 classDiagram
@@ -102,3 +102,9 @@ To add Strake to Claude Desktop, edit your `claude_desktop_config.json`:
 ```
 
 *Ensure that the `strake-enterprise` server is running separately on port 50051 so the sidecar can connect to it.*
+
+## Security Guards (Design Note)
+
+Strake’s prompt-injection / exfiltration guardrails are intended to be **agent-only** protections: they should activate for queries executed inside an MCP tool call context (LLM in the loop), and stay off for direct SDK/CLI/batch usage (no LLM, no injection threat).
+
+Internal design details and rollout modes (`disabled` / `dry_run` / `enforce`) live in `strake/productmanagement/agent-guard-activation.md`.

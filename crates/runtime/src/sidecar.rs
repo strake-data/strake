@@ -47,12 +47,14 @@ pub struct SidecarHandle {
 
 impl Drop for SidecarHandle {
     fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
-            tracing::warn!("SidecarHandle dropped without calling shutdown(). Aborting supervisor task to prevent orphaned processes.");
-            task.abort();
-        }
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(()); // Best effort shutdown signal
+        }
+        if let Some(task) = self.task.take() {
+            tracing::warn!(
+                "SidecarHandle dropped without calling shutdown(). Sent shutdown signal; aborting supervisor task as backstop."
+            );
+            task.abort();
         }
     }
 }
@@ -93,6 +95,7 @@ pub async fn spawn_sidecar(config: &AppConfig) -> anyhow::Result<Option<SidecarH
     let mut mcp_config = config.mcp.clone();
     mcp_config.environment = config.environment;
     let server_addr = config.server.listen_addr.clone();
+    let agent_guard_mode = config.security.agent_guard_mode.to_string();
     let port = mcp_config.port;
     let span = info_span!("mcp_sidecar", port = port);
     let _enter = span.enter();
@@ -167,6 +170,7 @@ pub async fn spawn_sidecar(config: &AppConfig) -> anyhow::Result<Option<SidecarH
                     .env("STRAKE_URL", &strake_url)
                     .env("STRAKE_ENV", mcp_config.environment.to_string())
                     .env("STRAKE_USE_FIRECRACKER", if mcp_config.use_firecracker { "true" } else { "false" })
+                    .env("STRAKE_AGENT_GUARD_MODE", &agent_guard_mode)
                     .arg("-m")
                     .arg("strake.mcp")
                     .arg("--port")
@@ -313,6 +317,8 @@ fn calculate_backoff(consecutive_failures: u32) -> u64 {
     let delay = exponential_delay.min(max_delay);
 
     // Apply 25% jitter
+    // NOTE: thread_rng() is a fast TLS-backed PRNG handle; it does not reseed from OS entropy on
+    // every call in practice.
     let mut rng = rand::thread_rng();
     let jitter_range = (delay as f64 * 0.25) as u64;
     if jitter_range > 0 {
@@ -323,8 +329,14 @@ fn calculate_backoff(consecutive_failures: u32) -> u64 {
 }
 
 async fn resolve_python_bin(override_bin: Option<&str>) -> Result<String> {
+    const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
     if let Some(bin) = override_bin {
-        if Command::new(bin).arg("--version").output().await.is_ok() {
+        let probed =
+            tokio::time::timeout(PROBE_TIMEOUT, Command::new(bin).arg("--version").output())
+                .await
+                .ok()
+                .and_then(|r| r.ok());
+        if probed.is_some() {
             return Ok(bin.to_string());
         }
         return Err(StrakeError::new(
@@ -337,7 +349,12 @@ async fn resolve_python_bin(override_bin: Option<&str>) -> Result<String> {
     }
 
     for bin in &["python3", "python"] {
-        if Command::new(bin).arg("--version").output().await.is_ok() {
+        let probed =
+            tokio::time::timeout(PROBE_TIMEOUT, Command::new(bin).arg("--version").output())
+                .await
+                .ok()
+                .and_then(|r| r.ok());
+        if probed.is_some() {
             return Ok(bin.to_string());
         }
     }

@@ -1,15 +1,30 @@
-//! Diff command and helpers for comparing local config with metadata store.
+//! # Diff Command
 //!
-//! # Overview
-//! The `diff` command provides a dry-run preview of what changes would be applied
-//! to the metadata store state if `strake apply` were run.
+//! Provides a dry-run preview of changes applied to the overarching metadata store.
 //!
-//! # Comparison Logic
+//! ## Overview
+//!
 //! It compares the local `sources.yaml` against the current state in the database
-//! for the specified domain. It detects:
-//! - **Additions**: New sources, tables, or columns.
-//! - **Modifications**: Changes to URLs, types, or partition columns.
-//! - **Deletions**: Items present in the DB but missing from local config.
+//! for the specified domain. It detects structural additions, modifications, and deletions.
+//!
+//! ## Usage
+//!
+//! ```rust
+//! // diff(&store, file_path, format).await?;
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Loads full source and database state into memory for synchronous nested loop comparison.
+//! Expects configuration sizes in the MBs max.
+//!
+//! ## Safety
+//!
+//! No `unsafe` in this module.
+//!
+//! ## References
+//!
+//! - Relevant GitHub Diff Issue
 
 use super::helpers::{parse_yaml, DiffChange, DiffResult};
 use crate::models;
@@ -38,23 +53,23 @@ pub(crate) fn print_diff_human(result: &DiffResult) {
 
     println!("{}", "Proposed Changes:".bold().cyan());
     for change in &result.changes {
-        let symbol = match change.change_type.as_str() {
-            "ADD" => "+".green().to_string(),
-            "DELETE" => "-".red().to_string(),
-            "MODIFY" => "~".yellow().to_string(),
-            _ => "?".dimmed().to_string(),
+        let symbol = match change.change_type {
+            super::helpers::ChangeType::Added => "+".green().to_string(),
+            super::helpers::ChangeType::Deleted => "-".red().to_string(),
+            super::helpers::ChangeType::Modified => "~".yellow().to_string(),
         };
 
         println!(
-            "{} {} {} {}",
+            "{} {} {}",
             symbol,
-            change.change_type.bold(),
-            change.category,
-            change.name.bold()
+            change.change_type.to_string().bold(),
+            change.path.bold()
         );
 
-        if let Some(details) = &change.details {
-            println!("    {}", details.dimmed());
+        if let Some(prev) = &change.previous {
+            if let Some(curr) = &change.current {
+                println!("    {} -> {}", prev.dimmed(), curr.dimmed());
+            }
         }
     }
 }
@@ -63,7 +78,7 @@ pub(crate) async fn diff_internal(
     store: &dyn MetadataStore,
     file_path: &str,
 ) -> Result<DiffResult> {
-    let local_config = parse_yaml(file_path)?;
+    let local_config = parse_yaml(file_path).await?;
     let domain = local_config.domain.as_deref().unwrap_or("default");
     let db_config = store.get_sources(domain).await?;
 
@@ -78,10 +93,10 @@ pub(crate) async fn diff_internal(
         {
             None => {
                 changes.push(DiffChange {
-                    change_type: "ADD".to_string(),
-                    category: "source".to_string(),
-                    name: local_source.name.clone(),
-                    details: None,
+                    change_type: super::helpers::ChangeType::Added,
+                    path: format!("sources[{}]", local_source.name),
+                    previous: None,
+                    current: None,
                 });
             }
             Some(db_source) => {
@@ -98,15 +113,18 @@ pub(crate) async fn diff_internal(
             .any(|s| s.name == db_source.name)
         {
             changes.push(DiffChange {
-                change_type: "DELETE".to_string(),
-                category: "source".to_string(),
-                name: db_source.name.clone(),
-                details: None,
+                change_type: super::helpers::ChangeType::Deleted,
+                path: format!("sources[{}]", db_source.name),
+                previous: None,
+                current: None,
             });
         }
     }
 
-    Ok(DiffResult { changes })
+    Ok(DiffResult {
+        domain: super::helpers::DomainName(domain.to_string()),
+        changes,
+    })
 }
 
 pub(crate) fn diff_sources(
@@ -117,19 +135,19 @@ pub(crate) fn diff_sources(
 
     if local.source_type != db.source_type {
         changes.push(DiffChange {
-            change_type: "MODIFY".to_string(),
-            category: "source".to_string(),
-            name: local.name.clone(),
-            details: Some(format!("type: {} -> {}", db.source_type, local.source_type)),
+            change_type: super::helpers::ChangeType::Modified,
+            path: format!("sources[{}].type", local.name),
+            previous: Some(db.source_type.clone()),
+            current: Some(local.source_type.clone()),
         });
     }
 
     if local.url != db.url {
         changes.push(DiffChange {
-            change_type: "MODIFY".to_string(),
-            category: "source".to_string(),
-            name: local.name.clone(),
-            details: Some(format!("url: {:?} -> {:?}", db.url, local.url)),
+            change_type: super::helpers::ChangeType::Modified,
+            path: format!("sources[{}].url", local.name),
+            previous: db.url.clone(),
+            current: local.url.clone(),
         });
     }
 
@@ -142,14 +160,17 @@ pub(crate) fn diff_sources(
         {
             None => {
                 changes.push(DiffChange {
-                    change_type: "ADD".to_string(),
-                    category: "table".to_string(),
-                    name: format!("{}.{}", local_table.schema, local_table.name),
-                    details: None,
+                    change_type: super::helpers::ChangeType::Added,
+                    path: format!(
+                        "sources[{}].tables[{}.{}]",
+                        local.name, local_table.schema, local_table.name
+                    ),
+                    previous: None,
+                    current: None,
                 });
             }
             Some(db_table) => {
-                changes.extend(diff_tables(local_table, db_table));
+                changes.extend(diff_tables(&local.name, local_table, db_table));
             }
         }
     }
@@ -161,10 +182,13 @@ pub(crate) fn diff_sources(
             .any(|t| t.name == db_table.name && t.schema == db_table.schema)
         {
             changes.push(DiffChange {
-                change_type: "DELETE".to_string(),
-                category: "table".to_string(),
-                name: format!("{}.{}", db_table.schema, db_table.name),
-                details: None,
+                change_type: super::helpers::ChangeType::Deleted,
+                path: format!(
+                    "sources[{}].tables[{}.{}]",
+                    local.name, db_table.schema, db_table.name
+                ),
+                previous: None,
+                current: None,
             });
         }
     }
@@ -173,6 +197,7 @@ pub(crate) fn diff_sources(
 }
 
 pub(crate) fn diff_tables(
+    source_name: &str,
     local: &models::TableConfig,
     db: &models::TableConfig,
 ) -> Vec<DiffChange> {
@@ -180,13 +205,13 @@ pub(crate) fn diff_tables(
 
     if local.partition_column != db.partition_column {
         changes.push(DiffChange {
-            change_type: "MODIFY".to_string(),
-            category: "table".to_string(),
-            name: format!("{}.{}", local.schema, local.name),
-            details: Some(format!(
-                "partition_column: {:?} -> {:?}",
-                db.partition_column, local.partition_column
-            )),
+            change_type: super::helpers::ChangeType::Modified,
+            path: format!(
+                "sources[{}].tables[{}.{}].partition_column",
+                source_name, local.schema, local.name
+            ),
+            previous: db.partition_column.clone(),
+            current: local.partition_column.clone(),
         });
     }
 
@@ -195,22 +220,25 @@ pub(crate) fn diff_tables(
         match db.columns.iter().find(|c| c.name == local_col.name) {
             None => {
                 changes.push(DiffChange {
-                    change_type: "ADD".to_string(),
-                    category: "column".to_string(),
-                    name: local_col.name.clone(),
-                    details: None,
+                    change_type: super::helpers::ChangeType::Added,
+                    path: format!(
+                        "sources[{}].tables[{}.{}].columns[{}]",
+                        source_name, local.schema, local.name, local_col.name
+                    ),
+                    previous: None,
+                    current: None,
                 });
             }
             Some(db_col) => {
                 if local_col.data_type != db_col.data_type {
                     changes.push(DiffChange {
-                        change_type: "MODIFY".to_string(),
-                        category: "column".to_string(),
-                        name: local_col.name.clone(),
-                        details: Some(format!(
-                            "type: {} -> {}",
-                            db_col.data_type, local_col.data_type
-                        )),
+                        change_type: super::helpers::ChangeType::Modified,
+                        path: format!(
+                            "sources[{}].tables[{}.{}].columns[{}].type",
+                            source_name, local.schema, local.name, local_col.name
+                        ),
+                        previous: Some(db_col.data_type.clone()),
+                        current: Some(local_col.data_type.clone()),
                     });
                 }
             }
@@ -220,10 +248,13 @@ pub(crate) fn diff_tables(
     for db_col in &db.columns {
         if !local.columns.iter().any(|c| c.name == db_col.name) {
             changes.push(DiffChange {
-                change_type: "DELETE".to_string(),
-                category: "column".to_string(),
-                name: db_col.name.clone(),
-                details: None,
+                change_type: super::helpers::ChangeType::Deleted,
+                path: format!(
+                    "sources[{}].tables[{}.{}].columns[{}]",
+                    source_name, local.schema, local.name, db_col.name
+                ),
+                previous: None,
+                current: None,
             });
         }
     }

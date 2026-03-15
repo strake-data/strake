@@ -109,7 +109,8 @@ class JsonLinesFileEmitter(TraceEmitter):
     def emit(self, record: Dict[str, Any]) -> None:
         session_id = record.get("session_id", "unknown")
         self._ensure_file(session_id)
-        assert self._file is not None
+        if self._file is None:
+            return
         self._file.write(json.dumps(record, default=str) + "\n")
 
     def flush(self) -> None:
@@ -159,6 +160,14 @@ def get_emitter(trace_dir: Optional[Path | str] = None) -> TraceEmitter:
         if (
             isinstance(_emitter, JsonLinesFileEmitter)
             and _emitter.trace_dir == target_dir
+        ):
+            return _emitter
+
+        # If it's a custom emitter (like CollectorEmitter in tests) and no trace_dir override, keep it.
+        if (
+            _emitter is not None
+            and not isinstance(_emitter, JsonLinesFileEmitter)
+            and not trace_dir
         ):
             return _emitter
 

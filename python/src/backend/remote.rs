@@ -1,3 +1,14 @@
+//! # Remote Backend
+//!
+//! Connects to an external Strake Flight SQL server.
+//!
+//! ## Overview
+//! This module implements a Flight SQL client to execute queries against a
+//! remote federation engine.
+//!
+//! ## Errors
+//! Methods return `anyhow::Result` mapped to Python exceptions on failure.
+
 use arrow::array::{Array, StringBuilder};
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
@@ -11,11 +22,13 @@ use tonic::transport::Channel;
 
 use super::StrakeQueryExecutor;
 
+/// A Flight SQL client connection to a remote backend.
 pub struct RemoteBackend {
     client: FlightSqlServiceClient<Channel>,
 }
 
 impl RemoteBackend {
+    /// Create a new Flight SQL client connection to the remote server.
     pub async fn new(dsn: String, api_key: Option<String>) -> anyhow::Result<Self> {
         let channel = Channel::from_shared(dsn.clone())
             .map_err(|e| anyhow::anyhow!("Invalid DSN: {}", e))?
@@ -38,8 +51,8 @@ impl RemoteBackend {
 impl StrakeQueryExecutor for RemoteBackend {
     async fn execute(&mut self, query: &str) -> anyhow::Result<(Arc<Schema>, Vec<RecordBatch>)> {
         let info = self.client.execute(query.to_string(), None).await?;
-        let mut batches: Vec<RecordBatch> = Vec::new();
-        let schema = info.clone().try_decode_schema()?;
+        let mut batches: Vec<RecordBatch> = Vec::with_capacity(info.endpoint.len());
+        let schema = Arc::new(info.clone().try_decode_schema()?);
 
         for endpoint in info.endpoint {
             if let Some(ticket) = endpoint.ticket {
@@ -49,13 +62,13 @@ impl StrakeQueryExecutor for RemoteBackend {
                 }
             }
         }
-        Ok((Arc::new(schema), batches))
+        Ok((schema, batches))
     }
 
     async fn trace(&mut self, query: &str) -> anyhow::Result<String> {
         let explain_query = format!("EXPLAIN {}", query);
         let info = self.client.execute(explain_query, None).await?;
-        let mut explain_batches = Vec::new();
+        let mut explain_batches = Vec::with_capacity(info.endpoint.len());
         for endpoint in info.endpoint {
             if let Some(ticket) = endpoint.ticket {
                 let mut stream = self.client.do_get(ticket).await?;
@@ -89,7 +102,7 @@ impl StrakeQueryExecutor for RemoteBackend {
         let flight_info = self.client.get_tables(cmd).await?;
 
         // Part 2: DoGet for each endpoint
-        let mut batches: Vec<RecordBatch> = Vec::new();
+        let mut batches: Vec<RecordBatch> = Vec::with_capacity(flight_info.endpoint.len());
         for endpoint in flight_info.endpoint {
             if let Some(ticket) = endpoint.ticket {
                 let mut batch_stream = self.client.do_get(ticket).await?;
@@ -125,7 +138,7 @@ impl StrakeQueryExecutor for RemoteBackend {
 
                 // Columnar iteration over the binary column
                 for bytes in schema_col.iter().flatten() {
-                    // SAFETY: IPC framing: first 4 bytes are continuation marker [0xFF, 0xFF, 0xFF, 0xFF]
+                    // Arrow IPC framing: first 4 bytes are continuation marker [0xFF, 0xFF, 0xFF, 0xFF]
                     // per Arrow IPC spec. Following 4 bytes are message length (little-endian).
                     let slice = if bytes.len() >= 8 && bytes[0..4] == [0xff, 0xff, 0xff, 0xff] {
                         &bytes[8..]
@@ -174,6 +187,12 @@ impl StrakeQueryExecutor for RemoteBackend {
         // Full tree visualization requires the physical plan which is only
         // available in embedded mode.
         self.trace(query).await
+    }
+
+    async fn list_sources(&mut self) -> anyhow::Result<String> {
+        // Remote backend doesn't currently expose source configs over Flight.
+        // Return an empty list for now.
+        Ok("[]".to_string())
     }
 
     async fn shutdown(&mut self) -> anyhow::Result<()> {

@@ -13,9 +13,9 @@
 
 <br>
 
-**Strake** is the AI Data Layer. Not just a query tool, and not a RAG pipeline. It's the sandboxed execution environment where agents meet your data and return answers, not rows.
+**Strake** is the AI Data Layer. Not a query tool. Not a RAG pipeline. The sandboxed execution environment where agents meet your data and return answers, not rows.
 
-Built on [Apache Arrow DataFusion](https://github.com/apache/arrow-datafusion), Strake enables AI agents to discover, query, and process data across your entire stack (PostgreSQL, Snowflake, S3, and more) without the need for data movement or ETL.
+Built on [Apache Arrow DataFusion](https://github.com/apache/arrow-datafusion), Strake enables AI agents to discover, query, and process data across your entire stack (PostgreSQL, Snowflake, S3, and more) without the need for data movement or ETL. Give AI agents structured access to your entire data stack safely.
 
 > 📚 **Full Documentation**: Check out the [complete documentation](https://strake-data.github.io/strake/) for installation, architecture, and API references.
 
@@ -23,38 +23,43 @@ Built on [Apache Arrow DataFusion](https://github.com/apache/arrow-datafusion), 
 
 ##  Key Features
 
-- **Developer First**: Built for engineers. Type-safe configuration, rich CLI tooling, and local development workflows.
-- **Secure Execution Layer**: Run untrusted Python code safely using Firecracker MicroVMs or Native OS Sandboxing (Landlock, Seccomp, Namespaces).
-- **High Performance**: Sub-second latency for federated joins using Apache Arrow.
-- **Pluggable Sources**: Postgres, S3, Local Files, REST, gRPC, and more.
-- **MCP-Native Discovery**: Built for the Model Context Protocol. Your agents discover your entire data catalog and schemas instantly.
+- **MCP-Native Discovery**: Built for the Model Context Protocol. Your agents immediately discover your entire data catalog and schemas.
+- **Run Python, Not Prompts**: Every agent execution runs inside strict native OS sandboxes for performance, or ephemeral MicroVMs for hardware-level isolation.
+- **Zero-Copy Federation**: Query Postgres, S3, Local Files, REST, gRPC, and more simultaneously with Pushdown optimization via Apache Arrow.
+- **Read-Only by Default**: Strict read-only enforcement, dynamic Row-Level Security (RLS), and PII masking out of the box.
+- **Developer First**: Built for engineers shipping agents to production. Type-safe configuration, rich CLI tooling, and local development workflows.
 - **Python Native**: Zero-copy integration with Pandas and Polars via PyO3.
-- **Enterprise Governance**: Row-Level Security (RLS), Column Masking, and OIDC Authentication (Enterprise Edition).
-- **Observability**: Built-in OpenTelemetry tracing and Prometheus metrics.
 - **GitOps Native**: Manage your data mesh configuration as code. Version control your sources, policies, and metrics.
-- **Enterprise Features**: OIDC, Row-Level Security, and Data Contracts (see [Enterprise Edition](https://strake-data.github.io/strake/enterprise/)).
+- **Observability**: Built-in OpenTelemetry tracing and Prometheus metrics.
+- **Enterprise Capabilities**: OIDC Authentication, Row-Level Security, and Data Contracts (Enterprise Edition).
 
 ## Code Mode: Don't Compute in Context
 
-Most agents fail by swallowing thousands of raw SQL rows. Strake's **Code Mode** lets them process data in Python inside a secure sandbox, sending only the parsed results to the LLM.
+Most agents fail by swallowing thousands of raw SQL rows. Strake's **Code Mode** lets them process data in Python where it lives, inside a secure sandbox, sending only the parsed results that matter to the LLM.
 
 ```python
 import strake
 from strake.mcp import run_python
 
-# Query 10M rows instantly via DataFusion
-# Aggregate in Python to prevent context bloat
 script = """
+# 1. Query 10M rows instantly via DataFusion
 df = strake.sql("SELECT * FROM user_events")
+
+# 2. Aggregate in Python to prevent context bloat
 summary = df.groupby('feature_flag')['latency'].median()
+
+# 3. Print exactly what the LLM needs
 print(summary.to_json())
 """
 
 # Runs isolated with OS Sandboxing or Firecracker VMs
 result = await run_python(script)
+print(result)
 ```
 
 ## Quick Start (5-Minute Setup)
+
+If you're building agents that need to query Postgres, S3, and a REST API in a single operation — without context overflow and without leaking credentials — Strake is the runtime you're missing.
 
 ### 1. Installation
 

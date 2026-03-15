@@ -1,15 +1,33 @@
-//! Apply command for applying configuration to the metadata store.
+//! # Apply Command
 //!
-//! # Overview
 //! The `apply` command creates a new version of the domain configuration in the
 //! metadata store based on the local `sources.yaml`. It is the primary mechanism
 //! in the GitOps workflow.
 //!
-//! # Key Features
-//! - **Optimistic Locking**: Ensures no concurrent modifications via `expected_version` or db checks.
-//! - **Atomic Updates**: All changes for a domain version are applied transactionally.
-//! - **Audit Logging**: Records who applied the change, invalidates caches, and stores the full config snapshot.
-//! - **Dry Run**: Preview changes (via `diff`) without applying them.
+//! ## Overview
+//!
+//! This module coordinates optimistic locking, atomic database updates, audit logging,
+//! and server notification upon successful configuration application. It can optionally
+//! run in dry-run mode.
+//!
+//! ## Usage
+//!
+//! ```rust
+//! // apply(&store, options, &config).await?;
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Config parsing is done synchronously before dispatching async tasks. Hashes the entire
+//! YAML config to store audit proofs.
+//!
+//! ## Safety
+//!
+//! No unsafe blocks.
+//!
+//! ## References
+//!
+//! - [Apply Command RFC](https://strake.io/docs)
 
 use super::diff::{diff_internal, print_diff_human};
 use super::helpers::ApplyResult;
@@ -22,31 +40,47 @@ use crate::{
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use serde_json::json;
-use std::fs;
 
-#[allow(clippy::too_many_arguments)]
+pub struct ApplyOptions {
+    pub file_path: String,
+    pub force: bool,
+    pub dry_run: bool,
+    pub expected_version: Option<i32>,
+    pub format: OutputFormat,
+    pub notify_url: Option<String>,
+}
+
 pub async fn apply(
     store: &dyn MetadataStore,
-    file_path: &str,
-    force: bool,
-    dry_run: bool,
-    expected_version: Option<i32>,
-    format: OutputFormat,
+    options: ApplyOptions,
     config: &CliConfig,
-    notify_url: Option<String>,
 ) -> Result<()> {
-    if !format.is_machine_readable() {
+    let format = options.format;
+    let dry_run = options.dry_run;
+    let expected_version = options.expected_version;
+    if !options.format.is_machine_readable() {
         println!(
             "{} {} {}",
             "[Config:".dimmed(),
-            file_path.yellow(),
+            options.file_path.yellow(),
             "] Applying configuration...".bold().cyan()
         );
     }
+    let raw_yaml = tokio::fs::read_to_string(&options.file_path)
+        .await
+        .context(format!("Failed to read config file: {}", options.file_path))?;
 
-    // Read file once to avoid race condition (TOCTOU) between parsing and hashing
-    let raw_yaml = fs::read_to_string(file_path)
-        .context(format!("Failed to read config file: {}", file_path))?;
+    if let Ok(raw_source_config) = serde_yaml::from_str::<crate::models::SourcesConfig>(&raw_yaml) {
+        for source in &raw_source_config.sources {
+            if let Some(password) = &source.password {
+                use secrecy::ExposeSecret;
+                let sec = password.expose_secret();
+                if !sec.starts_with("${") {
+                    tracing::warn!("Plaintext password stored in database for source '{}'. Use environment variable substitution (e.g. ${{PASSWORD}}) for secure operation.", source.name);
+                }
+            }
+        }
+    }
 
     // Expand secrets and parse
     let expanded_yaml = super::helpers::expand_secrets(&raw_yaml);
@@ -55,8 +89,6 @@ pub async fn apply(
 
     let domain = source_config.domain.as_deref().unwrap_or("default");
 
-    store.init().await?; // Ensure schema exists before any logic or diffing
-
     if dry_run {
         if !format.is_machine_readable() {
             println!("\n--- DRY RUN MODE ---");
@@ -64,15 +96,15 @@ pub async fn apply(
         }
 
         // Validate (Machine mode silent, human mode prints)
-        validate(file_path, false, format, config).await?;
+        validate(&options.file_path, false, options.format, config).await?;
 
-        if !format.is_machine_readable() {
+        if !options.format.is_machine_readable() {
             println!();
         }
 
-        let diff_result = diff_internal(store, file_path).await?;
+        let diff_result = diff_internal(store, &options.file_path).await?;
 
-        if format.is_machine_readable() {
+        if options.format.is_machine_readable() {
             let result = ApplyResult {
                 domain: domain.to_string(),
                 version: store.get_domain_version(domain).await.unwrap_or(0),
@@ -80,10 +112,11 @@ pub async fn apply(
                 deleted: vec![],
                 dry_run: true,
                 diff: Some(super::helpers::DiffResult {
+                    domain: super::helpers::DomainName(domain.to_string()),
                     changes: diff_result.changes,
                 }),
             };
-            output::print_success(format, result)?;
+            output::print_success(options.format, result)?;
         } else {
             print_diff_human(&diff_result);
             println!("\nNo changes applied (dry-run mode).");
@@ -91,7 +124,8 @@ pub async fn apply(
         return Ok(());
     }
 
-    // store.init() already called above before dry_run check
+    // Ensure schema exists before importing (do not run during dry-run)
+    store.init().await?;
 
     // 1. Optimistic Locking
     let current_version_to_update = match expected_version {
@@ -108,7 +142,7 @@ pub async fn apply(
         )?;
 
     // 3. Import
-    let apply_res = store.apply_sources(&source_config, force).await?;
+    let apply_res = store.apply_sources(&source_config, options.force).await?;
 
     // 4. Audit Log
     let user_id = std::env::var("USER").unwrap_or_else(|_| "cli-user".to_string());
@@ -133,9 +167,9 @@ pub async fn apply(
         })
         .await?;
 
-    if format.is_machine_readable() {
+    if options.format.is_machine_readable() {
         output::print_success(
-            format,
+            options.format,
             ApplyResult {
                 domain: domain.to_string(),
                 version: new_version,
@@ -155,8 +189,8 @@ pub async fn apply(
     }
 
     // 5. Notify Server (if configured)
-    if let Some(url) = notify_url {
-        if !format.is_machine_readable() {
+    if let Some(url) = options.notify_url {
+        if !options.format.is_machine_readable() {
             println!("{} Notifying server at {}...", "ℹ".blue(), url);
         }
         let client = reqwest::Client::new();

@@ -3,7 +3,7 @@
 This document provides context for AI agents (like Cursor, Copilot) to understand the Strake project, its configuration patterns, and architecture.
 
 ## Core Concept
-Strake is a high-performance **federated SQL engine** built on **Apache Arrow DataFusion**. It acts as an "Intelligent Pipe," enabling zero-copy federation across disparate data sources via a single **Arrow Flight SQL** interface. It does **not** copy data; it pushes queries down to the source.
+Strake is the **AI Data Layer**, built on **Apache Arrow DataFusion**. It acts as the sandboxed execution environment where agents meet your data and return answers, not rows. It enables zero-copy federation across disparate data sources via a single **Arrow Flight SQL** interface without the need for data movement or ETL.
 
 ## Configuration: `sources.yaml`
 Strake uses a GitOps-driven configuration file `sources.yaml` to define data sources.

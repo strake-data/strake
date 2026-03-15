@@ -1,3 +1,6 @@
+//! Error types for the Python bindings.
+#![allow(missing_docs)]
+
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -23,7 +26,10 @@ pub fn register_exceptions(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<
     Ok(())
 }
 
-/// Convert StrakeError to appropriate Python exception
+/// Convert StrakeError to appropriate Python exception.
+///
+/// Maps the internal Strake error categories to the corresponding Python
+/// exception classes defined in this module.
 pub fn to_py_exception(py: Python<'_>, err: StrakeError) -> PyErr {
     let attrs = error_to_dict(py, &err);
 
@@ -33,7 +39,7 @@ pub fn to_py_exception(py: Python<'_>, err: StrakeError) -> PyErr {
         ErrorCategory::Config => ConfigError::new_err((err.message, attrs)),
         ErrorCategory::Auth => AuthError::new_err((err.message, attrs)),
         ErrorCategory::Internal => InternalError::new_err((err.message, attrs)),
-        // Handle future categories gracefully
+        // Handle future categories gracefully by defaulting to InternalError.
         _ => InternalError::new_err((err.message, attrs)),
     }
 }

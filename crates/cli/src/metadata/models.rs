@@ -1,3 +1,30 @@
+//! # Metadata Models
+//!
+//! Internal data structures for metadata representation.
+//!
+//! ## Overview
+//!
+//! Exposes JSON/YAML serializable structs used to exchange config and audit state among
+//! CLI commands and drivers.
+//!
+//! ## Usage
+//!
+//! ```rust
+//! // use crate::metadata::models::*;
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Lightweight POJOs.
+//!
+//! ## Safety
+//!
+//! Standard safe Rust.
+//!
+//! ## References
+//!
+//! - Strake Models Reference.
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

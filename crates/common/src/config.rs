@@ -1,11 +1,13 @@
 pub use crate::models::{ColumnConfig, QueryCacheConfig, SourceConfig, TableConfig};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
 use validator::Validate;
 
 // Default constants
 pub const DEFAULT_PORT: u16 = 50051;
+// Health and API ports both default to 8080 because, by default, the health endpoint
+// and API endpoint are served from the same listener in the current deployment model.
 pub const DEFAULT_HEALTH_PORT: u16 = 8080;
 pub const DEFAULT_API_PORT: u16 = 8080;
 pub const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:50051";
@@ -20,12 +22,44 @@ pub const DEFAULT_MAX_ATTEMPTS: u32 = 5;
 pub const DEFAULT_BASE_DELAY_MS: u64 = 1000;
 pub const DEFAULT_MAX_DELAY_MS: u64 = 60000;
 
-pub const DEFAULT_API_KEY: &str = "dev-key";
+pub const DEFAULT_API_KEY: &str = "";
 pub const DEFAULT_CACHE_TTL: u64 = 300;
 pub const DEFAULT_CACHE_CAPACITY: u64 = 10000;
 
 pub const DEFAULT_TELEMETRY_ENABLED: bool = false;
 pub const DEFAULT_OTLP_ENDPOINT: &str = "http://localhost:4317";
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum AgentGuardMode {
+    #[serde(rename = "disabled")]
+    Disabled,
+    #[serde(rename = "dry_run")]
+    #[default]
+    DryRun,
+    #[serde(rename = "enforce")]
+    Enforce,
+}
+
+impl std::fmt::Display for AgentGuardMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `#[non_exhaustive]` applies only to downstream crates; within this crate the wildcard arm
+        // is currently unreachable, but keeping it makes this impl resilient to future variants.
+        #[allow(unreachable_patterns)]
+        match self {
+            AgentGuardMode::Disabled => write!(f, "disabled"),
+            AgentGuardMode::DryRun => write!(f, "dry_run"),
+            AgentGuardMode::Enforce => write!(f, "enforce"),
+            _ => write!(f, "unknown"),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default, Clone, Copy)]
+pub struct SecurityConfig {
+    #[serde(default)]
+    pub agent_guard_mode: AgentGuardMode,
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
@@ -47,6 +81,7 @@ pub struct QueryLimits {
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq)]
+#[non_exhaustive]
 pub enum StrakeEnvironment {
     #[default]
     #[serde(rename = "development")]
@@ -95,6 +130,8 @@ pub struct AppConfig {
     pub server: ServerSettings,
     #[serde(default)]
     pub query_limits: QueryLimits,
+    #[serde(default)]
+    pub security: SecurityConfig,
     #[serde(default)]
     pub retry: RetrySettings,
     #[serde(default)]
@@ -296,11 +333,6 @@ fn default_health_addr() -> String {
     DEFAULT_HEALTH_ADDR.to_string()
 }
 
-#[allow(dead_code)]
-fn default_pool_size() -> usize {
-    10
-}
-
 fn default_global_budget() -> usize {
     DEFAULT_GLOBAL_CONNECTION_BUDGET
 }
@@ -371,25 +403,22 @@ fn default_cache_capacity() -> u64 {
     DEFAULT_CACHE_CAPACITY
 }
 
-#[derive(Debug, Deserialize, Clone, Validate)]
+#[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AuditFailureMode {
+    #[default]
+    #[serde(rename = "alert")]
+    Alert,
+    #[serde(rename = "shutdown")]
+    Shutdown,
+}
+
+#[derive(Debug, Deserialize, Clone, Validate, Default)]
 pub struct AuditSettings {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default = "default_audit_failure_mode")]
-    pub failure_mode: String, // "shutdown" or "alert"
-}
-
-impl Default for AuditSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            failure_mode: default_audit_failure_mode(),
-        }
-    }
-}
-
-fn default_audit_failure_mode() -> String {
-    "alert".to_string()
+    #[serde(default)]
+    pub failure_mode: AuditFailureMode,
 }
 
 // Config implementation
@@ -423,6 +452,10 @@ impl AppConfig {
             .validate()
             .map_err(|e| anyhow::anyhow!("Configuration validation failed: {:?}", e))?;
 
+        if app_config.server.auth.enabled && app_config.server.auth.api_key.is_empty() {
+            bail!("server.auth.enabled = true but server.auth.api_key is not set");
+        }
+
         Ok(app_config)
     }
 }
@@ -455,6 +488,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_app_config_validation() {
@@ -462,6 +496,48 @@ mod tests {
         // Should validate OK with defaults (assuming defaults are valid)
         // api_url default is http://... which is valid URL
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_defaults_are_rollout_safe() {
+        assert_eq!(AgentGuardMode::default(), AgentGuardMode::DryRun);
+        assert!(!AuditSettings::default().enabled);
+        assert_eq!(
+            AuditSettings::default().failure_mode,
+            AuditFailureMode::Alert
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_auth_enabled_requires_api_key() {
+        // Ensure environment overrides don't accidentally provide a key during this test.
+        // AppConfig::from_file() reads from both file and STRAKE_* env vars.
+        let env_key = "STRAKE_SERVER__AUTH__API_KEY";
+        let prev = std::env::var(env_key).ok();
+        std::env::set_var(env_key, "");
+
+        let dir = std::env::temp_dir();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = dir.join(format!("strake-auth-test-{unique}.yaml"));
+
+        std::fs::write(&path, "server:\n  auth:\n    enabled: true\n").unwrap();
+
+        let err = AppConfig::from_file(path.to_str().unwrap()).unwrap_err();
+        let _ = std::fs::remove_file(&path);
+
+        match prev {
+            Some(v) => std::env::set_var(env_key, v),
+            None => std::env::remove_var(env_key),
+        }
+
+        assert!(
+            err.to_string().contains("api_key"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

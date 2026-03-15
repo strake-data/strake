@@ -1,9 +1,30 @@
+//! # Shared Helpers
+//!
 //! Shared helper functions and types for CLI commands.
 //!
-//! # Components
+//! ## Overview
+//!
 //! - **Utilities**: `expand_secrets` (env var substitution), `get_client` (authenticated HTTP), `parse_yaml` (helpers).
 //! - **Result Types**: Serializable structs used by commands for machine-readable (JSON/YAML) output.
 //!   Common types include `ValidateResult`, `ApplyResult`, `DiffResult`, etc.
+//!
+//! ## Usage
+//!
+//! ```rust
+//! // use crate::commands::helpers::parse_yaml;
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! `expand_secrets` uses a global `LazyLock` regex to prevent recompilation penalties.
+//!
+//! ## Safety
+//!
+//! Standard safe Rust.
+//!
+//! ## References
+//!
+//! - Helpers architecture specs.
 
 use crate::config::CliConfig;
 use crate::models;
@@ -11,16 +32,21 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde::Serialize;
 use std::env;
-use std::fs;
+
+use std::sync::LazyLock;
+
+static SECRET_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}").expect("hard-coded regex is valid")
+});
 
 /// Expand environment variable placeholders in content.
 pub fn expand_secrets(content: &str) -> String {
-    let re = Regex::new(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}").unwrap();
-    re.replace_all(content, |caps: &regex::Captures| {
-        let var_name = &caps[1];
-        env::var(var_name).unwrap_or_else(|_| format!("${{{}}}", var_name))
-    })
-    .to_string()
+    SECRET_RE
+        .replace_all(content, |caps: &regex::Captures| {
+            let var_name = &caps[1];
+            env::var(var_name).unwrap_or_else(|_| format!("${{{}}}", var_name))
+        })
+        .to_string()
 }
 
 /// Build an authenticated HTTP client using the provided configuration.
@@ -38,9 +64,10 @@ pub fn get_client(config: &CliConfig) -> Result<reqwest::Client> {
 }
 
 /// Parse a YAML configuration file with secret expansion.
-pub fn parse_yaml(path: &str) -> Result<models::SourcesConfig> {
-    let raw_content =
-        fs::read_to_string(path).context(format!("Failed to read config file: {}", path))?;
+pub async fn parse_yaml(path: &str) -> Result<models::SourcesConfig> {
+    let raw_content = tokio::fs::read_to_string(path)
+        .await
+        .context(format!("Failed to read config file: {}", path))?;
     let content = expand_secrets(&raw_content);
     serde_yaml::from_str(&content).context("Failed to parse YAML structure")
 }
@@ -53,17 +80,48 @@ pub struct ValidateResult {
     pub errors: Vec<String>,
 }
 
-#[derive(Serialize)]
-pub struct DiffChange {
-    #[serde(rename = "type")]
-    pub change_type: String,
-    pub category: String,
-    pub name: String,
-    pub details: Option<String>,
+#[derive(Serialize, Clone, Debug)]
+#[serde(transparent)]
+pub struct DomainName(pub String);
+
+impl std::fmt::Display for DomainName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub enum ChangeType {
+    #[serde(rename = "ADD")]
+    Added,
+    #[serde(rename = "MODIFY")]
+    Modified,
+    #[serde(rename = "DELETE")]
+    Deleted,
+}
+
+impl std::fmt::Display for ChangeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ChangeType::Added => "ADD",
+            ChangeType::Modified => "MODIFY",
+            ChangeType::Deleted => "DELETE",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct DiffChange {
+    pub change_type: ChangeType,
+    pub path: String,
+    pub previous: Option<String>,
+    pub current: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
 pub struct DiffResult {
+    pub domain: DomainName,
     pub changes: Vec<DiffChange>,
 }
 

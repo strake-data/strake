@@ -26,3 +26,4 @@ serde_yaml = { workspace = true }
 tracing = { workspace = true }
 async-trait.workspace = true
 tracing-subscriber = { workspace = true }
+aho-corasick = "1.1"

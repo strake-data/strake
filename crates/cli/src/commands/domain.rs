@@ -1,13 +1,29 @@
+//! # Domain Management
+//!
 //! Domain-related commands: rollback, list_domains, show_domain_history.
 //!
-//! # Overview
+//! ## Overview
+//!
 //! Domains in Strake represent isolated namespaces for configurations (e.g., `prod`, `staging`).
 //! These commands allow managing the lifecycle and history of domain configurations.
 //!
-//! # Commands
-//! - **list_domains**: Shows all active domains and their current versions.
-//! - **show_domain_history**: Displays the audit log of applied configurations for a domain.
-//! - **rollback**: Reverts a domain to a previous version by re-applying the historical configuration.
+//! ## Usage
+//!
+//! ```rust
+//! // rollback(&store, domain, version, force, format).await?;
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Fetches history states using offset/limit pagination to avoid memory bloat.
+//!
+//! ## Safety
+//!
+//! Standard safe Rust. Uses transactional boundaries.
+//!
+//! ## References
+//!
+//! - Domain Management Proposal
 
 use super::helpers::{ApplyResult, DomainEntry, DomainHistoryEntry};
 use crate::{
@@ -24,6 +40,7 @@ pub async fn rollback(
     store: &dyn MetadataStore,
     domain: &str,
     to_version: i32,
+    force: bool,
     format: OutputFormat,
 ) -> Result<()> {
     if !format.is_machine_readable() {
@@ -47,7 +64,7 @@ pub async fn rollback(
         .await?;
 
     // 4. Import
-    let apply_res = store.apply_sources(&config, true).await?;
+    let apply_res = store.apply_sources(&config, force).await?;
 
     // 5. Audit Log
     let user_id = std::env::var("USER").unwrap_or_else(|_| "cli-user".to_string());

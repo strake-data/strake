@@ -85,3 +85,4 @@ site/
 /test_init
 /.agent/
 strake_agent.py
+/codeql-db/*

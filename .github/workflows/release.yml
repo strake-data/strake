@@ -38,6 +38,11 @@ jobs:
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
+      - name: Verify GitHub Token
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh auth status
+
       - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
@@ -87,20 +92,21 @@ jobs:
       
       - name: Build (native & aarch64 cross)
         if: matrix.target != 'x86_64-unknown-linux-musl'
-        run: cargo build --release -p strake-cli -p strake-server --target ${{ matrix.target }}
+        run: cargo build --release -p strake-cli -p strake-server -p strake-enterprise --target ${{ matrix.target }}
         
       - name: Build (x86_64 musl in Docker)
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           export HOST_UID=$(id -u)
           export HOST_GID=$(id -g)
-          docker run --rm -v ${{ github.workspace }}:/build -v ~/.cargo:/usr/local/cargo -w /build rust:1.93-alpine3.21 \
+          mkdir -p ~/.cargo/registry ~/.cargo/git
+          docker run --rm -e STRAKE_LICENSE_PUBKEY_PATH=/build/keys/public.pem -v ${{ github.workspace }}:/build -v ~/.cargo/registry:/usr/local/cargo/registry -v ~/.cargo/git:/usr/local/cargo/git -w /build rust:alpine \
             sh -c "apk add --no-cache cmake clang protoc protobuf-dev g++ make perl linux-headers openssl-dev git \
             && export CC_x86_64_unknown_linux_musl=gcc \
             && export CXX_x86_64_unknown_linux_musl=g++ \
             && export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS='-C target-feature=+crt-static' \
-            && cargo build --release -p strake-cli -p strake-server --target x86_64-unknown-linux-musl \
-            && chown -R ${HOST_UID}:${HOST_GID} target /usr/local/cargo/registry || true"
+            && cargo build --release -p strake-cli -p strake-server -p strake-enterprise --target x86_64-unknown-linux-musl \
+            && chown -R ${HOST_UID}:${HOST_GID} target /usr/local/cargo/registry /usr/local/cargo/git"
       
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -109,8 +115,7 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/strake-cli*
             target/${{ matrix.target }}/release/strake-server*
-
-
+            target/${{ matrix.target }}/release/strake-enterprise*
 
   python-build:
     name: Build Python Wheels (${{ matrix.os }})
@@ -180,6 +185,7 @@ jobs:
 
   docker-build:
     name: Build Docker Image
+    needs: [build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -198,6 +204,12 @@ jobs:
           submodules: 'recursive'
           token: ${{ steps.generate-token.outputs.token }}
       
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*-unknown-linux-gnu
+          path: downloaded-binaries
+
       - name: Setup Enterprise Key
         shell: bash
         run: |
@@ -235,6 +247,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: Dockerfile.release
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -264,13 +277,38 @@ jobs:
     name: Create GitHub Release
     needs: [build, python-build, docker-build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
+      - name: Rename binaries
+        run: |
+          mkdir -p release_assets
+          for dir in binaries-*/; do
+            # the folder name is like binaries-x86_64-unknown-linux-gnu/
+            target=$(basename "$dir" | sed 's/binaries-//')
+            for file in "$dir"*; do
+              # skip if directory is empty
+              [ -e "$file" ] || continue
+              filename=$(basename "$file")
+              extension="${filename##*.}"
+              basename="${filename%.*}"
+              if [ "$extension" = "$filename" ]; then
+                new_name="${filename}-${target}"
+              else
+                new_name="${basename}-${target}.${extension}"
+              fi
+              cp "$file" "release_assets/${new_name}"
+            done
+          done
+
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           files: |
-            binaries-*/*
+            release_assets/*
             python-wheels-*/*
           generate_release_notes: true
           body: |
