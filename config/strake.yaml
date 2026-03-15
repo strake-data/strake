@@ -10,6 +10,8 @@ server:
     enabled: false
 query_limits:
   max_output_rows: 10000
+security:
+  agent_guard_mode: dry_run # disabled | dry_run | enforce (applies to MCP tool calls only)
 retry:
   max_attempts: 3
 cache:
