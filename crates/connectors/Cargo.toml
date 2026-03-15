@@ -15,24 +15,24 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
-url = "2.5"
+url = { workspace = true }
 secrecy = { workspace = true }
 serde = { workspace = true }
-thiserror = "2.0"
+thiserror = { workspace = true }
 
 # Connectors
 duckdb = { version = "1.1", features = ["bundled"], default-features = false }
 tokio-postgres = { workspace = true }
 postgres-types = { workspace = true }
 rust_decimal = { workspace = true }
-mysql_async = "0.36"
+mysql_async = "0.36.1"
 rusqlite = { version = "0.37", features = ["bundled"] }
 object_store = { version = "0.12.4", features = ["aws"] }
 opendal = { version = "0.55.0", features = ["services-s3", "services-azblob", "services-gcs", "services-http", "services-ftp"] }
 object_store_opendal = "0.55.0"
-reqwest = { version = "0.11", features = ["json", "blocking"] }
+jsonwebtoken = { workspace = true }
 base64 = "0.22"
-jsonwebtoken = "9.3.1"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 rand = "0.9.2"
