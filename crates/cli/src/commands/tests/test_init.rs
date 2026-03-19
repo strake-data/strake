@@ -1,5 +1,6 @@
-use crate::commands::init;
 use crate::output::OutputFormat;
+use crate::secrets::ResolverContext;
+use anyhow::Result;
 use serial_test::serial;
 use std::fs;
 use tempfile::tempdir;
@@ -16,7 +17,9 @@ async fn test_init_creates_all_files() {
     let original_dir = std::env::current_dir().unwrap();
     std::env::set_current_dir(temp_dir.path()).unwrap();
 
-    let result = init::init(None, &sources_path, false, OutputFormat::Human).await;
+    let ctx = ResolverContext::default();
+    let result: Result<i32> =
+        crate::commands::init(None, &sources_path, false, OutputFormat::Human, &ctx).await;
 
     std::env::set_current_dir(original_dir).unwrap();
 
@@ -46,11 +49,13 @@ async fn test_init_with_template() {
     let original_dir = std::env::current_dir().unwrap();
     std::env::set_current_dir(temp_dir.path()).unwrap();
 
-    let result = init::init(
+    let ctx = ResolverContext::default();
+    let result: Result<i32> = crate::commands::init(
         Some("sql".to_string()),
         &sources_path,
         true,
         OutputFormat::Human,
+        &ctx,
     )
     .await;
 
@@ -74,7 +79,9 @@ async fn test_init_sources_only() {
     let original_dir = std::env::current_dir().unwrap();
     std::env::set_current_dir(temp_dir.path()).unwrap();
 
-    let result = init::init(None, &sources_path, true, OutputFormat::Human).await;
+    let ctx = ResolverContext::default();
+    let result: Result<i32> =
+        crate::commands::init(None, &sources_path, true, OutputFormat::Human, &ctx).await;
 
     std::env::set_current_dir(original_dir).unwrap();
 

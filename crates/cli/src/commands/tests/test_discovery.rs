@@ -1,6 +1,7 @@
 use crate::commands::discovery::{add, search};
 use crate::config::CliConfig;
 use crate::output::OutputFormat;
+use crate::secrets::ResolverContext;
 use std::fs;
 use std::path::PathBuf;
 use wiremock::matchers::{method, path};
@@ -46,6 +47,7 @@ async fn test_search_success() {
         None,
         OutputFormat::Json,
         &config,
+        &ResolverContext::default(),
     )
     .await;
     assert!(result.is_ok());
@@ -89,6 +91,7 @@ async fn test_add_new_source() {
         output_path.to_str().unwrap(),
         OutputFormat::Json,
         &config,
+        &ResolverContext::default(),
     )
     .await;
 

@@ -110,6 +110,15 @@ pub struct IcebergRestConfig {
     /// S3 endpoint for non-AWS deployments (optional)
     #[serde(default)]
     pub s3_endpoint: Option<String>,
+    /// S3 Access Key ID (optional, overrides environment)
+    #[serde(default)]
+    pub s3_access_key: Option<String>,
+    /// S3 Secret Access Key (optional, overrides environment)
+    #[serde(default)]
+    pub s3_secret_key: Option<SecretString>,
+    /// S3 Session Token (optional, overrides environment)
+    #[serde(default)]
+    pub s3_session_token: Option<SecretString>,
     /// Request timeout in seconds (optional)
     #[serde(default)]
     pub request_timeout_secs: Option<u64>,

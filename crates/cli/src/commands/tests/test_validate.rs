@@ -49,8 +49,10 @@ async fn test_validate_contracts_failure() {
 
     let result = validate_contracts("sources: []", "contracts.yaml", &config).await;
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Contract violation"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Contract violation")
+    );
 }

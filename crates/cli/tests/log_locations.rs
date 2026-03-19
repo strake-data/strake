@@ -39,13 +39,14 @@ fn test_env_var_override() {
     let tmp_dir = TempDir::new().expect("Failed to create temp dir");
     let db_path = tmp_dir.path().join("override.db");
 
-    env::set_var("STRAKE_METADATA_DB", db_path.to_str().unwrap());
+    temp_env::with_var("STRAKE_METADATA_DB", Some(db_path.to_str().unwrap()), {
+        let db_path = db_path.clone();
+        move || {
+            // In config.rs, we have:
+            // if let Ok(path) = env::var("STRAKE_METADATA_DB") { return PathBuf::from(path); }
 
-    // In config.rs, we have:
-    // if let Ok(path) = env::var("STRAKE_METADATA_DB") { return PathBuf::from(path); }
-
-    let effective_path = env::var("STRAKE_METADATA_DB").ok().map(PathBuf::from);
-    assert_eq!(effective_path, Some(db_path));
-
-    env::remove_var("STRAKE_METADATA_DB");
+            let effective_path = env::var("STRAKE_METADATA_DB").ok().map(PathBuf::from);
+            assert_eq!(effective_path, Some(db_path));
+        }
+    });
 }

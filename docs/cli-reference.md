@@ -58,6 +58,9 @@ Check your configuration for syntax and connectivity errors without applying cha
 `--offline` : `bool`, *default: false*
 :   Skip network connectivity checks and perform only local schema validation.
 
+`--ci` : `bool`, *default: false*
+:   Strict mode: fail on warnings (coercions, drift). Useful for CI/CD pipelines.
+
 ---
 
 ### `diff`
@@ -83,7 +86,7 @@ Preview the differences between your local configuration and the live metadata s
 <span class="type">command</span>
 </div>
 
-Deploy your local configuration to the metadata store.
+Deploy your local configuration to the metadata store. In JSON mode, returns an `ApplyReceipt`.
 
 **Options:**
 
@@ -91,13 +94,38 @@ Deploy your local configuration to the metadata store.
 :   Path to the configuration file to deploy.
 
 `--force` : `bool`, *default: false*
-:   Required for potentially destructive actions (e.g., deleting a source).
+:   Required for potentially destructive actions (e.g., deleting a source or bypassing orphaned references).
 
 `--dry-run` : `bool`, *default: false*
 :   Runs validation and previews changes (via `diff`) without actually persisting them.
 
 `--expected-version` : `int`, *optional*
 :   Enforces optimistic locking. The operation will fail if the current version in the metadata store does not match this value.
+
+`--notify-url` : `str`, *optional*
+:   URL to notify after successful application (for cache invalidation).
+
+---
+
+### `status`
+
+<div class="api-signature">
+<code>strake-cli status [file]</code>
+<span class="type">command</span>
+</div>
+
+Aggregated health view of a domain, including source reachability, contract violations, and drift.
+
+**Options:**
+
+`file` : `str`, *default: sources.yaml*
+:   Path to the local configuration file (used to resolve domain).
+
+`--domain` : `str`, *optional*
+:   Explicitly specify the domain to check.
+
+`--timeout` : `int`, *default: 5000*
+:   Timeout for reachability checks in milliseconds.
 
 ---
 
@@ -150,14 +178,34 @@ Automatically adds a discovered table into your `sources.yaml`.
 
 ---
 
-### `introspect`
+### `remove`
 
 <div class="api-signature">
-<code>strake-cli introspect &lt;source&gt; [file]</code>
+<code>strake-cli remove &lt;source&gt; [table]</code>
 <span class="type">command</span>
 </div>
 
-Legacy alias for `search`.
+Safely remove a table or source entry from `sources.yaml`. Checks for orphaned contract or policy references.
+
+**Options:**
+
+`source` : `str`
+:   The name of the source.
+
+`table` : `str`, *optional*
+:   The name of the table to remove. Required unless `--source-only` is used.
+
+`file` : `str`, *default: sources.yaml*
+:   Path to the configuration file to update.
+
+`--dry-run` : `bool`, *default: false*
+:   Perform checks without writing changes to the file.
+
+`--force` : `bool`, *default: false*
+:   Proceed with removal even if orphaned contract or policy references are detected.
+
+`--source-only` : `bool`, *default: false*
+:   Remove the entire source entry (currently a stub).
 
 ---
 
@@ -241,3 +289,24 @@ Revert a domain to a previous known-good version.
 
 `--to-version` : `int`
 :   **Required**. The specific target version to revert to.
+
+---
+
+## Security
+
+### `secrets validate`
+
+<div class="api-signature">
+<code>strake-cli secrets validate [file]</code>
+<span class="type">command</span>
+</div>
+
+Validate secret references (${env:VAR}, etc.) in your configuration.
+
+**Options:**
+
+`file` : `str`, *default: sources.yaml*
+:   Path to the configuration file to validate.
+
+`--offline` : `bool`, *default: false*
+:   Skip external secret provider checks, only validate local environment and syntax.

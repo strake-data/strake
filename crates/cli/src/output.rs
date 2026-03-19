@@ -28,8 +28,7 @@ pub struct CommandResponse<T> {
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
-    #[serde(flatten)]
-    pub data: T,
+    pub data: Option<T>,
 }
 
 impl<T> CommandResponse<T> {
@@ -38,11 +37,11 @@ impl<T> CommandResponse<T> {
             status: "success".to_string(),
             message: None,
             exit_code: Some(0),
-            data,
+            data: Some(data),
         }
     }
 
-    pub fn error(message: String, exit_code: i32, data: T) -> Self {
+    pub fn error(message: String, exit_code: i32, data: Option<T>) -> Self {
         Self {
             status: "error".to_string(),
             message: Some(message),
@@ -82,28 +81,15 @@ pub fn print_success<T: Serialize>(format: OutputFormat, data: T) -> anyhow::Res
     print_output(format, response)
 }
 
-/// Print a structured error response for machine outputs
-/// Note: In Human mode, errors are typically printed to stderr by main's error handler.
-pub fn print_error<T: Serialize + Default>(
+/// Print a structured error response for machine outputs.
+///
+/// In `Human` mode, this is a no-op as errors are typically printed to stderr
+/// by the caller or the top-level error handler in `main.rs`.
+pub fn print_error<T: Serialize>(
     format: OutputFormat,
     message: &str,
     exit_code: i32,
-) -> anyhow::Result<()> {
-    if format == OutputFormat::Human {
-        // Human error printing is handled by main/eprintln
-        return Ok(());
-    }
-
-    let response = CommandResponse::error(message.to_string(), exit_code, T::default());
-    print_output(format, response)
-}
-
-/// Print a structured error response with data for machine outputs
-pub fn print_error_with_data<T: Serialize>(
-    format: OutputFormat,
-    message: &str,
-    exit_code: i32,
-    data: T,
+    data: Option<T>,
 ) -> anyhow::Result<()> {
     if format == OutputFormat::Human {
         return Ok(());

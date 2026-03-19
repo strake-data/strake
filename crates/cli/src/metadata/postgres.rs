@@ -27,17 +27,20 @@
 //! - Postgres backend architecture documentation.
 
 use super::{
-    models::{ApplyLogEntry, ApplyResult},
     MetadataStore,
+    models::{ApplyLogEntry, ApplyResult},
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use futures::future::BoxFuture;
 use secrecy::ExposeSecret;
 use strake_common::models::{ColumnConfig, SourceConfig, SourcesConfig, TableConfig};
 use tokio_postgres::{Client, NoTls};
 
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
 pub struct PostgresStore {
-    client: Client,
+    client: Arc<Mutex<Client>>,
 }
 
 impl PostgresStore {
@@ -52,7 +55,9 @@ impl PostgresStore {
             }
         });
 
-        Ok(Self { client })
+        Ok(Self {
+            client: Arc::new(Mutex::new(client)),
+        })
     }
 }
 
@@ -60,7 +65,9 @@ const DEFAULT_DOMAIN: &str = "default";
 
 impl MetadataStore for PostgresStore {
     fn init(&self) -> BoxFuture<'_, Result<()>> {
+        let client_ptr = self.client.clone();
         Box::pin(async move {
+            let client = client_ptr.lock().await;
             const MIGRATIONS: &[(&str, &str)] = &[
                 (
                     "001_initial_schema",
@@ -72,23 +79,22 @@ impl MetadataStore for PostgresStore {
                 ),
             ];
 
-            self.client.batch_execute(
+            client.batch_execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"
             ).await.context("Failed to create schema_migrations table")?;
 
             for (name, sql) in MIGRATIONS {
-                let row_count = self
-                    .client
+                let row_count = client
                     .query("SELECT 1 FROM schema_migrations WHERE name = $1", &[&name])
                     .await?
                     .len();
 
                 if row_count == 0 {
-                    self.client
+                    client
                         .batch_execute(sql)
                         .await
                         .context(format!("Failed to execute migration {}", name))?;
-                    self.client
+                    client
                         .execute("INSERT INTO schema_migrations (name) VALUES ($1)", &[&name])
                         .await?;
                 }
@@ -98,9 +104,10 @@ impl MetadataStore for PostgresStore {
     }
 
     fn get_domain_version<'a>(&'a self, domain: &'a str) -> BoxFuture<'a, Result<i32>> {
+        let client_ptr = self.client.clone();
         Box::pin(async move {
-            let row = self
-                .client
+            let client = client_ptr.lock().await;
+            let row = client
                 .query_opt("SELECT version FROM domains WHERE name = $1", &[&domain])
                 .await
                 .context("Failed to query domain version")?;
@@ -108,7 +115,7 @@ impl MetadataStore for PostgresStore {
             match row {
                 Some(r) => Ok(r.get(0)),
                 None => {
-                    self.client
+                    client
                         .execute(
                             "INSERT INTO domains (name, version) VALUES ($1, 1) ON CONFLICT DO NOTHING",
                             &[&domain],
@@ -125,9 +132,10 @@ impl MetadataStore for PostgresStore {
         domain: &'a str,
         expected_version: i32,
     ) -> BoxFuture<'a, Result<i32>> {
+        let client_ptr = self.client.clone();
         Box::pin(async move {
-            let rows = self
-                .client
+            let client = client_ptr.lock().await;
+            let rows = client
                 .execute(
                     "UPDATE domains SET version = version + 1 WHERE name = $1 AND version = $2",
                     &[&domain, &expected_version],
@@ -152,23 +160,29 @@ impl MetadataStore for PostgresStore {
         config: &'a SourcesConfig,
         force: bool,
     ) -> BoxFuture<'a, Result<ApplyResult>> {
+        let client_ptr = self.client.clone();
         Box::pin(async move {
+            let mut client = client_ptr.lock().await;
+            let tx = client
+                .transaction()
+                .await
+                .context("Failed to begin apply transaction")?;
+
             let domain = config.domain.as_deref().unwrap_or(DEFAULT_DOMAIN);
 
             // Ensure domain exists
-            self.client
-                .execute(
-                    "INSERT INTO domains (name) VALUES ($1) ON CONFLICT DO NOTHING",
-                    &[&domain],
-                )
-                .await?;
+            tx.execute(
+                "INSERT INTO domains (name) VALUES ($1) ON CONFLICT DO NOTHING",
+                &[&domain],
+            )
+            .await?;
 
             let mut active_source_ids: Vec<i32> = Vec::new();
             let mut sources_added = Vec::new();
 
             for source in &config.sources {
                 // Upsert Source
-                let source_rows = self.client.query(
+                let source_rows = tx.query(
                     "INSERT INTO sources (name, type, url, username, password, domain_name) 
                      VALUES ($1, $2, $3, $4, $5, $6) 
                      ON CONFLICT (domain_name, name) DO UPDATE SET type=$2, url=$3, username=$4, password=$5
@@ -188,8 +202,7 @@ impl MetadataStore for PostgresStore {
 
                 for table in &source.tables {
                     // Upsert Table
-                    let table_rows = self
-                        .client
+                    let table_rows = tx
                         .query(
                             "INSERT INTO tables (source_id, name, schema_name, partition_column)
                          VALUES ($1, $2, $3, $4)
@@ -212,7 +225,7 @@ impl MetadataStore for PostgresStore {
                     let mut active_column_names: Vec<String> = Vec::new();
 
                     for (idx, col) in table.columns.iter().enumerate() {
-                        self.client.execute(
+                        tx.execute(
                             "INSERT INTO columns (table_id, name, data_type, length, is_primary_key, is_unique, is_not_null, position)
                              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                              ON CONFLICT (table_id, name)
@@ -225,7 +238,7 @@ impl MetadataStore for PostgresStore {
                     if !active_column_names.is_empty() {
                         // Check for deletions if not forcing
                         if !force {
-                            let to_delete = self.client.query(
+                            let to_delete = tx.query(
                                 "SELECT name FROM columns WHERE table_id = $1 AND name != ALL($2)",
                                 &[&table_id, &active_column_names],
                             ).await.context("Failed to check for column deletions")?;
@@ -235,26 +248,25 @@ impl MetadataStore for PostgresStore {
                                     to_delete.iter().map(|r| r.get(0)).collect();
                                 return Err(anyhow!(
                                     "Safety guard: This update would delete columns {:?} in table '{}'. Use --force to proceed.",
-                                    names, table.name
+                                    names,
+                                    table.name
                                 ));
                             }
                         }
 
-                        self.client
-                            .execute(
-                                "DELETE FROM columns WHERE table_id = $1 AND name != ALL($2)",
-                                &[&table_id, &active_column_names],
-                            )
-                            .await
-                            .context("Failed to prune columns")?;
+                        tx.execute(
+                            "DELETE FROM columns WHERE table_id = $1 AND name != ALL($2)",
+                            &[&table_id, &active_column_names],
+                        )
+                        .await
+                        .context("Failed to prune columns")?;
                     }
                 }
 
                 if !active_table_ids.is_empty() {
                     // Check for deletions if not forcing
                     if !force {
-                        let to_delete = self
-                            .client
+                        let to_delete = tx
                             .query(
                                 "SELECT name FROM tables WHERE source_id = $1 AND id != ALL($2)",
                                 &[&source_id, &active_table_ids],
@@ -266,26 +278,25 @@ impl MetadataStore for PostgresStore {
                             let names: Vec<String> = to_delete.iter().map(|r| r.get(0)).collect();
                             return Err(anyhow!(
                                 "Safety guard: This update would delete tables {:?} in source '{}'. Use --force to proceed.",
-                                names, source.name
+                                names,
+                                source.name
                             ));
                         }
                     }
 
-                    self.client
-                        .execute(
-                            "DELETE FROM tables WHERE source_id = $1 AND id != ALL($2)",
-                            &[&source_id, &active_table_ids],
-                        )
-                        .await
-                        .context("Failed to prune tables")?;
+                    tx.execute(
+                        "DELETE FROM tables WHERE source_id = $1 AND id != ALL($2)",
+                        &[&source_id, &active_table_ids],
+                    )
+                    .await
+                    .context("Failed to prune tables")?;
                 }
             }
 
             // Prune sources
             let mut sources_deleted = Vec::new();
             if !active_source_ids.is_empty() {
-                let to_delete = self
-                    .client
+                let to_delete = tx
                     .query(
                         "SELECT name FROM sources WHERE domain_name = $1 AND id != ALL($2)",
                         &[&domain, &active_source_ids],
@@ -297,24 +308,23 @@ impl MetadataStore for PostgresStore {
                         let names: Vec<String> = to_delete.iter().map(|r| r.get(0)).collect();
                         return Err(anyhow!(
                             "Safety guard: This update would delete sources {:?} in domain '{}'. Use --force to proceed.",
-                            names, domain
+                            names,
+                            domain
                         ));
                     }
                     for row in to_delete {
                         sources_deleted.push(row.get(0));
                     }
 
-                    self.client
-                        .execute(
-                            "DELETE FROM sources WHERE domain_name = $1 AND id != ALL($2)",
-                            &[&domain, &active_source_ids],
-                        )
-                        .await
-                        .context("Failed to prune sources")?;
+                    tx.execute(
+                        "DELETE FROM sources WHERE domain_name = $1 AND id != ALL($2)",
+                        &[&domain, &active_source_ids],
+                    )
+                    .await
+                    .context("Failed to prune sources")?;
                 }
             } else if config.sources.is_empty() {
-                let to_delete = self
-                    .client
+                let to_delete = tx
                     .query(
                         "SELECT name FROM sources WHERE domain_name = $1",
                         &[&domain],
@@ -326,17 +336,21 @@ impl MetadataStore for PostgresStore {
                         let names: Vec<String> = to_delete.iter().map(|r| r.get(0)).collect();
                         return Err(anyhow!(
                             "Safety guard: This update would delete ALL sources {:?} in domain '{}'. Use --force to proceed.",
-                            names, domain
+                            names,
+                            domain
                         ));
                     }
                     for row in to_delete {
                         sources_deleted.push(row.get(0));
                     }
-                    self.client
-                        .execute("DELETE FROM sources WHERE domain_name = $1", &[&domain])
+                    tx.execute("DELETE FROM sources WHERE domain_name = $1", &[&domain])
                         .await?;
                 }
             }
+
+            tx.commit()
+                .await
+                .context("Failed to commit apply transaction")?;
 
             Ok(ApplyResult {
                 sources_added,
@@ -346,8 +360,10 @@ impl MetadataStore for PostgresStore {
     }
 
     fn log_apply_event<'a>(&'a self, entry: ApplyLogEntry) -> BoxFuture<'a, Result<()>> {
+        let client_ptr = self.client.clone();
         Box::pin(async move {
-            self.client.execute(
+            let client = client_ptr.lock().await;
+            client.execute(
                 "INSERT INTO apply_history (domain_name, version, user_id, sources_added, sources_deleted, tables_modified, config_hash, config_yaml)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                 &[&entry.domain, &entry.version, &entry.user_id, &entry.sources_added, &entry.sources_deleted, &entry.tables_modified, &entry.config_hash, &entry.config_yaml],
@@ -361,8 +377,10 @@ impl MetadataStore for PostgresStore {
         domain: &'a str,
         limit: i64,
     ) -> BoxFuture<'a, Result<Vec<ApplyLogEntry>>> {
+        let client_ptr = self.client.clone();
         Box::pin(async move {
-            let rows = self.client.query(
+            let client = client_ptr.lock().await;
+            let rows = client.query(
                 "SELECT domain_name, version, user_id, sources_added, sources_deleted, tables_modified, config_hash, config_yaml, timestamp 
                  FROM apply_history WHERE domain_name = $1 ORDER BY version DESC LIMIT $2",
                 &[&domain, &limit],
@@ -387,9 +405,10 @@ impl MetadataStore for PostgresStore {
     }
 
     fn get_sources<'a>(&'a self, domain: &'a str) -> BoxFuture<'a, Result<SourcesConfig>> {
+        let client_ptr = self.client.clone();
         Box::pin(async move {
-            let rows = self
-                .client
+            let client = client_ptr.lock().await;
+            let rows = client
                 .query(
                     "SELECT id, name, type, url FROM sources WHERE domain_name = $1",
                     &[&domain],
@@ -405,7 +424,7 @@ impl MetadataStore for PostgresStore {
                 let source_type: String = row.get("type");
                 let url: Option<String> = row.get("url");
 
-                let table_rows = self.client
+                let table_rows = client
                     .query(
                         "SELECT id, name, schema_name, partition_column FROM tables WHERE source_id = $1",
                         &[&source_id],
@@ -420,7 +439,7 @@ impl MetadataStore for PostgresStore {
                     let schema: String = table_row.get("schema_name");
                     let partition_column: Option<String> = table_row.get("partition_column");
 
-                    let column_rows = self.client
+                    let column_rows = client
                         .query(
                             "SELECT name, data_type, length, is_primary_key, is_unique, is_not_null FROM columns WHERE table_id = $1 ORDER BY position",
                             &[&table_id],
@@ -474,9 +493,10 @@ impl MetadataStore for PostgresStore {
         domain: &'a str,
         version: i32,
     ) -> BoxFuture<'a, Result<String>> {
+        let client_ptr = self.client.clone();
         Box::pin(async move {
-            let row = self
-                .client
+            let client = client_ptr.lock().await;
+            let row = client
                 .query_opt(
                     "SELECT config_yaml FROM apply_history WHERE domain_name = $1 AND version = $2",
                     &[&domain, &version],
@@ -496,9 +516,10 @@ impl MetadataStore for PostgresStore {
     }
 
     fn list_domains(&self) -> BoxFuture<'_, Result<Vec<super::models::DomainStatus>>> {
+        let client_ptr = self.client.clone();
         Box::pin(async move {
-            let rows = self
-                .client
+            let client = client_ptr.lock().await;
+            let rows = client
                 .query(
                     "SELECT name, version, created_at FROM domains ORDER BY name",
                     &[],

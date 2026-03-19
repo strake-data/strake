@@ -10,16 +10,10 @@ use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod common;
-use common::EnvGuard;
 
 #[tokio::test]
 async fn test_iceberg_oauth_flow() -> Result<()> {
-    // Set mock AWS credentials with automatic cleanup on test completion
-    let _env = EnvGuard::new(vec![
-        ("AWS_ACCESS_KEY_ID", "test-key"),
-        ("AWS_SECRET_ACCESS_KEY", "test-secret"),
-        ("AWS_REGION", "us-east-1"),
-    ]);
+    // No global env setup needed
 
     // 1. Start Mock Server
     let mock_server = MockServer::start().await;
@@ -110,6 +104,9 @@ async fn test_iceberg_oauth_flow() -> Result<()> {
         oauth_scopes: Some(vec!["catalog:read".to_string()]),
         region: "us-east-1".to_string(),
         s3_endpoint: None,
+        s3_access_key: Some("test-key".to_string()),
+        s3_secret_key: Some(SecretString::from("test-secret".to_string())),
+        s3_session_token: None,
         request_timeout_secs: None,
         max_retries: None,
         cache: None,

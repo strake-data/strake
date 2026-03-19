@@ -12,7 +12,9 @@
 //! - `file`: Example configuration for a local file source (Parquet/CSV/JSON).
 //! - `grpc`: Example configuration for a gRPC source.
 
+use crate::exit_codes;
 use crate::output::OutputFormat;
+use crate::secrets::ResolverContext;
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -21,7 +23,8 @@ pub async fn init(
     output_path: &Path,
     sources_only: bool,
     _format: OutputFormat,
-) -> Result<()> {
+    _ctx: &ResolverContext,
+) -> Result<i32> {
     // 1. Create sources.yaml
     create_sources_yaml(template, output_path).await?;
 
@@ -47,7 +50,7 @@ pub async fn init(
         println!("✓ Metadata database initialized");
     }
 
-    Ok(())
+    Ok(exit_codes::EXIT_OK)
 }
 
 async fn create_sources_yaml(template: Option<String>, output_path: &Path) -> Result<()> {

@@ -11,16 +11,11 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod common;
-use common::EnvGuard;
 
 #[tokio::test(flavor = "multi_thread")] // Required for blocking schema load
 async fn test_iceberg_lazy_loading_and_concurrency() -> Result<()> {
     let mock_server = MockServer::start().await;
-    let _env = EnvGuard::new(vec![
-        ("AWS_ACCESS_KEY_ID", "test"),
-        ("AWS_SECRET_ACCESS_KEY", "test"),
-        ("AWS_REGION", "us-east-1"),
-    ]);
+    // No global env setup needed
 
     // Mock config - needed for registration
     Mock::given(method("GET"))
@@ -49,6 +44,9 @@ async fn test_iceberg_lazy_loading_and_concurrency() -> Result<()> {
         oauth_scopes: None,
         region: "us-east-1".to_string(),
         s3_endpoint: None,
+        s3_access_key: Some("test".to_string()),
+        s3_secret_key: Some(SecretString::from("test".to_string())),
+        s3_session_token: None,
         request_timeout_secs: None,
         max_retries: None,
         cache: Some(cache_config),

@@ -13,14 +13,15 @@
 //!    - Existence (do the tables/columns exist?)
 //!    - Schema match (do types match?)
 
-use super::helpers::{get_client, ValidateResult};
+use super::helpers::{ValidateResult, get_client};
 use crate::config::CliConfig;
-use crate::models;
+use crate::models::{self};
+use crate::secrets::ResolverContext;
 use crate::{
     exit_codes,
     output::{self, OutputFormat},
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 use std::path::Path;
@@ -31,16 +32,25 @@ use tokio_postgres::NoTls;
 pub async fn validate(
     file_path: &str,
     offline: bool,
+    ci: bool,
     format: OutputFormat,
     config: &CliConfig,
-) -> Result<()> {
+    ctx: &ResolverContext,
+) -> Result<i32> {
     if format.is_machine_readable() {
-        let result = validate_internal(file_path, offline, config).await?;
+        let result = validate_internal(file_path, offline, config, ctx).await?;
         output::print_success(format, &result)?;
+
         if !result.valid {
-            std::process::exit(exit_codes::VALIDATION_ERROR);
+            return Ok(exit_codes::EXIT_ERROR);
         }
-        return Ok(());
+        if !result.warnings.is_empty() {
+            if ci {
+                return Ok(exit_codes::EXIT_ERROR);
+            }
+            return Ok(exit_codes::EXIT_WARNINGS);
+        }
+        return Ok(exit_codes::EXIT_OK);
     }
 
     // Human output mode
@@ -50,7 +60,7 @@ pub async fn validate(
         file_path.yellow(),
         "] Validating...".bold().cyan()
     );
-    let config_yaml = super::helpers::parse_yaml(file_path).await?;
+    let config_yaml = super::helpers::parse_yaml(file_path, ctx).await?;
 
     println!("Structure is valid.");
 
@@ -59,7 +69,7 @@ pub async fn validate(
             "{}",
             "Skipping semantic validation (offline mode).".dimmed()
         );
-        return Ok(());
+        return Ok(exit_codes::EXIT_OK);
     }
 
     println!("{}", "Starting Semantic Validation...".bold().cyan());
@@ -109,34 +119,47 @@ pub async fn validate(
 
     if validation_errors.is_empty() {
         println!("{}", "Semantic validation passed.".green().bold());
-        Ok(())
+        Ok(exit_codes::EXIT_OK)
     } else {
         println!("\n{}", "Validation Errors:".red().bold());
         for err in validation_errors {
             println!("{} {}", "•".red(), err);
         }
-        Err(anyhow!("Validation failed with errors"))
+        Ok(exit_codes::EXIT_ERROR)
     }
 }
-
 async fn validate_internal(
     file_path: &str,
     offline: bool,
     config: &CliConfig,
+    ctx: &ResolverContext,
 ) -> Result<ValidateResult> {
     let mut validation_errors = Vec::new();
-    let config_yaml = super::helpers::parse_yaml(file_path).await?;
+    let mut validation_warnings = Vec::new(); // Placeholder for future use
+    let config_yaml = super::helpers::parse_yaml(file_path, ctx).await?;
 
     if offline {
         return Ok(ValidateResult {
             valid: true,
             errors: vec![],
+            warnings: vec![],
         });
     }
 
     let sources_yaml = tokio::fs::read_to_string(file_path).await?;
     if let Err(e) = validate_contracts(&sources_yaml, "contracts.yaml", config).await {
-        validation_errors.push(format!("Contract Validation Failed: {}", e));
+        let err_msg = e.to_string();
+        // Heuristic: if it looks like schema drift (mismatch/type changed), treat as warning
+        // in a more advanced implementation. For now, following spec:
+        // "validate found coerceable issues" -> EXIT_WARNINGS
+        if err_msg.contains("STRAKE-2009")
+            || err_msg.contains("STRAKE-2010")
+            || err_msg.contains("STRAKE-2011")
+        {
+            validation_warnings.push(err_msg);
+        } else {
+            validation_errors.push(err_msg);
+        }
     }
 
     for source in config_yaml.sources {
@@ -149,11 +172,13 @@ async fn validate_internal(
         Ok(ValidateResult {
             valid: true,
             errors: vec![],
+            warnings: validation_warnings,
         })
     } else {
         Ok(ValidateResult {
             valid: false,
             errors: validation_errors,
+            warnings: validation_warnings,
         })
     }
 }

@@ -15,21 +15,20 @@ use crate::config::CliConfig;
 use crate::{
     exit_codes,
     metadata::MetadataStore,
-    models,
     output::{self, OutputFormat},
+    secrets::ResolverContext,
 };
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
-
-use std::fs;
 
 pub async fn describe(
     store: &dyn MetadataStore,
     file_path: &str,
     domain: Option<&str>,
     format: OutputFormat,
-) -> Result<()> {
+    _ctx: &ResolverContext,
+) -> Result<i32> {
     let domain = domain.unwrap_or("default");
 
     if !format.is_machine_readable() {
@@ -47,12 +46,12 @@ pub async fn describe(
 
     if format.is_machine_readable() {
         output::print_success(format, &config)?;
-        return Ok(());
+        return Ok(exit_codes::EXIT_OK);
     }
 
     if config.sources.is_empty() {
         println!("No sources configured.");
-        return Ok(());
+        return Ok(exit_codes::EXIT_OK);
     }
 
     for source in config.sources {
@@ -109,14 +108,15 @@ pub async fn describe(
         }
         println!();
     }
-    Ok(())
+    Ok(exit_codes::EXIT_OK)
 }
 
 pub async fn test_connection(
     file_path: &str,
     format: OutputFormat,
     _config: &CliConfig,
-) -> Result<()> {
+    ctx: &ResolverContext,
+) -> Result<i32> {
     if !format.is_machine_readable() {
         println!(
             "{} {} {}",
@@ -125,9 +125,7 @@ pub async fn test_connection(
             "] Testing connections...".bold().cyan()
         );
     }
-    let content = fs::read_to_string(file_path).context("Failed to read config file")?;
-    let config: models::SourcesConfig =
-        serde_yaml::from_str(&content).context("Failed to parse YAML structure")?;
+    let config = super::helpers::parse_yaml(file_path, ctx).await?;
 
     let mut results = Vec::new();
 
@@ -137,7 +135,7 @@ pub async fn test_connection(
             pb.set_style(
                 ProgressStyle::default_spinner()
                     .template("{spinner:.green} {msg}")
-                    .unwrap(),
+                    .context("Failed to compile progress bar template")?,
             );
             pb.set_message(format!("Testing source '{}'...", source.name));
             pb.enable_steady_tick(std::time::Duration::from_millis(100));
@@ -190,17 +188,17 @@ pub async fn test_connection(
         let summary = TestConnectionSummary { results };
 
         if has_failures {
-            output::print_error_with_data(
+            output::print_error(
                 format,
                 "One or more connection tests failed",
-                exit_codes::CONNECTION_ERROR,
-                summary,
+                exit_codes::EXIT_ERROR,
+                Some(summary),
             )?;
-            std::process::exit(exit_codes::CONNECTION_ERROR);
+            return Ok(exit_codes::EXIT_ERROR);
         } else {
             output::print_success(format, summary)?;
         }
     }
 
-    Ok(())
+    Ok(exit_codes::EXIT_OK)
 }

@@ -8,7 +8,8 @@ use datafusion::sql::TableReference;
 use std::sync::{Arc, OnceLock};
 
 use super::auth::{
-    AwsIrsaAuth, CompositeAuth, IcebergAuthProvider, OAuthIcebergAuth, StaticTokenAuth,
+    AwsIrsaAuth, CompositeAuth, IcebergAuthProvider, OAuthIcebergAuth, S3Credentials,
+    StaticTokenAuth,
 };
 use super::catalog::{create_rest_catalog, CachedRestCatalog};
 use super::{IcebergRestConfig, TableVersionSpec};
@@ -120,7 +121,16 @@ async fn try_register_iceberg_rest(
         None
     };
 
-    let s3_auth: Box<dyn IcebergAuthProvider> = Box::new(AwsIrsaAuth::new());
+    let s3_auth: Box<dyn IcebergAuthProvider> =
+        if let (Some(access_key), Some(secret_key)) = (&cfg.s3_access_key, &cfg.s3_secret_key) {
+            Box::new(AwsIrsaAuth::with_static_credentials(S3Credentials {
+                access_key_id: access_key.clone(),
+                secret_access_key: secret_key.clone(),
+                session_token: cfg.s3_session_token.clone(),
+            }))
+        } else {
+            Box::new(AwsIrsaAuth::new())
+        };
     let auth: Arc<dyn IcebergAuthProvider> = Arc::new(CompositeAuth::new(rest_auth, s3_auth));
 
     // 2. Create catalog with caching

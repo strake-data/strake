@@ -116,6 +116,37 @@ pub struct ColumnConfig {
     pub not_null: bool,
 }
 
+/// Structural equality helper for TableConfig
+pub fn tables_equal(left: &TableConfig, right: &TableConfig) -> bool {
+    left.schema == right.schema
+        && left.name == right.name
+        && left.partition_column == right.partition_column
+        && left.columns.len() == right.columns.len()
+        && left.columns.iter().zip(&right.columns).all(|(l, r)| {
+            l.name == r.name
+                && l.data_type == r.data_type
+                && l.length == r.length
+                && l.primary_key == r.primary_key
+                && l.unique == r.unique
+                && l.not_null == r.not_null
+        })
+}
+
+/// Structural equality helper for SourceConfig
+pub fn sources_equal(left: &SourceConfig, right: &SourceConfig) -> bool {
+    left.source_type == right.source_type
+        && left.url == right.url
+        && left.username == right.username
+        && left.max_concurrent_queries == right.max_concurrent_queries
+        && left.default_limit == right.default_limit
+        && left.tables.len() == right.tables.len()
+        && left
+            .tables
+            .iter()
+            .zip(&right.tables)
+            .all(|(l, r)| tables_equal(l, r))
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Validate)]
 pub struct QueryCacheConfig {
     #[serde(default = "default_cache_enabled")]

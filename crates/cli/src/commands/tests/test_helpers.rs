@@ -1,38 +1,49 @@
-use crate::commands::helpers::expand_secrets;
+use crate::commands::helpers::{expand_secrets, parse_yaml};
+use crate::secrets::ResolverContext;
 use serial_test::serial;
-use std::env;
+use std::collections::HashMap;
+use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
+
+fn get_test_ctx(vars: Vec<(&str, &str)>) -> ResolverContext {
+    let mut system_env = HashMap::new();
+    for (k, v) in vars {
+        system_env.insert(k.to_string(), v.to_string());
+    }
+    ResolverContext {
+        system_env,
+        dotenv: HashMap::new(),
+        offline: false,
+    }
+}
 
 #[test]
 #[serial]
 fn test_expand_secrets_basic() {
-    env::set_var("TEST_VAR", "secret_value");
+    let ctx = get_test_ctx(vec![("TEST_VAR", "secret_value")]);
     let input = "This is a ${TEST_VAR}.";
-    let output = expand_secrets(input);
+    let output = expand_secrets(input, &ctx);
     assert_eq!(output, "This is a secret_value.");
 }
 
 #[test]
 #[serial]
 fn test_expand_secrets_multiple() {
-    env::set_var("VAR1", "foo");
-    env::set_var("VAR2", "bar");
+    let ctx = get_test_ctx(vec![("VAR1", "foo"), ("VAR2", "bar")]);
     let input = "${VAR1} and ${VAR2}";
-    let output = expand_secrets(input);
+    let output = expand_secrets(input, &ctx);
     assert_eq!(output, "foo and bar");
 }
 
 #[test]
 fn test_expand_secrets_missing() {
+    let ctx = ResolverContext::default();
     let input = "This is ${MISSING_VAR}.";
-    let output = expand_secrets(input);
+    let output = expand_secrets(input, &ctx);
     // Should keep the original placeholder if missing
     assert_eq!(output, "This is ${MISSING_VAR}.");
 }
-
-use crate::commands::helpers::parse_yaml;
-use std::fs;
-use std::io::Write;
-use std::path::PathBuf;
 
 fn create_temp_config(content: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
@@ -51,6 +62,7 @@ fn create_temp_config(content: &str) -> PathBuf {
 
 #[tokio::test]
 async fn test_parse_yaml_valid() {
+    let ctx = ResolverContext::default();
     let content = r#"
 domain: test_domain
 sources:
@@ -60,7 +72,7 @@ sources:
     tables: []
 "#;
     let path = create_temp_config(content);
-    let result = parse_yaml(path.to_str().unwrap()).await;
+    let result = parse_yaml(path.to_str().unwrap(), &ctx).await;
     fs::remove_file(&path).unwrap(); // Cleanup
 
     assert!(result.is_ok());
@@ -73,7 +85,7 @@ sources:
 #[tokio::test]
 #[serial]
 async fn test_parse_yaml_with_secrets() {
-    env::set_var("DB_URL", "postgres://secret:5432/db");
+    let ctx = get_test_ctx(vec![("DB_URL", "postgres://secret:5432/db")]);
     let content = r#"
 domain: test_domain
 sources:
@@ -83,7 +95,7 @@ sources:
     tables: []
 "#;
     let path = create_temp_config(content);
-    let result = parse_yaml(path.to_str().unwrap()).await;
+    let result = parse_yaml(path.to_str().unwrap(), &ctx).await;
     fs::remove_file(&path).unwrap();
 
     assert!(result.is_ok());
@@ -96,12 +108,13 @@ sources:
 
 #[tokio::test]
 async fn test_parse_yaml_invalid_syntax() {
+    let ctx = ResolverContext::default();
     let content = r#"
 domain: [ unclosed brackets
 sources:
 "#;
     let path = create_temp_config(content);
-    let result = parse_yaml(path.to_str().unwrap()).await;
+    let result = parse_yaml(path.to_str().unwrap(), &ctx).await;
     fs::remove_file(&path).unwrap();
 
     assert!(result.is_err());

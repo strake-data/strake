@@ -26,8 +26,10 @@
 //! - Domain Management Proposal
 
 use super::helpers::{ApplyResult, DomainEntry, DomainHistoryEntry};
+use crate::secrets::ResolverContext;
 use crate::{
-    metadata::{models::ApplyLogEntry, MetadataStore},
+    exit_codes,
+    metadata::{MetadataStore, models::ApplyLogEntry},
     models,
     output::{self, OutputFormat},
 };
@@ -42,7 +44,8 @@ pub async fn rollback(
     to_version: i32,
     force: bool,
     format: OutputFormat,
-) -> Result<()> {
+    _ctx: &ResolverContext,
+) -> Result<i32> {
     if !format.is_machine_readable() {
         println!(
             "{} Rolling back domain '{}' to version {}...",
@@ -109,10 +112,14 @@ pub async fn rollback(
             format!("v{}", new_version).yellow()
         );
     }
-    Ok(())
+    Ok(exit_codes::EXIT_OK)
 }
 
-pub async fn list_domains(store: &dyn MetadataStore, format: OutputFormat) -> Result<()> {
+pub async fn list_domains(
+    store: &dyn MetadataStore,
+    format: OutputFormat,
+    _ctx: &ResolverContext,
+) -> Result<i32> {
     let domains = store.list_domains().await?;
 
     if format.is_machine_readable() {
@@ -125,7 +132,7 @@ pub async fn list_domains(store: &dyn MetadataStore, format: OutputFormat) -> Re
             });
         }
         output::print_success(format, &results)?;
-        return Ok(());
+        return Ok(exit_codes::EXIT_OK);
     }
 
     println!(
@@ -146,14 +153,15 @@ pub async fn list_domains(store: &dyn MetadataStore, format: OutputFormat) -> Re
                 .dimmed()
         );
     }
-    Ok(())
+    Ok(exit_codes::EXIT_OK)
 }
 
 pub async fn show_domain_history(
     store: &dyn MetadataStore,
     domain: String,
     format: OutputFormat,
-) -> Result<()> {
+    _ctx: &ResolverContext,
+) -> Result<i32> {
     let history = store.get_history(&domain, 10).await?;
 
     if format.is_machine_readable() {
@@ -180,7 +188,7 @@ pub async fn show_domain_history(
             });
         }
         output::print_success(format, &results)?;
-        return Ok(());
+        return Ok(exit_codes::EXIT_OK);
     }
 
     println!(
@@ -222,5 +230,5 @@ pub async fn show_domain_history(
             format!("-{}", deleted_list).red()
         );
     }
-    Ok(())
+    Ok(exit_codes::EXIT_OK)
 }

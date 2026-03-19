@@ -35,4 +35,5 @@ telemetry = ["opentelemetry", "opentelemetry-otlp", "opentelemetry_sdk", "tracin
 
 [dev-dependencies]
 serial_test = { workspace = true }
+temp-env = { workspace = true }
 

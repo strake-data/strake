@@ -1,19 +1,23 @@
-//! Discovery commands: search, add, introspect.
+//! # Discovery Commands
 //!
-//! # Overview
-//! These commands help users discover and import tables from upstream data sources
-//! without manually writing YAML configuration.
+//! This module provides commands for discovering, searching, and importing data sources.
 //!
-//! # Commands
-//! - **search** (alias: introspect): Connects to the upstream source (via the Strake API)
-//!   and lists available tables that match optional filters.
-//! - **add**: Takes a table found via search and appends its schema (schema, name, columns, types)
-//!   to the local `sources.yaml` file, merging intelligently if the source already exists.
+//! ## Overview
+//!
+//! These commands allow users to interact with upstream data sources through the
+//! Strake API to discover existing tables and automatically add them to their
+//! local project configuration.
+//!
+//! ## Security
+//!
+//! All discovery operations require a valid Strake API token.
 
-use super::helpers::{get_client, parse_yaml, AddResult, SearchResult};
+use super::helpers::{AddResult, SearchResult, get_client, parse_yaml};
 use crate::config::CliConfig;
+use crate::exit_codes;
 use crate::output::{self, OutputFormat};
-use anyhow::{anyhow, Context, Result};
+use crate::secrets::ResolverContext;
+use anyhow::{Context, Result, anyhow};
 use owo_colors::OwoColorize;
 use std::fs;
 
@@ -23,7 +27,8 @@ pub async fn search(
     domain: Option<&str>,
     format: OutputFormat,
     config: &CliConfig,
-) -> Result<()> {
+    _ctx: &ResolverContext,
+) -> Result<i32> {
     let domain = domain.unwrap_or("default");
 
     if !format.is_machine_readable() {
@@ -62,7 +67,7 @@ pub async fn search(
                 tables,
             },
         )?;
-        return Ok(());
+        return Ok(exit_codes::EXIT_OK);
     }
 
     println!("\n{}", "DISCOVERED TABLES:".bold().underline());
@@ -76,9 +81,13 @@ pub async fn search(
         "\nUse 'strake-cli add {} <schema>.<name>' to import a specific table.",
         source
     );
-    Ok(())
+    Ok(exit_codes::EXIT_OK)
 }
 
+/// Imports specific tables from a source into the local project.
+///
+/// This command fetches the schema for each table and appends it to the project's
+/// `sources.yaml` file. It merges with existing source definitions if present.
 pub async fn add(
     source: &str,
     table_full_name: &str,
@@ -86,7 +95,8 @@ pub async fn add(
     output_path: &str,
     format: OutputFormat,
     config: &CliConfig,
-) -> Result<()> {
+    ctx: &ResolverContext,
+) -> Result<i32> {
     let domain = domain.unwrap_or("default");
 
     if !format.is_machine_readable() {
@@ -120,7 +130,7 @@ pub async fn add(
 
     // Append to local sources.yaml
     let mut current_config = if std::path::Path::new(output_path).exists() {
-        parse_yaml(output_path).await?
+        parse_yaml(output_path, ctx).await?
     } else {
         strake_common::models::SourcesConfig {
             domain: Some(domain.into()),
@@ -177,16 +187,5 @@ pub async fn add(
             output_path.yellow()
         );
     }
-    Ok(())
-}
-
-/// Introspect is a legacy alias for search.
-/// For new code, use `search` directly.
-pub async fn introspect(
-    source: &str,
-    file_path: &str,
-    format: OutputFormat,
-    config: &CliConfig,
-) -> Result<()> {
-    search(source, file_path, None, format, config).await
+    Ok(exit_codes::EXIT_OK)
 }

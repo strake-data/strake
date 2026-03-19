@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Strake CLI: GitOps-driven federated SQL management.
 //!
 //! The CLI is the primary interface for managing Strake state, designed for GitOps workflows.
@@ -17,7 +18,6 @@
 //! - `add`: Quickly add a discovered table to `sources.yaml`.
 
 use clap::{Parser, Subcommand};
-use dotenv::dotenv;
 use owo_colors::OwoColorize;
 
 mod commands;
@@ -26,16 +26,19 @@ mod exit_codes;
 mod metadata;
 mod models;
 mod output;
+mod secrets;
 
 use crate::config::CliConfig;
 use strake_error::ErrorCategory;
 
 use output::OutputFormat;
 
+/// The main CLI structure for Strake.
 #[derive(Parser)]
 #[command(name = "strake-cli")]
 #[command(about = "Manage Strake configuration and metadata", long_about = None)]
 struct Cli {
+    /// The subcommand to execute.
     #[command(subcommand)]
     command: Commands,
 
@@ -52,6 +55,7 @@ struct Cli {
     profile: Option<String>,
 }
 
+/// All valid Strake CLI subcommands.
 #[derive(Subcommand)]
 enum Commands {
     /// Initialize the project with a default configuration
@@ -74,6 +78,9 @@ enum Commands {
         /// Skip semantic validation (network calls)
         #[arg(long, default_value_t = false)]
         offline: bool,
+        /// Strict mode: fail on warnings (coercions, drift)
+        #[arg(long, default_value_t = false)]
+        ci: bool,
     },
     /// Apply the configuration to the metadata store
     Apply {
@@ -92,6 +99,38 @@ enum Commands {
         /// URL to notify after successful application (for cache invalidation)
         #[arg(long)]
         notify_url: Option<String>,
+    },
+    /// Aggregated health view of a domain
+    Status {
+        /// Path to the sources.yaml file
+        #[arg(default_value = "sources.yaml")]
+        file: Option<String>,
+        /// Specify domain to check status for
+        #[arg(long)]
+        domain: Option<String>,
+        /// Timeout for reachability checks in milliseconds
+        #[arg(long, default_value_t = 5000)]
+        timeout: u64,
+    },
+    /// Safely remove a table from sources.yaml
+    Remove {
+        /// The name of the source
+        source: String,
+        /// The name of the table
+        #[arg(required_unless_present = "source_only")]
+        table: Option<String>,
+        /// Path to the sources.yaml file to update
+        #[arg(default_value = "sources.yaml")]
+        file: Option<String>,
+        /// Run checks without writing changes
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Force removal despite orphaned references
+        #[arg(long, default_value_t = false)]
+        force: bool,
+        /// Remove the entire source entry (Phase 1 stub)
+        #[arg(long, default_value_t = false)]
+        source_only: bool,
     },
     /// Preview changes between the configuration and metadata store
     Diff {
@@ -151,6 +190,26 @@ enum Commands {
         #[command(subcommand)]
         subcommand: DomainCommands,
     },
+    /// Manage secrets
+    Secrets {
+        #[command(subcommand)]
+        subcommand: SecretCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SecretCommands {
+    /// Validate secret references in a configuration file
+    Validate {
+        /// Path to the configuration file (sources.yaml, etc.)
+        #[arg(default_value = "sources.yaml")]
+        file: String,
+        /// Skip external providers, only validate syntax and environment
+        #[arg(long, default_value_t = false)]
+        offline: bool,
+    },
+    /// Configure secret providers (Not implemented in 1.1)
+    Configure,
 }
 
 #[derive(Subcommand)]
@@ -187,7 +246,7 @@ enum Template {
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    dotenv().ok();
+    dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
 
@@ -200,56 +259,93 @@ async fn main() -> Result<(), anyhow::Error> {
         config.token = Some(token.clone());
     }
 
-    if let Err(e) = run_cli(&cli, &config).await {
-        let exit_code = map_error_to_exit_code(&e);
-        if cli.output.is_machine_readable() {
-            output::print_error::<()>(cli.output, &e.to_string(), exit_code).ok();
-        } else {
-            eprintln!("{} {}", "Error:".red().bold(), e);
-        }
-        std::process::exit(exit_code);
-    }
+    // Load secrets context
+    let resolver_ctx = load_resolver_context();
 
-    Ok(())
+    match run_cli(&cli, &config, &resolver_ctx).await {
+        Ok(exit_code) => {
+            std::process::exit(exit_code);
+        }
+        Err(e) => {
+            let exit_code = map_error_to_exit_code(&e);
+            if cli.output.is_machine_readable() {
+                output::print_error::<()>(cli.output, &e.to_string(), exit_code, None).ok();
+            } else {
+                eprintln!("{} {}", "Error:".red().bold(), e);
+            }
+            std::process::exit(exit_code);
+        }
+    }
 }
 
 fn map_error_to_exit_code(e: &anyhow::Error) -> i32 {
     // Try to downcast to StrakeError for type-safe mapping
     if let Some(strake_err) = e.downcast_ref::<strake_error::StrakeError>() {
         return match strake_err.code.category() {
-            ErrorCategory::Connection => exit_codes::CONNECTION_ERROR,
-            ErrorCategory::Config => exit_codes::CONFIG_ERROR,
-            ErrorCategory::Query => exit_codes::VALIDATION_ERROR,
-            ErrorCategory::Auth => exit_codes::PERMISSION_ERROR,
-            ErrorCategory::Internal => exit_codes::GENERAL_ERROR,
-            _ => exit_codes::GENERAL_ERROR, // Handle future variants
+            ErrorCategory::Connection => exit_codes::EXIT_ERROR,
+            ErrorCategory::Config => exit_codes::EXIT_ERROR,
+            ErrorCategory::Query => exit_codes::EXIT_ERROR,
+            ErrorCategory::Auth => exit_codes::EXIT_ERROR,
+            ErrorCategory::Internal => exit_codes::EXIT_ERROR,
+            _ => exit_codes::EXIT_ERROR, // Handle future variants
         };
     }
 
     // Fallback: string heuristics for non-StrakeError types
     let s = e.to_string().to_lowercase();
     if s.contains("usage") || s.contains("argument") {
-        return exit_codes::USAGE_ERROR;
+        return exit_codes::EXIT_ERROR;
     }
     if s.contains("config") || s.contains("yaml") {
-        return exit_codes::CONFIG_ERROR;
+        return exit_codes::EXIT_ERROR;
     }
     if s.contains("connect") || s.contains("timeout") {
-        return exit_codes::CONNECTION_ERROR;
+        return exit_codes::EXIT_ERROR;
     }
     if s.contains("permission") || s.contains("unauthorized") {
-        return exit_codes::PERMISSION_ERROR;
+        return exit_codes::EXIT_ERROR;
     }
     if s.contains("validation") || s.contains("contract") {
-        return exit_codes::VALIDATION_ERROR;
+        return exit_codes::EXIT_ERROR;
     }
     if s.contains("conflict") || s.contains("version mismatch") {
-        return exit_codes::CONFLICT_ERROR;
+        return exit_codes::EXIT_ERROR;
     }
-    exit_codes::GENERAL_ERROR
+    exit_codes::EXIT_ERROR
 }
 
-async fn run_cli(cli: &Cli, config: &CliConfig) -> Result<(), anyhow::Error> {
+fn load_resolver_context() -> secrets::ResolverContext {
+    use std::collections::HashMap;
+
+    let system_env: HashMap<String, String> = std::env::vars_os()
+        .filter_map(|(k, v)| {
+            let k_str = k.into_string().ok()?;
+            let v_str = v.into_string().ok()?;
+            Some((k_str, v_str))
+        })
+        .collect();
+
+    // In a real implementation, we would search adjacent to sources.yaml
+    // For now, CWD is the baseline.
+    let mut dotenv = HashMap::new();
+    if let Ok(iter) = dotenvy::from_path_iter(".env") {
+        for (k, v) in iter.flatten() {
+            dotenv.insert(k, v);
+        }
+    }
+
+    secrets::ResolverContext {
+        system_env,
+        dotenv,
+        offline: false, // Default to online, commands can override
+    }
+}
+
+async fn run_cli(
+    cli: &Cli,
+    config: &CliConfig,
+    resolver_ctx: &secrets::ResolverContext,
+) -> Result<i32, anyhow::Error> {
     match &cli.command {
         Commands::Init {
             template,
@@ -257,16 +353,17 @@ async fn run_cli(cli: &Cli, config: &CliConfig) -> Result<(), anyhow::Error> {
             sources_only,
         } => {
             let template_str = template.as_ref().map(|t| format!("{:?}", t).to_lowercase());
-            commands::init(
+            return commands::init(
                 template_str,
                 std::path::Path::new(file),
                 *sources_only,
                 cli.output,
+                resolver_ctx,
             )
-            .await?;
+            .await;
         }
-        Commands::Validate { file, offline } => {
-            commands::validate(file, *offline, cli.output, config).await?;
+        Commands::Validate { file, offline, ci } => {
+            return commands::validate(file, *offline, *ci, cli.output, config, resolver_ctx).await;
         }
         Commands::Apply {
             file,
@@ -276,7 +373,7 @@ async fn run_cli(cli: &Cli, config: &CliConfig) -> Result<(), anyhow::Error> {
             notify_url,
         } => {
             let store = metadata::init_store(config).await?;
-            commands::apply(
+            return commands::apply(
                 &*store,
                 commands::ApplyOptions {
                     file_path: file.clone(),
@@ -287,22 +384,31 @@ async fn run_cli(cli: &Cli, config: &CliConfig) -> Result<(), anyhow::Error> {
                     notify_url: notify_url.clone(),
                 },
                 config,
+                resolver_ctx,
             )
-            .await?;
+            .await;
         }
         Commands::Diff { file } => {
             let store = metadata::init_store(config).await?;
-            commands::diff(&*store, file, cli.output).await?;
+            return commands::diff(&*store, file, cli.output, resolver_ctx).await;
         }
         Commands::Introspect { source, file } => {
-            commands::introspect(source, file, cli.output, config).await?;
+            return commands::search(source, file, None, cli.output, config, resolver_ctx).await;
         }
         Commands::Search {
             source,
             file,
             domain,
         } => {
-            commands::search(source, file, domain.as_deref(), cli.output, config).await?;
+            return commands::search(
+                source,
+                file,
+                domain.as_deref(),
+                cli.output,
+                config,
+                resolver_ctx,
+            )
+            .await;
         }
         Commands::Add {
             source,
@@ -310,33 +416,102 @@ async fn run_cli(cli: &Cli, config: &CliConfig) -> Result<(), anyhow::Error> {
             file,
             domain,
         } => {
-            commands::add(source, table, domain.as_deref(), file, cli.output, config).await?;
+            return commands::add(
+                source,
+                table,
+                domain.as_deref(),
+                file,
+                cli.output,
+                config,
+                resolver_ctx,
+            )
+            .await;
         }
         Commands::TestConnection { file } => {
-            commands::test_connection(file, cli.output, config).await?;
+            return commands::test_connection(file, cli.output, config, resolver_ctx).await;
         }
         Commands::Describe { file, domain } => {
             let store = metadata::init_store(config).await?;
-            commands::describe(&*store, file, domain.as_deref(), cli.output).await?;
+            return commands::describe(&*store, file, domain.as_deref(), cli.output, resolver_ctx)
+                .await;
         }
         Commands::Domain { subcommand } => {
             let store = metadata::init_store(config).await?;
             match subcommand {
                 DomainCommands::List => {
-                    commands::list_domains(&*store, cli.output).await?;
+                    return commands::list_domains(&*store, cli.output, resolver_ctx).await;
                 }
                 DomainCommands::History { name } => {
-                    commands::show_domain_history(&*store, name.to_string(), cli.output).await?;
+                    return commands::show_domain_history(
+                        &*store,
+                        name.to_string(),
+                        cli.output,
+                        resolver_ctx,
+                    )
+                    .await;
                 }
                 DomainCommands::Rollback {
                     name,
                     to_version,
                     force,
                 } => {
-                    commands::rollback(&*store, name, *to_version, *force, cli.output).await?;
+                    return commands::rollback(
+                        &*store,
+                        name,
+                        *to_version,
+                        *force,
+                        cli.output,
+                        resolver_ctx,
+                    )
+                    .await;
                 }
             }
         }
+        Commands::Secrets { subcommand } => match subcommand {
+            SecretCommands::Validate { file, offline } => {
+                let mut ctx = load_resolver_context();
+                ctx.offline = *offline;
+                return commands::validate_secrets(file, &ctx, cli.output).await;
+            }
+            SecretCommands::Configure => {
+                println!("'secrets configure' is not yet implemented");
+            }
+        },
+        Commands::Status {
+            file,
+            domain,
+            timeout,
+        } => {
+            let store = metadata::init_store(config).await?;
+            return commands::status(
+                &*store,
+                file.as_deref(),
+                domain.as_deref(),
+                *timeout,
+                cli.output,
+                resolver_ctx,
+            )
+            .await;
+        }
+        Commands::Remove {
+            source,
+            table,
+            file,
+            dry_run,
+            force,
+            source_only,
+        } => {
+            return commands::remove(
+                source,
+                table.as_deref(),
+                file.as_deref(),
+                *dry_run,
+                *force,
+                *source_only,
+                cli.output,
+            )
+            .await;
+        }
     }
-    Ok(())
+    Ok(exit_codes::EXIT_OK)
 }

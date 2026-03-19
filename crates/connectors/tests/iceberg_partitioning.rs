@@ -1,6 +1,7 @@
 use anyhow::Result;
 use datafusion::logical_expr::{col, lit};
 use datafusion::prelude::SessionContext;
+use secrecy::SecretString;
 use serde_json::json;
 use std::sync::Arc;
 use strake_common::config::{RetrySettings, TableConfig};
@@ -10,16 +11,11 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod common;
-use common::EnvGuard;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_iceberg_partition_pruning_support() -> Result<()> {
     let mock_server = MockServer::start().await;
-    let _env = EnvGuard::new(vec![
-        ("AWS_ACCESS_KEY_ID", "test"),
-        ("AWS_SECRET_ACCESS_KEY", "test"),
-        ("AWS_REGION", "us-east-1"),
-    ]);
+    // No global env setup needed
 
     // Mock config
     Mock::given(method("GET"))
@@ -105,6 +101,9 @@ async fn test_iceberg_partition_pruning_support() -> Result<()> {
         oauth_scopes: None,
         region: "us-east-1".to_string(),
         s3_endpoint: None,
+        s3_access_key: Some("test".to_string()),
+        s3_secret_key: Some(SecretString::from("test".to_string())),
+        s3_session_token: Some(SecretString::from("test_session_token".to_string())),
         request_timeout_secs: None,
         max_retries: None,
         cache: None,

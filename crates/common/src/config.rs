@@ -511,33 +511,26 @@ mod tests {
     #[test]
     #[serial]
     fn test_auth_enabled_requires_api_key() {
-        // Ensure environment overrides don't accidentally provide a key during this test.
-        // AppConfig::from_file() reads from both file and STRAKE_* env vars.
         let env_key = "STRAKE_SERVER__AUTH__API_KEY";
-        let prev = std::env::var(env_key).ok();
-        std::env::set_var(env_key, "");
+        
+        temp_env::with_var(env_key, Some(""), || {
+            let dir = std::env::temp_dir();
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = dir.join(format!("strake-auth-test-{unique}.yaml"));
 
-        let dir = std::env::temp_dir();
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = dir.join(format!("strake-auth-test-{unique}.yaml"));
+            std::fs::write(&path, "server:\n  auth:\n    enabled: true\n").unwrap();
 
-        std::fs::write(&path, "server:\n  auth:\n    enabled: true\n").unwrap();
+            let err = AppConfig::from_file(path.to_str().unwrap()).unwrap_err();
+            let _ = std::fs::remove_file(&path);
 
-        let err = AppConfig::from_file(path.to_str().unwrap()).unwrap_err();
-        let _ = std::fs::remove_file(&path);
-
-        match prev {
-            Some(v) => std::env::set_var(env_key, v),
-            None => std::env::remove_var(env_key),
-        }
-
-        assert!(
-            err.to_string().contains("api_key"),
-            "unexpected error: {err}"
-        );
+            assert!(
+                err.to_string().contains("api_key"),
+                "Expected error to mention api_key, got: {err}"
+            );
+        });
     }
 
     #[test]

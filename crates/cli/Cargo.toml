@@ -2,7 +2,7 @@
 name = "strake-cli"
 version.workspace = true
 license.workspace = true
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -13,8 +13,8 @@ serde = { workspace = true }
 serde_yaml = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-dotenv = "0.15"
-regex = "1.12.2"
+dotenvy = "0.15"
+regex = "1.10"
 serde_json = "1.0.148"
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
@@ -28,6 +28,7 @@ dirs = "5.0"
 tracing = { workspace = true }
 rusqlite = { version = "0.37", features = ["bundled", "chrono"] }
 secrecy = { workspace = true }
+zeroize = { version = "1.8", features = ["derive"] }
 futures = "0.3"
 
 [dev-dependencies]
@@ -36,4 +37,6 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 serde_json = "1.0"
 serial_test = { workspace = true }
 tempfile = "3.17.1"
+proptest = "1.6"
+temp-env = { workspace = true }
 

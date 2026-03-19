@@ -28,34 +28,32 @@
 
 use crate::config::CliConfig;
 use crate::models;
+use crate::secrets::{ResolverContext, SecretResolver};
 use anyhow::{Context, Result};
-use regex::Regex;
-use serde::Serialize;
-use std::env;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
-use std::sync::LazyLock;
-
-static SECRET_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}").expect("hard-coded regex is valid")
-});
-
-/// Expand environment variable placeholders in content.
-pub fn expand_secrets(content: &str) -> String {
-    SECRET_RE
-        .replace_all(content, |caps: &regex::Captures| {
-            let var_name = &caps[1];
-            env::var(var_name).unwrap_or_else(|_| format!("${{{}}}", var_name))
-        })
-        .to_string()
+/// Expand secret placeholders in content using the provided context.
+pub fn expand_secrets(content: &str, ctx: &ResolverContext) -> String {
+    // Note: This returns a String because YAML parsing requires a String.
+    // However, the resolver ensures that it only exposes secrets into this String
+    // for the minimum duration required to build the result.
+    match SecretResolver::resolve(content, ctx) {
+        Ok(secret) => {
+            use secrecy::ExposeSecret;
+            secret.expose_secret().to_string()
+        }
+        Err(_) => content.to_string(), // Fallback to raw if resolution fails (e.g. for partial strings)
+    }
 }
 
 /// Build an authenticated HTTP client using the provided configuration.
 pub fn get_client(config: &CliConfig) -> Result<reqwest::Client> {
     let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(token) = &config.token {
-        if let Ok(value) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token)) {
-            headers.insert(reqwest::header::AUTHORIZATION, value);
-        }
+    if let Some(token) = &config.token
+        && let Ok(value) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token))
+    {
+        headers.insert(reqwest::header::AUTHORIZATION, value);
     }
     reqwest::Client::builder()
         .default_headers(headers)
@@ -64,12 +62,79 @@ pub fn get_client(config: &CliConfig) -> Result<reqwest::Client> {
 }
 
 /// Parse a YAML configuration file with secret expansion.
-pub async fn parse_yaml(path: &str) -> Result<models::SourcesConfig> {
+pub async fn parse_yaml(path: &str, ctx: &ResolverContext) -> Result<models::SourcesConfig> {
     let raw_content = tokio::fs::read_to_string(path)
         .await
         .context(format!("Failed to read config file: {}", path))?;
-    let content = expand_secrets(&raw_content);
+    let content = expand_secrets(&raw_content, ctx);
     serde_yaml::from_str(&content).context("Failed to parse YAML structure")
+}
+
+#[derive(Debug, Clone)]
+pub struct ManifestPaths {
+    pub sources: PathBuf,
+    pub contracts: PathBuf,
+    pub policies: PathBuf,
+    pub default_domain: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ProjectManifestConfig {
+    #[serde(default)]
+    sources_file: Option<String>,
+    #[serde(default)]
+    contracts_file: Option<String>,
+    #[serde(default)]
+    policies_file: Option<String>,
+    #[serde(default)]
+    default_domain: Option<String>,
+}
+
+pub async fn resolve_manifest_paths(explicit_sources: Option<&str>) -> Result<ManifestPaths> {
+    let config = load_project_manifest_config().await?;
+
+    let sources = explicit_sources
+        .map(PathBuf::from)
+        .or_else(|| config.sources_file.as_ref().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("sources.yaml"));
+
+    let base_dir = sources
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let contracts = config
+        .contracts_file
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| base_dir.join("contracts.yaml"));
+
+    let policies = config
+        .policies_file
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| base_dir.join("policies.yaml"));
+
+    Ok(ManifestPaths {
+        sources,
+        contracts,
+        policies,
+        default_domain: config.default_domain,
+    })
+}
+
+async fn load_project_manifest_config() -> Result<ProjectManifestConfig> {
+    let path = PathBuf::from("strake.yaml");
+    if tokio::fs::metadata(&path).await.is_err() {
+        return Ok(ProjectManifestConfig::default());
+    }
+
+    let raw = tokio::fs::read_to_string(&path)
+        .await
+        .context(format!("Failed to read project config: {}", path.display()))?;
+    let config = serde_yaml::from_str::<ProjectManifestConfig>(&raw)
+        .context("Failed to parse project manifest settings from strake.yaml")?;
+    Ok(config)
 }
 
 // ===== Result Types =====
@@ -78,6 +143,7 @@ pub async fn parse_yaml(path: &str) -> Result<models::SourcesConfig> {
 pub struct ValidateResult {
     pub valid: bool,
     pub errors: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -91,6 +157,7 @@ impl std::fmt::Display for DomainName {
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum ChangeType {
     #[serde(rename = "ADD")]
     Added,

@@ -26,23 +26,36 @@
 //!
 //! - Relevant GitHub Diff Issue
 
-use super::helpers::{parse_yaml, DiffChange, DiffResult};
+use super::helpers::{DiffChange, DiffResult, parse_yaml};
 use crate::models;
 use crate::{
+    exit_codes,
     metadata::MetadataStore,
     output::{self, OutputFormat},
+    secrets::ResolverContext,
 };
 use anyhow::Result;
 use owo_colors::OwoColorize;
 
-pub async fn diff(store: &dyn MetadataStore, file_path: &str, format: OutputFormat) -> Result<()> {
-    let result = diff_internal(store, file_path).await?;
+/// Compares the local configuration against the metadata store and prints the diff.
+pub async fn diff(
+    store: &dyn MetadataStore,
+    file_path: &str,
+    format: OutputFormat,
+    ctx: &ResolverContext,
+) -> Result<i32> {
+    let result = diff_internal(store, file_path, ctx).await?;
     if format.is_machine_readable() {
         output::print_success(format, &result)?;
     } else {
         print_diff_human(&result);
     }
-    Ok(())
+
+    if result.changes.is_empty() {
+        Ok(exit_codes::EXIT_OK)
+    } else {
+        Ok(exit_codes::EXIT_WARNINGS)
+    }
 }
 
 pub(crate) fn print_diff_human(result: &DiffResult) {
@@ -66,10 +79,10 @@ pub(crate) fn print_diff_human(result: &DiffResult) {
             change.path.bold()
         );
 
-        if let Some(prev) = &change.previous {
-            if let Some(curr) = &change.current {
-                println!("    {} -> {}", prev.dimmed(), curr.dimmed());
-            }
+        if let Some(prev) = &change.previous
+            && let Some(curr) = &change.current
+        {
+            println!("    {} -> {}", prev.dimmed(), curr.dimmed());
         }
     }
 }
@@ -77,8 +90,9 @@ pub(crate) fn print_diff_human(result: &DiffResult) {
 pub(crate) async fn diff_internal(
     store: &dyn MetadataStore,
     file_path: &str,
+    ctx: &ResolverContext,
 ) -> Result<DiffResult> {
-    let local_config = parse_yaml(file_path).await?;
+    let local_config = parse_yaml(file_path, ctx).await?;
     let domain = local_config.domain.as_deref().unwrap_or("default");
     let db_config = store.get_sources(domain).await?;
 

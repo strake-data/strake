@@ -27,13 +27,13 @@
 //! - SQLite backend design doc.
 
 use super::{
-    models::{ApplyLogEntry, ApplyResult},
     MetadataStore,
+    models::{ApplyLogEntry, ApplyResult},
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use futures::future::BoxFuture;
-use rusqlite::{params, Connection, OptionalExtension, Row, ToSql};
+use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
 use secrecy::ExposeSecret;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

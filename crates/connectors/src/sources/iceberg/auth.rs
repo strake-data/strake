@@ -114,6 +114,7 @@ impl IcebergAuthProvider for StaticTokenAuth {
 pub struct AwsIrsaAuth {
     cache: RwLock<Option<(S3Credentials, SystemTime)>>,
     refresh_lock: tokio::sync::Mutex<()>,
+    static_credentials: Option<S3Credentials>,
 }
 
 impl Default for AwsIrsaAuth {
@@ -127,6 +128,15 @@ impl AwsIrsaAuth {
         Self {
             cache: RwLock::new(None),
             refresh_lock: tokio::sync::Mutex::new(()),
+            static_credentials: None,
+        }
+    }
+
+    pub fn with_static_credentials(creds: S3Credentials) -> Self {
+        Self {
+            cache: RwLock::new(None),
+            refresh_lock: tokio::sync::Mutex::new(()),
+            static_credentials: Some(creds),
         }
     }
 }
@@ -138,6 +148,10 @@ impl IcebergAuthProvider for AwsIrsaAuth {
     }
 
     async fn s3_credentials(&self) -> Result<Option<S3Credentials>> {
+        if let Some(creds) = &self.static_credentials {
+            return Ok(Some(creds.clone()));
+        }
+
         // Fast path: check cache first (5 min buffer before expiry)
         {
             let read = self.cache.read().await;
