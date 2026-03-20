@@ -542,45 +542,183 @@ fn merge_introspected(
 async fn resolve_introspector(
     source_name: &str,
     file_path: &str,
-    _config: &CliConfig,
+    config: &CliConfig,
     ctx: &ResolverContext,
 ) -> Result<Box<dyn strake_connectors::introspect::SchemaIntrospector>> {
-    let current_config = parse_yaml(file_path, ctx).await?;
-    let source = current_config
-        .sources
-        .iter()
-        .find(|s| s.name == source_name)
-        .context(format!(
-            "Source '{}' not found in {}",
-            source_name, file_path
-        ))?;
+    let current_config = if std::path::Path::new(file_path).exists() {
+        parse_yaml(file_path, ctx).await.ok()
+    } else {
+        None
+    };
 
-    match source.source_type.as_str() {
-        "postgres" => {
-            let conn_str = source
-                .url
-                .as_ref()
-                .context("Postgres URL is required for introspection")?;
-            Ok(Box::new(
-                strake_connectors::sources::sql::postgres_introspect::PostgresIntrospector {
-                    connection_string: conn_str.clone(),
-                },
-            ))
+    if let Some(source) = current_config
+        .as_ref()
+        .and_then(|c| c.sources.iter().find(|s| s.name == source_name))
+    {
+        match source.source_type.as_str() {
+            "postgres" => {
+                let conn_str = source
+                    .url
+                    .as_ref()
+                    .context("Postgres URL is required for introspection")?;
+                return Ok(Box::new(
+                    strake_connectors::sources::sql::postgres_introspect::PostgresIntrospector {
+                        connection_string: conn_str.clone(),
+                    },
+                ));
+            }
+            "duckdb" => {
+                let db_path = source
+                    .url
+                    .as_ref()
+                    .context("DuckDB path is required for introspection")?;
+                return Ok(Box::new(
+                    strake_connectors::sources::sql::duckdb_introspect::DuckDBIntrospector {
+                        db_path: db_path.clone(),
+                    },
+                ));
+            }
+            _ => {}
         }
-        "duckdb" => {
-            let db_path = source
-                .url
-                .as_ref()
-                .context("DuckDB path is required for introspection")?;
-            Ok(Box::new(
-                strake_connectors::sources::sql::duckdb_introspect::DuckDBIntrospector {
-                    db_path: db_path.clone(),
-                },
-            ))
+    }
+
+    // Fallback to API-based introspection for unknown or missing sources
+    Ok(Box::new(ApiIntrospector {
+        api_url: config.api_url.clone(),
+        domain: "default".to_string(), // TBD: resolve domain correctly
+        source: source_name.to_string(),
+        config: config.clone(),
+    }))
+}
+
+pub struct ApiIntrospector {
+    pub api_url: String,
+    pub domain: String,
+    pub source: String,
+    pub config: CliConfig,
+}
+
+#[async_trait::async_trait]
+impl strake_connectors::introspect::SchemaIntrospector for ApiIntrospector {
+    async fn list_tables(
+        &self,
+        _pattern: Option<&globset::GlobMatcher>,
+    ) -> Result<
+        Vec<strake_connectors::introspect::TableRef>,
+        strake_connectors::introspect::IntrospectError,
+    > {
+        let client = get_client(&self.config).map_err(|e| {
+            strake_connectors::introspect::IntrospectError::Connection(e.to_string())
+        })?;
+
+        let url = format!(
+            "{}/introspect/{}/{}",
+            self.api_url, self.domain, self.source
+        );
+        let response = client.get(&url).send().await.map_err(|e| {
+            strake_connectors::introspect::IntrospectError::Connection(e.to_string())
+        })?;
+
+        if !response.status().is_success() {
+            return Err(strake_connectors::introspect::IntrospectError::Query(
+                format!("API search failed: {}", response.status()),
+            ));
         }
-        _ => Err(anyhow!(
-            "Source type '{}' does not support introspection yet",
-            source.source_type
-        )),
+
+        let tables: Vec<strake_common::models::TableDiscovery> =
+            response.json().await.map_err(|e| {
+                strake_connectors::introspect::IntrospectError::Serialization(e.to_string())
+            })?;
+
+        Ok(tables
+            .into_iter()
+            .map(|t| strake_connectors::introspect::TableRef {
+                schema: t.schema,
+                table: t.name,
+            })
+            .collect())
+    }
+
+    async fn introspect_table(
+        &self,
+        table: &strake_connectors::introspect::TableRef,
+        _full: bool,
+    ) -> Result<
+        strake_common::schema::IntrospectedTable,
+        strake_connectors::introspect::IntrospectError,
+    > {
+        let client = get_client(&self.config).map_err(|e| {
+            strake_connectors::introspect::IntrospectError::Connection(e.to_string())
+        })?;
+
+        let url = format!(
+            "{}/introspect/{}/{}/tables",
+            self.api_url, self.domain, self.source
+        );
+        let response = client
+            .post(&url)
+            .json(&serde_json::json!({
+                "schema": table.schema,
+                "table": table.table
+            }))
+            .send()
+            .await
+            .map_err(|e| {
+                strake_connectors::introspect::IntrospectError::Connection(e.to_string())
+            })?;
+
+        if !response.status().is_success() {
+            return Err(strake_connectors::introspect::IntrospectError::Query(
+                format!("API introspection failed: {}", response.status()),
+            ));
+        }
+
+        // The test indicates the API returns a SourcesConfig, not a raw IntrospectedTable.
+        let response_data: strake_common::models::SourcesConfig =
+            response.json().await.map_err(|e| {
+                strake_connectors::introspect::IntrospectError::Serialization(e.to_string())
+            })?;
+
+        let source_config = response_data
+            .sources
+            .into_iter()
+            .find(|s| s.name == self.source)
+            .ok_or_else(|| {
+                strake_connectors::introspect::IntrospectError::NotFound(format!(
+                    "Source '{}' not found in API response",
+                    self.source
+                ))
+            })?;
+
+        let table_config = source_config
+            .tables
+            .into_iter()
+            .find(|t| t.schema == table.schema && t.name == table.table)
+            .ok_or_else(|| {
+                strake_connectors::introspect::IntrospectError::NotFound(format!(
+                    "Table '{}.{}' not found in API response",
+                    table.schema, table.table
+                ))
+            })?;
+
+        Ok(strake_common::schema::IntrospectedTable {
+            source: source_config.source_type,
+            schema: table_config.schema,
+            name: table_config.name,
+            columns: table_config
+                .columns
+                .into_iter()
+                .map(|c| strake_common::schema::IntrospectedColumn {
+                    name: c.name,
+                    type_str: c.data_type,
+                    nullable: !c.not_null,
+                    is_primary_key: c.primary_key,
+                    is_foreign_key: false,
+                    constraints: vec![],
+                    db_comment: None,
+                    ai_description: None,
+                })
+                .collect(),
+        })
     }
 }
