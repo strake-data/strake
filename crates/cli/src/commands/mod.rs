@@ -43,10 +43,11 @@
 //!
 //! - [Strake CLI Commands Reference](https://docs.strake.io/cli/commands)
 
+pub mod ai;
 mod apply;
 mod apply_models;
 mod describe;
-mod diff;
+mod diff_logic;
 mod discovery;
 mod domain;
 mod helpers;
@@ -59,9 +60,10 @@ mod validate;
 // Re-export public command functions
 pub use apply::{ApplyOptions, apply};
 pub use describe::{describe, test_connection};
-pub use diff::diff;
-pub use discovery::{add, search};
+pub use diff_logic::{DiffOptions, diff};
+pub use discovery::{AddOptions, add, search};
 pub use domain::{list_domains, rollback, show_domain_history};
+pub use helpers::DiffChange; // Keep one re-export if needed or remove. Actually I'll just keep DiffChange.
 
 #[cfg(test)]
 mod tests;

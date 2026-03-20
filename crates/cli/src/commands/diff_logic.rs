@@ -36,17 +36,59 @@ use crate::{
 };
 use anyhow::Result;
 use owo_colors::OwoColorize;
+use std::fs;
+
+#[derive(Debug, Clone)]
+pub struct DiffOptions {
+    pub file: String,
+    pub impact: bool,
+    pub format: OutputFormat,
+}
 
 /// Compares the local configuration against the metadata store and prints the diff.
 pub async fn diff(
     store: &dyn MetadataStore,
-    file_path: &str,
-    format: OutputFormat,
+    opts: DiffOptions,
     ctx: &ResolverContext,
 ) -> Result<i32> {
-    let result = diff_internal(store, file_path, ctx).await?;
-    if format.is_machine_readable() {
-        output::print_success(format, &result)?;
+    let result = diff_internal(store, &opts.file, ctx).await?;
+
+    if opts.impact {
+        let sources = parse_yaml(&opts.file, ctx).await?;
+        // Load contracts.yaml
+        let contracts_file = std::path::Path::new(&opts.file)
+            .parent()
+            .unwrap()
+            .join("contracts.yaml");
+        let contracts = if contracts_file.exists() {
+            let content = fs::read_to_string(&contracts_file)?;
+            serde_yaml::from_str(&content)?
+        } else {
+            strake_common::models::ContractsConfig { contracts: vec![] }
+        };
+
+        let graph = crate::impact::ReferenceGraph::build(&sources, &contracts);
+        let impact_record = graph.impact_of(&result.changes, &sources);
+
+        if !impact_record.affected.is_empty() {
+            println!("\n{}", "Semantic Impact Analysis:".bold().yellow());
+            for aff in &impact_record.affected {
+                println!(
+                    "  {} {} '{}' (Severity: {:?})",
+                    "⚠".yellow(),
+                    match aff.kind {
+                        crate::impact::AffectedKind::Contract => "Contract",
+                        crate::impact::AffectedKind::Policy => "Policy",
+                    },
+                    aff.entity,
+                    aff.severity
+                );
+            }
+        }
+    }
+
+    if opts.format.is_machine_readable() {
+        output::print_success(opts.format, &result)?;
     } else {
         print_diff_human(&result);
     }

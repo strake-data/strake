@@ -164,10 +164,11 @@ async fn introspect_tables(
                     columns.push(ColumnConfig {
                         name: field.name().clone(),
                         data_type: field.data_type().to_string(),
-                        length: None, // DataFusion doesn't easily expose this as a simple i32
-                        primary_key: false, // Metadata doesn't expose PK directly
+                        length: None,
+                        primary_key: false,
                         unique: false,
                         not_null: !field.is_nullable(),
+                        description: None,
                     });
                 }
             }
@@ -181,6 +182,7 @@ async fn introspect_tables(
                     primary_key: true,
                     unique: false,
                     not_null: true,
+                    description: None,
                 });
             }
         }

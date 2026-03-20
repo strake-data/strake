@@ -19,6 +19,7 @@ url = { workspace = true }
 secrecy = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+globset = "0.4"
 
 # Connectors
 duckdb = { version = "1.1", features = ["bundled"], default-features = false }

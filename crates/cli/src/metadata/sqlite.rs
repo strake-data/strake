@@ -460,6 +460,7 @@ impl MetadataStore for SqliteStore {
                                 primary_key: row.get("is_primary_key")?,
                                 unique: row.get("is_unique")?,
                                 not_null: row.get("is_not_null")?,
+                                description: None,
                              })
                          })?;
 

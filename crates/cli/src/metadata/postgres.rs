@@ -456,6 +456,7 @@ impl MetadataStore for PostgresStore {
                             primary_key: col_row.get("is_primary_key"),
                             unique: col_row.get("is_unique"),
                             not_null: col_row.get("is_not_null"),
+                            description: None,
                         });
                     }
 

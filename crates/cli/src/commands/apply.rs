@@ -33,7 +33,7 @@ use super::apply_models::{
     ApplyReceipt, ApplyStatus, ChangeSummary, ErrorDetail, RejectionDetail, ResourceChanges,
     VersionTransition,
 };
-use super::diff::{diff_internal, print_diff_human};
+use super::diff_logic::{diff_internal, print_diff_human};
 use super::validate::validate;
 use crate::config::CliConfig;
 use crate::models::tables_equal;
@@ -484,6 +484,7 @@ mod tests {
                         primary_key: false,
                         unique: false,
                         not_null: false,
+                        description: None,
                     }],
                 }],
                 config: serde_json::Value::Null,
@@ -511,6 +512,7 @@ mod tests {
                         primary_key: false,
                         unique: false,
                         not_null: false,
+                        description: None,
                     }],
                 }],
                 config: serde_json::Value::Null,

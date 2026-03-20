@@ -19,6 +19,7 @@ serde_json = "1.0.148"
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 reqwest = { version = "0.12", features = ["json"] }
+async-trait = { workspace = true }
 strake-runtime = { path = "../runtime" }
 strake-common = { path = "../common" }
 strake-error = { path = "../error" }
@@ -28,6 +29,8 @@ dirs = "5.0"
 tracing = { workspace = true }
 rusqlite = { version = "0.37", features = ["bundled", "chrono"] }
 secrecy = { workspace = true }
+globset = "0.4"
+strake-connectors = { path = "../connectors" }
 zeroize = { version = "1.8", features = ["derive"] }
 futures = "0.3"
 

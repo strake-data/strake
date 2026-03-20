@@ -1,4 +1,4 @@
-use crate::commands::diff::{diff_sources, diff_tables};
+use crate::commands::diff_logic::{diff_sources, diff_tables};
 use crate::models::{ColumnConfig, SourceConfig, TableConfig};
 
 #[test]
@@ -66,6 +66,7 @@ fn test_diff_tables_add_column() {
         unique: false,
         not_null: false,
         length: None,
+        description: None,
     };
 
     let local = TableConfig {

@@ -211,14 +211,6 @@ pub struct SearchResult {
 }
 
 #[derive(Serialize)]
-pub struct AddResult {
-    pub source: String,
-    pub table: String,
-    pub domain: String,
-    pub output_file: String,
-}
-
-#[derive(Serialize)]
 pub struct TestConnectionResult {
     pub source: String,
     pub valid: bool,

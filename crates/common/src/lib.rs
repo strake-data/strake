@@ -13,6 +13,7 @@ pub mod config;
 pub mod error;
 pub mod models;
 pub mod retry;
+pub mod schema;
 pub mod scrubber;
 pub mod telemetry;
 pub mod warnings;

@@ -25,6 +25,8 @@ use sqlite::register_sqlite;
 pub mod clickhouse;
 pub mod duckdb;
 pub mod duckdb_federation;
+pub mod duckdb_introspect;
+pub mod postgres_introspect;
 use clickhouse::register_clickhouse;
 use duckdb::register_duckdb;
 

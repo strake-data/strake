@@ -114,6 +114,7 @@ pub struct ColumnConfig {
     pub unique: bool,
     #[serde(default)]
     pub not_null: bool,
+    pub description: Option<String>,
 }
 
 /// Structural equality helper for TableConfig
@@ -129,6 +130,7 @@ pub fn tables_equal(left: &TableConfig, right: &TableConfig) -> bool {
                 && l.primary_key == r.primary_key
                 && l.unique == r.unique
                 && l.not_null == r.not_null
+                && l.description == r.description
         })
 }
 

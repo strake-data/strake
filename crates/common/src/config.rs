@@ -512,7 +512,7 @@ mod tests {
     #[serial]
     fn test_auth_enabled_requires_api_key() {
         let env_key = "STRAKE_SERVER__AUTH__API_KEY";
-        
+
         temp_env::with_var(env_key, Some(""), || {
             let dir = std::env::temp_dir();
             let unique = std::time::SystemTime::now()

@@ -23,6 +23,7 @@ use owo_colors::OwoColorize;
 mod commands;
 mod config;
 mod exit_codes;
+mod impact;
 mod metadata;
 mod models;
 mod output;
@@ -137,6 +138,9 @@ enum Commands {
         /// Path to the sources.yaml file
         #[arg(default_value = "sources.yaml")]
         file: String,
+        /// Enable inline impact annotation
+        #[arg(long, default_value_t = false)]
+        impact: bool,
     },
     /// Introspect a source to discover its schema (Legacy alias for search)
     Introspect {
@@ -162,13 +166,41 @@ enum Commands {
         /// The name of the source
         source: String,
         /// The full table name (schema.table)
-        table: String,
+        #[arg(required_unless_present_any = ["pattern", "all", "stdin"])]
+        table: Option<String>,
         /// Path to the sources.yaml file to update
         #[arg(default_value = "sources.yaml")]
         file: String,
-        /// Optional domain to add to
+        /// Introspect complete DB-native schema
+        #[arg(long, default_value_t = false)]
+        full: bool,
+        /// Generate AI candidate descriptions for columns
+        #[arg(long, default_value_t = false)]
+        ai_descriptions: bool,
+        /// Promote introspected schema to contracts.yaml
+        #[arg(long, default_value_t = false)]
+        to_contracts: bool,
+        /// Fill in missing fields; never overwrite (default)
+        #[arg(long, default_value_t = true, overrides_with = "overwrite")]
+        merge: bool,
+        /// Replace the entire table entry
+        #[arg(long, default_value_t = false, overrides_with = "merge")]
+        overwrite: bool,
+        /// Glob pattern against schema.table
         #[arg(long)]
-        domain: Option<String>,
+        pattern: Option<String>,
+        /// Onboard every table discoverable from the source
+        #[arg(long, default_value_t = false)]
+        all: bool,
+        /// Read newline-delimited schema.table from stdin
+        #[arg(long, default_value_t = false)]
+        stdin: bool,
+        /// Skip all interactive prompts
+        #[arg(long, default_value_t = false)]
+        yes: bool,
+        /// Show what would be written; write nothing
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
     },
     /// Test connections to defined sources
     TestConnection {
@@ -388,9 +420,18 @@ async fn run_cli(
             )
             .await;
         }
-        Commands::Diff { file } => {
+        Commands::Diff { file, impact } => {
             let store = metadata::init_store(config).await?;
-            return commands::diff(&*store, file, cli.output, resolver_ctx).await;
+            return commands::diff(
+                &*store,
+                commands::DiffOptions {
+                    file: file.clone(),
+                    impact: *impact,
+                    format: cli.output,
+                },
+                resolver_ctx,
+            )
+            .await;
         }
         Commands::Introspect { source, file } => {
             return commands::search(source, file, None, cli.output, config, resolver_ctx).await;
@@ -414,14 +455,34 @@ async fn run_cli(
             source,
             table,
             file,
-            domain,
+            full,
+            ai_descriptions,
+            to_contracts,
+            merge,
+            overwrite,
+            pattern,
+            all,
+            stdin,
+            yes,
+            dry_run,
         } => {
             return commands::add(
-                source,
-                table,
-                domain.as_deref(),
-                file,
-                cli.output,
+                commands::AddOptions {
+                    source: source.clone(),
+                    table: table.clone(),
+                    file: file.clone(),
+                    full: *full,
+                    ai_descriptions: *ai_descriptions,
+                    to_contracts: *to_contracts,
+                    merge: *merge,
+                    overwrite: *overwrite,
+                    pattern: pattern.clone(),
+                    all: *all,
+                    stdin: *stdin,
+                    yes: *yes,
+                    dry_run: *dry_run,
+                    format: cli.output,
+                },
                 config,
                 resolver_ctx,
             )

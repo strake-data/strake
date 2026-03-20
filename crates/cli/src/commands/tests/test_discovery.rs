@@ -84,12 +84,24 @@ async fn test_add_new_source() {
         metadata: None,
     };
 
+    use crate::commands::discovery::AddOptions;
     let result = add(
-        "new_source",
-        "public.users",
-        None,
-        output_path.to_str().unwrap(),
-        OutputFormat::Json,
+        AddOptions {
+            source: "new_source".to_string(),
+            table: Some("public.users".to_string()),
+            pattern: None,
+            all: false,
+            stdin: false,
+            full: false,
+            ai_descriptions: false,
+            to_contracts: false,
+            merge: true,
+            overwrite: false,
+            file: output_path.to_str().unwrap().to_string(),
+            format: OutputFormat::Json,
+            yes: true,
+            dry_run: false,
+        },
         &config,
         &ResolverContext::default(),
     )
