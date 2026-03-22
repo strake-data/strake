@@ -104,6 +104,8 @@ impl SchemaIntrospector for PostgresIntrospector {
                 schema: table.schema.clone(),
                 name: table.table.clone(),
                 columns,
+                db_comment: None,
+                ai_description: None,
             });
         }
 
@@ -156,9 +158,24 @@ impl SchemaIntrospector for PostgresIntrospector {
             &params,
         );
 
-        let (col_rows, constraint_rows, check_rows) =
-            tokio::try_join!(col_query, constraint_query, check_query)
-                .map_err(|e| IntrospectError::Query(e.to_string()))?;
+        // 4. Table comment
+        let table_comment_query = client.query(
+            "
+            SELECT obj_description(c.oid, 'pg_class')
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1 AND c.relname = $2
+            ",
+            &params,
+        );
+
+        let (col_rows, constraint_rows, check_rows, table_comment_rows) = tokio::try_join!(
+            col_query,
+            constraint_query,
+            check_query,
+            table_comment_query
+        )
+        .map_err(|e| IntrospectError::Query(e.to_string()))?;
 
         let mut columns = Vec::new();
         for row in col_rows {
@@ -212,11 +229,15 @@ impl SchemaIntrospector for PostgresIntrospector {
             });
         }
 
+        let db_comment = table_comment_rows.first().and_then(|r| r.get(0));
+
         Ok(IntrospectedTable {
             source: "postgres".to_string(),
             schema: table.schema.clone(),
             name: table.table.clone(),
             columns,
+            db_comment,
+            ai_description: None,
         })
     }
 }

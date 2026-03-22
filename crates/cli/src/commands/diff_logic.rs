@@ -9,7 +9,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! // diff(&store, file_path, format).await?;
 //! ```
 //!

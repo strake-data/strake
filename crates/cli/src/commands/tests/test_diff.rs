@@ -74,6 +74,7 @@ fn test_diff_tables_add_column() {
         schema: "public".to_string(),
         columns: vec![local_col],
         partition_column: None,
+        description: None,
     };
 
     let db = TableConfig {
@@ -81,6 +82,7 @@ fn test_diff_tables_add_column() {
         schema: "public".to_string(),
         columns: vec![],
         partition_column: None,
+        description: None,
     };
 
     let changes = diff_tables("test_source", &local, &db);

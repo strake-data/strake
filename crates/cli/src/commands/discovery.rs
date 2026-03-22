@@ -8,22 +8,60 @@
 //! Strake API to discover existing tables and automatically add them to their
 //! local project configuration.
 //!
+//! ## Usage
+//! ```bash
+//! # Search for a table in the public schema
+//! strake-cli search default public
+//!
+//! # Add a table and automatically generate AI descriptions
+//! strake-cli add default public.alerts --ai-descriptions
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Bulk introspection (`add --all`) uses concurrent Tokio tasks with a configurable
+//! semaphore (default 10) to bound connection pressure against upstream systems.
+//! Configuration files are persisted atomically to prevent corruption during writes.
+//!
+//! ## Errors
+//!
+//! The commands inside this module will return standard Error exit codes if introspection
+//! queries fail, connection parameters are invalid, or if file I/O permissions deny
+//! the atomic write operation into `sources.yaml`.
+//!
 //! ## Security
 //!
-//! All discovery operations require a valid Strake API token.
+//! All remote discovery operations require a valid Strake API token. Local operations
+//! may require credentials for the introspected sources.
 
 use super::{
-    ai::{AiProviderRegistry, AnthropicProvider, GeminiProvider},
+    ai::AiProviderRegistry,
     helpers::{SearchResult, get_client, parse_yaml},
 };
-use crate::config::CliConfig;
+use crate::config::{AiConfig, CliConfig};
 use crate::exit_codes;
 use crate::output::{self, OutputFormat};
 use crate::secrets::ResolverContext;
 use anyhow::{Context, Result, anyhow};
 use owo_colors::OwoColorize;
-use std::fs;
 
+/// Performs a fuzzy search against all configured upstream sources to locate tables.
+///
+/// Output can be formatted visually or emitted as machine-readable JSON.
+///
+/// # Errors
+/// Returns an error if the connection to the API fails or the search route returns 4xx/5xx.
+///
+/// # Examples
+/// ```no_run
+/// # use strake_cli::commands::discovery::search;
+/// # use strake_cli::config::CliConfig;
+/// # use strake_cli::output::OutputFormat;
+/// # use strake_cli::secrets::ResolverContext;
+/// # async fn run() {
+/// search("public", "sources.yaml", None, OutputFormat::Json, &CliConfig::default(), &ResolverContext::new()).await.unwrap();
+/// # }
+/// ```
 pub async fn search(
     source: &str,
     file_path: &str,
@@ -87,25 +125,48 @@ pub async fn search(
     Ok(exit_codes::EXIT_OK)
 }
 
+/// Command-line options for adding or updating tables in the configuration.
 #[derive(Debug, Clone)]
 pub struct AddOptions {
+    /// Source name containing the table.
     pub source: String,
+    /// Schema-qualified table name (e.g. `public.users`). Required unless `--all` or `--stdin` is set.
     pub table: Option<String>,
+    /// Path to the target configuration file (e.g. `sources.yaml`).
     pub file: String,
+    /// Perform full deep introspection (may be slower on large data warehouses).
     pub full: bool,
+    /// Connect to standard AI models to enrich table column comments.
     pub ai_descriptions: bool,
+    /// Also promote the discovered schema cleanly into `contracts.yaml`.
     pub to_contracts: bool,
+    /// Merge new introspection results over the top of the existing configuration.
     pub merge: bool,
+    /// Replace the old table block with a fresh introspection sweep.
     pub overwrite: bool,
+    /// Bulk target: Glob pattern of table names to include.
     pub pattern: Option<String>,
+    /// Bulk target: Fetch all tables.
     pub all: bool,
+    /// Bulk target: Fetch table list from STDIN.
     pub stdin: bool,
+    /// Skip interactive confirmations.
     pub yes: bool,
+    /// View the planned config manipulations without persisting them.
     pub dry_run: bool,
+    /// Formatting mode for the output (Terminal/JSON).
     pub format: OutputFormat,
 }
 
-/// Imports specific tables from a source into the local project.
+/// Imports a specific table from a source into the local project.
+///
+/// Dispatches to `bulk_add` seamlessly if bulk flags are detected.
+///
+/// # Errors
+/// Returns an error if the table string is malformed or if introspection fails structurally.
+///
+/// # Panics
+/// Does not panic in standard workflows.
 pub async fn add(options: AddOptions, config: &CliConfig, ctx: &ResolverContext) -> Result<i32> {
     if options.all || options.pattern.is_some() || options.stdin {
         return bulk_add(options, config, ctx).await;
@@ -146,47 +207,33 @@ pub async fn add(options: AddOptions, config: &CliConfig, ctx: &ResolverContext)
         if !options.format.is_machine_readable() {
             println!("  {} Generating AI descriptions...", "✨".yellow());
         }
-        let mut registry = AiProviderRegistry::new();
+        let provider_name = std::env::var("STRAKE_AI_PROVIDER")
+            .ok()
+            .or_else(|| config.ai.as_ref().and_then(|ai| ai.provider.clone()))
+            .ok_or_else(|| {
+                anyhow!(
+                    "No AI provider configured. \
+                 Set 'STRAKE_AI_PROVIDER' or add 'provider:' under 'ai:' in your config file."
+                )
+            })?;
 
-        // Register default providers
-        if let Ok(key) = std::env::var("GOOGLE_API_KEY") {
-            registry.register(
-                "gemini",
-                Box::new(GeminiProvider {
-                    api_key: key,
-                    model: std::env::var("STRAKE_AI_MODEL")
-                        .unwrap_or_else(|_| "gemini-1.5-pro-latest".to_string()),
-                }),
-            );
-        }
-        if let Ok(_key) = std::env::var("ANTHROPIC_API_KEY") {
-            registry.register(
-                "anthropic",
-                Box::new(AnthropicProvider {
-                    _api_key: std::env::var("ANTHROPIC_API_KEY")
-                        .unwrap_or_else(|_| "dummy".to_string()),
-                    _model: std::env::var("STRAKE_AI_MODEL")
-                        .unwrap_or_else(|_| "claude-3-5-sonnet-latest".to_string()),
-                }),
-            );
-        }
+        let ai_config_default = AiConfig::default();
+        let registry = AiProviderRegistry::new().register_from_env(
+            config.ai.as_ref().unwrap_or(&ai_config_default),
+            &provider_name,
+        )?;
 
-        match registry.resolve_from_env() {
-            Ok(provider) => {
-                if let Err(e) = provider.enrich_descriptions(&mut introspected).await {
-                    eprintln!(
-                        "Warning: AI description enrichment failed: {}. Proceeding without them.",
-                        e
-                    );
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "Warning: No AI provider configured: {}. Proceeding without them.",
-                    e
-                );
-            }
-        }
+        let provider = registry.resolve(&provider_name)?;
+
+        provider
+            .enrich_descriptions(&mut introspected)
+            .await
+            .with_context(|| {
+                format!(
+                    "AI enrichment failed for table '{}.{}'",
+                    introspected.schema, introspected.name
+                )
+            })?;
     }
 
     if options.dry_run {
@@ -212,7 +259,19 @@ pub async fn add(options: AddOptions, config: &CliConfig, ctx: &ResolverContext)
     // Post-process to add # ai-generated comments
     yaml = yaml.replace(" [AI_GEN]", " # ai-generated");
 
-    fs::write(&options.file, yaml)?;
+    let file_path = options.file.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let mut tmp = tempfile::NamedTempFile::new_in(
+            std::path::Path::new(&file_path)
+                .parent()
+                .unwrap_or(std::path::Path::new(".")),
+        )?;
+        use std::io::Write;
+        tmp.as_file_mut().write_all(yaml.as_bytes())?;
+        tmp.persist(&file_path)?;
+        Ok(())
+    })
+    .await??;
 
     if options.to_contracts {
         promote_to_contracts(&introspected, &options, ctx).await?;
@@ -241,7 +300,7 @@ async fn promote_to_contracts(
         .join("contracts.yaml");
 
     let mut contracts_config = if contracts_file.exists() {
-        let content = fs::read_to_string(&contracts_file)?;
+        let content = tokio::fs::read_to_string(&contracts_file).await?;
         serde_yaml::from_str(&content)?
     } else {
         strake_common::models::ContractsConfig { contracts: vec![] }
@@ -316,8 +375,12 @@ async fn promote_to_contracts(
                 "Contract for '{}' already exists and differs. Overwrite? [y/N]",
                 table_full_name
             );
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
+            let input = tokio::task::spawn_blocking(|| -> std::io::Result<String> {
+                let mut s = String::new();
+                std::io::stdin().read_line(&mut s)?;
+                Ok(s)
+            })
+            .await??;
             if !input.trim().eq_ignore_ascii_case("y") {
                 println!("Skipped contract update for '{}'.", table_full_name);
                 return Ok(());
@@ -329,7 +392,17 @@ async fn promote_to_contracts(
     }
 
     let yaml = serde_yaml::to_string(&contracts_config)?;
-    fs::write(&contracts_file, yaml)?;
+    let dest_file = contracts_file.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let mut tmp = tempfile::NamedTempFile::new_in(
+            dest_file.parent().unwrap_or(std::path::Path::new(".")),
+        )?;
+        use std::io::Write;
+        tmp.as_file_mut().write_all(yaml.as_bytes())?;
+        tmp.persist(&dest_file)?;
+        Ok(())
+    })
+    .await??;
 
     if !options.format.is_machine_readable() {
         println!(
@@ -343,7 +416,20 @@ async fn promote_to_contracts(
     Ok(())
 }
 
-async fn bulk_add(options: AddOptions, config: &CliConfig, ctx: &ResolverContext) -> Result<i32> {
+/// Imports multiple tables concurrently from a source into the local project.
+///
+/// Honors concurrency limits to protect upstream databases from connection floods.
+///
+/// # Errors
+/// Returns an error if wildcard lookup fails or atomic writes trigger IO failures.
+///
+/// # Panics
+/// Panics if standard IO locks cannot be securely acquired during CLI prompts.
+pub(crate) async fn bulk_add(
+    options: AddOptions,
+    config: &CliConfig,
+    ctx: &ResolverContext,
+) -> Result<i32> {
     let introspector = resolve_introspector(&options.source, &options.file, config, ctx).await?;
 
     let mut table_refs = Vec::new();
@@ -359,9 +445,9 @@ async fn bulk_add(options: AddOptions, config: &CliConfig, ctx: &ResolverContext
             .await
             .map_err(|e| anyhow!("Failed to list tables with pattern: {}", e))?;
     } else if options.stdin {
-        use std::io::{BufRead, stdin};
-        for line in stdin().lock().lines() {
-            let line = line?;
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+        while let Some(line) = lines.next_line().await? {
             if line.trim().is_empty() || line.starts_with('#') {
                 continue;
             }
@@ -382,10 +468,22 @@ async fn bulk_add(options: AddOptions, config: &CliConfig, ctx: &ResolverContext
         return Ok(exit_codes::EXIT_OK);
     }
 
+    if options.dry_run {
+        println!("Dry run: would add/merge {} tables:", table_refs.len());
+        for t in &table_refs {
+            println!("  - {}.{}", t.schema, t.table);
+        }
+        return Ok(exit_codes::EXIT_OK);
+    }
+
     if table_refs.len() > 10 && !options.yes {
         println!("Found {} tables. Continue? [y/N]", table_refs.len());
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
+        let input = tokio::task::spawn_blocking(|| -> std::io::Result<String> {
+            let mut s = String::new();
+            std::io::stdin().read_line(&mut s)?;
+            Ok(s)
+        })
+        .await??;
         if !input.trim().eq_ignore_ascii_case("y") {
             println!("Aborted.");
             return Ok(exit_codes::EXIT_OK);
@@ -421,12 +519,55 @@ async fn bulk_add(options: AddOptions, config: &CliConfig, ctx: &ResolverContext
         join_handles.push(handle);
     }
 
+    // AI Provider config
+    let mut ai_context: Option<(AiProviderRegistry, String)> = None;
+
+    if options.ai_descriptions {
+        if !options.format.is_machine_readable() {
+            println!("  {} Preparing AI defaults...", "✨".yellow());
+        }
+        let provider_name = std::env::var("STRAKE_AI_PROVIDER")
+            .ok()
+            .or_else(|| config.ai.as_ref().and_then(|ai| ai.provider.clone()))
+            .ok_or_else(|| {
+                anyhow!(
+                    "No AI provider configured. \
+                 Set 'STRAKE_AI_PROVIDER' or add 'provider:' under 'ai:' in your config file."
+                )
+            })?;
+
+        let ai_config_default = AiConfig::default();
+        let registry = AiProviderRegistry::new().register_from_env(
+            config.ai.as_ref().unwrap_or(&ai_config_default),
+            &provider_name,
+        )?;
+
+        // Fail fast if provider cannot be resolved
+        registry.resolve(&provider_name)?;
+
+        ai_context = Some((registry, provider_name));
+    }
+
+    let mut successfully_introspected = Vec::new();
     for handle in join_handles {
         let (table_ref, res) = handle.await?;
         print!("  {} ... ", table_ref);
         match res {
-            Ok(introspected) => {
-                merge_introspected(&mut current_config, &options, introspected)?;
+            Ok(mut introspected) => {
+                if let Some((ref registry, ref name)) = ai_context {
+                    let provider = registry.resolve(name)?;
+                    provider
+                        .enrich_descriptions(&mut introspected)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "AI enrichment failed for table '{}.{}'",
+                                introspected.schema, introspected.name
+                            )
+                        })?;
+                }
+                merge_introspected(&mut current_config, &options, introspected.clone())?;
+                successfully_introspected.push(introspected);
                 println!("{}", "done".green());
             }
             Err(e) => {
@@ -435,9 +576,28 @@ async fn bulk_add(options: AddOptions, config: &CliConfig, ctx: &ResolverContext
         }
     }
 
-    // Atomic write
-    let yaml = serde_yaml::to_string(&current_config)?;
-    fs::write(&options.file, yaml)?;
+    let mut yaml = serde_yaml::to_string(&current_config)?;
+    yaml = yaml.replace(" [AI_GEN]", " # ai-generated");
+
+    let file_path = options.file.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let mut tmp = tempfile::NamedTempFile::new_in(
+            std::path::Path::new(&file_path)
+                .parent()
+                .unwrap_or(std::path::Path::new(".")),
+        )?;
+        use std::io::Write;
+        tmp.as_file_mut().write_all(yaml.as_bytes())?;
+        tmp.persist(&file_path)?;
+        Ok(())
+    })
+    .await??;
+
+    if options.to_contracts {
+        for introspected in &successfully_introspected {
+            promote_to_contracts(introspected, &options, ctx).await?;
+        }
+    }
 
     Ok(exit_codes::EXIT_OK)
 }
@@ -448,9 +608,10 @@ fn merge_introspected(
     introspected: strake_common::schema::IntrospectedTable,
 ) -> Result<()> {
     // Find or create source
-    let source = if let Some(s) = config.sources.iter_mut().find(|s| s.name == options.source) {
-        s
+    let source = if let Some(idx) = config.sources.iter().position(|s| s.name == options.source) {
+        &mut config.sources[idx]
     } else {
+        let new_idx = config.sources.len();
         config.sources.push(strake_common::models::SourceConfig {
             name: options.source.clone(),
             source_type: introspected.source.clone(),
@@ -463,7 +624,7 @@ fn merge_introspected(
             tables: vec![],
             config: serde_json::Value::Object(Default::default()),
         });
-        config.sources.last_mut().unwrap()
+        &mut config.sources[new_idx]
     };
 
     if options.overwrite {
@@ -477,6 +638,14 @@ fn merge_introspected(
         .iter_mut()
         .find(|t| t.name == introspected.name && t.schema == introspected.schema)
     {
+        // Update table description if missing
+        if existing_table.description.is_none() {
+            existing_table.description = introspected
+                .ai_description
+                .map(|d| format!("{} [AI_GEN]", d))
+                .or_else(|| introspected.db_comment.clone());
+        }
+
         if options.merge {
             for intro_col in introspected.columns {
                 if let Some(existing_col) = existing_table
@@ -520,6 +689,10 @@ fn merge_introspected(
             name: introspected.name,
             schema: introspected.schema,
             partition_column: None,
+            description: introspected
+                .ai_description
+                .map(|d| format!("{} [AI_GEN]", d))
+                .or_else(|| introspected.db_comment.clone()),
             columns: introspected
                 .columns
                 .into_iter()
@@ -591,10 +764,15 @@ async fn resolve_introspector(
     }))
 }
 
+/// Fallback introspector that queries the Strake API instead of a direct database connection.
 pub struct ApiIntrospector {
+    /// Strake API base URL.
     pub api_url: String,
+    /// Tenant or domain name.
     pub domain: String,
+    /// Upstream source name.
     pub source: String,
+    /// Client configuration context.
     pub config: CliConfig,
 }
 
@@ -657,10 +835,7 @@ impl strake_connectors::introspect::SchemaIntrospector for ApiIntrospector {
         );
         let response = client
             .post(&url)
-            .json(&serde_json::json!({
-                "schema": table.schema,
-                "table": table.table
-            }))
+            .json(&vec![format!("{}.{}", table.schema, table.table)])
             .send()
             .await
             .map_err(|e| {
@@ -716,9 +891,11 @@ impl strake_connectors::introspect::SchemaIntrospector for ApiIntrospector {
                     is_foreign_key: false,
                     constraints: vec![],
                     db_comment: None,
-                    ai_description: None,
+                    ai_description: c.description,
                 })
                 .collect(),
+            db_comment: None,
+            ai_description: table_config.description,
         })
     }
 }

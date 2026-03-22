@@ -130,6 +130,7 @@ fn test_get_client_no_token() {
         api_url: "http://localhost".to_string(),
         database_url: None,
         metadata: None,
+        ai: None,
     };
     let client = get_client(&config);
     assert!(client.is_ok());
@@ -142,6 +143,7 @@ fn test_get_client_with_token() {
         api_url: "http://localhost".to_string(),
         database_url: None,
         metadata: None,
+        ai: None,
     };
     let client = get_client(&config);
     assert!(client.is_ok());

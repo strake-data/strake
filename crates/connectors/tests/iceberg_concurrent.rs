@@ -95,6 +95,7 @@ async fn test_iceberg_concurrent_table_access() -> Result<()> {
         name: "test_table".to_string(),
         schema: "".to_string(),
         partition_column: None,
+        description: None,
         columns: vec![],
     }];
 
@@ -266,6 +267,7 @@ async fn test_iceberg_lazy_loading_race_condition() -> Result<()> {
         name: "race_test_table".to_string(),
         schema: "".to_string(),
         partition_column: None,
+        description: None,
         columns: vec![],
     }];
 

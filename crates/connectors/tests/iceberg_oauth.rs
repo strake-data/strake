@@ -128,6 +128,7 @@ async fn test_iceberg_oauth_flow() -> Result<()> {
         name: "test_table".to_string(),
         schema: "".to_string(),
         partition_column: None,
+        description: None,
         columns: vec![],
     }];
 

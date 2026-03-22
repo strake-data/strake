@@ -96,6 +96,7 @@ pub struct TableConfig {
     pub schema: String,
 
     pub partition_column: Option<String>,
+    pub description: Option<String>,
 
     #[serde(default)]
     #[validate(nested)]
@@ -122,6 +123,7 @@ pub fn tables_equal(left: &TableConfig, right: &TableConfig) -> bool {
     left.schema == right.schema
         && left.name == right.name
         && left.partition_column == right.partition_column
+        && left.description == right.description
         && left.columns.len() == right.columns.len()
         && left.columns.iter().zip(&right.columns).all(|(l, r)| {
             l.name == r.name

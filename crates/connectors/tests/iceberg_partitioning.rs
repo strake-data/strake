@@ -121,6 +121,7 @@ async fn test_iceberg_partition_pruning_support() -> Result<()> {
         name: "partitioned_table".to_string(),
         schema: "".to_string(),
         partition_column: None,
+        description: None,
         columns: vec![],
     }];
 

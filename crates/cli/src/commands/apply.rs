@@ -12,7 +12,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! // apply(&store, options, &config).await?;
 //! ```
 //!
@@ -427,6 +427,7 @@ mod tests {
                     name: "orders".to_string(),
                     schema: "public".to_string(),
                     partition_column: None,
+                    description: None,
                     columns: vec![],
                 }],
                 config: serde_json::Value::Null,
@@ -447,6 +448,7 @@ mod tests {
                     name: "revenue".to_string(),
                     schema: "public".to_string(),
                     partition_column: None,
+                    description: None,
                     columns: vec![],
                 }],
                 config: serde_json::Value::Null,
@@ -477,6 +479,7 @@ mod tests {
                     name: "orders".to_string(),
                     schema: "public".to_string(),
                     partition_column: None,
+                    description: None,
                     columns: vec![ColumnConfig {
                         name: "amount".to_string(),
                         data_type: "INT".to_string(),
@@ -505,6 +508,7 @@ mod tests {
                     name: "orders".to_string(),
                     schema: "public".to_string(),
                     partition_column: None,
+                    description: None,
                     columns: vec![ColumnConfig {
                         name: "amount".to_string(),
                         data_type: "NUMERIC".to_string(),

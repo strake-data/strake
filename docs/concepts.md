@@ -55,6 +55,29 @@ Strake implements a **TTL-based, User-Isolated** caching strategy to ensure perf
 *   **TTL-Based Expiry**: Cached entries are valid for a configured duration (e.g., 60 seconds). Strake does not actively invalidate cache on source changes; it relies on eventual consistency driven by the TTL.
 *   **Defensive Caching**: If the cache backend (e.g., Redis) fails, Strake fails open and executes the query directly against the source, logging a warning.
 
+## Metadata Enrichment (AI)
+
+Strake can automatically enrich your data source metadata using AI. When adding tables via the CLI (`strake-cli add --ai-descriptions`), Strake sends table and column names to a configured AI provider (e.g., Gemini or OpenAI) to generate natural language descriptions.
+
+### How it works
+1. **Introspection**: Strake first fetches the technical schema (column names, types) from the source.
+2. **Prompting**: It constructs a prompt containing the schema and asks the AI to generate concise descriptions.
+3. **Merging**: The descriptions are merged back into your `sources.yaml`. By default, Strake preserves manual edits and only fills in missing descriptions.
+
+### Configuration
+You can control the AI behavior in your `strake.yaml`:
+```yaml
+ai:
+  provider: gemini
+  model: gemini-1.5-flash
+  temperature: 0.7 # Higher temperature results in more variety
+```
+
+To re-generate descriptions for an existing table, use the `--overwrite` flag:
+```bash
+strake-cli add <source> <table_name> --ai-descriptions --overwrite
+```
+
 ## Resource Governance
 
 To protect both the Strake engine and your upstream data sources, Strake enforces multi-layer resource limits:

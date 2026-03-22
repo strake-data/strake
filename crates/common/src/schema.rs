@@ -7,6 +7,10 @@ pub struct IntrospectedTable {
     pub name: String,
     /// Only populated when `full = true`.
     pub columns: Vec<IntrospectedColumn>,
+    /// Populated from DB-native table comment if present; None otherwise.
+    pub db_comment: Option<String>,
+    /// Populated by AI enrichment pass; None until --ai-descriptions runs.
+    pub ai_description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

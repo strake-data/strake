@@ -9,7 +9,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! // let store = PostgresStore::new(db_url).await?;
 //! ```
 //!
@@ -464,6 +464,7 @@ impl MetadataStore for PostgresStore {
                         name: table_name,
                         schema,
                         partition_column,
+                        description: None,
                         columns,
                     });
                 }

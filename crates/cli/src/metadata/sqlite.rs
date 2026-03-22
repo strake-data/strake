@@ -9,7 +9,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! // let store = SqliteStore::new(path)?;
 //! ```
 //!
@@ -468,12 +468,13 @@ impl MetadataStore for SqliteStore {
                              columns.push(col?);
                          }
 
-                         tables.push(TableConfig {
+                          tables.push(TableConfig {
                             name: table_name,
                             schema,
                             partition_column,
+                            description: None,
                             columns
-                         });
+                          });
                     }
 
                     sources.push(SourceConfig {

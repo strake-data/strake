@@ -10,7 +10,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! // use crate::commands::helpers::parse_yaml;
 //! ```
 //!

@@ -9,7 +9,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! // use crate::metadata::models::*;
 //! ```
 //!

@@ -1,3 +1,9 @@
+//! Configuration module for Strake CLI.
+//!
+//! Provides the data structures and loading logic for reading `strake.yaml`
+//! or default configurations, parsing out AI endpoints, backend metadata configs,
+//! and more.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -5,22 +11,51 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+/// Metadata backend configuration (e.g., SQLite or Postgres).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "backend")]
 pub enum MetadataBackendConfig {
+    /// SQLite backend.
     #[serde(rename = "sqlite")]
-    Sqlite { path: PathBuf },
+    Sqlite {
+        /// Path to the SQLite DB.
+        path: PathBuf,
+    },
+    /// Postgres backend.
     #[serde(rename = "postgres")]
-    Postgres { url: String },
+    Postgres {
+        /// URL to the Postgres DB.
+        url: String,
+    },
 }
 
+/// AI configuration block.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct AiConfig {
+    /// AI Provider name (e.g., "gemini" or "anthropic").
+    pub provider: Option<String>,
+    /// AI Model name to use for introspection descriptions.
+    pub model: Option<String>,
+    /// Custom API endpoint URL for the AI provider.
+    pub url: Option<String>,
+    /// Sampling temperature for AI generations.
+    pub temperature: Option<f32>,
+}
+
+/// Global CLI configuration.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CliConfig {
+    /// Base URL for the Strake server API.
     #[serde(default = "default_api_url")]
     pub api_url: String,
+    /// API authentication token.
     pub token: Option<String>,
+    /// Legacy parameter for database URL.
     pub database_url: Option<String>, // Legacy
+    /// Metadata backend configuration.
     pub metadata: Option<MetadataBackendConfig>,
+    /// AI Description generation configuration.
+    pub ai: Option<AiConfig>,
 }
 
 impl Default for CliConfig {
@@ -30,6 +65,7 @@ impl Default for CliConfig {
             token: None,
             database_url: None,
             metadata: None,
+            ai: None,
         }
     }
 }
@@ -50,32 +86,41 @@ struct ConfigFile {
 }
 
 /// Load configuration based on profile name, environment variables, and config file.
+///
+/// # Errors
+/// Returns an error if the config file exists but is invalid YAML, or if read permissions are denied.
+///
+/// # Examples
+/// ```
+/// # use strake_cli::config;
+/// let conf = config::load(None).unwrap();
+/// ```
 pub fn load(profile_arg: Option<&str>) -> Result<CliConfig> {
     // 1. Load config file
     let config_path = get_config_path();
     let config_file = if config_path.exists() {
         let content = fs::read_to_string(&config_path)
-            .context(format!("Failed to read config file: {:?}", config_path))?;
+            .with_context(|| format!("Failed to read config file: {:?}", config_path))?;
 
         // Detect if it's a flat CliConfig (has 'metadata' or 'api_url' at top level)
         // or a profiled ConfigFile
-        let value: serde_yaml::Value =
-            serde_yaml::from_str(&content).context("Failed to parse config file as YAML")?;
+        let value: serde_yaml::Value = serde_yaml::from_str(&content)
+            .with_context(|| "Failed to parse config file as YAML")?;
 
         if value.get("metadata").is_some()
             || value.get("api_url").is_some()
             || value.get("profiles").is_none()
         {
             // Treat as flat CliConfig
-            let flat_config: CliConfig =
-                serde_yaml::from_value(value).context("Failed to parse flat configuration")?;
+            let flat_config: CliConfig = serde_yaml::from_value(value)
+                .with_context(|| "Failed to parse flat configuration")?;
             let mut cf = ConfigFile::default();
             cf.profiles.insert("default".to_string(), flat_config);
             cf
         } else {
             // Treat as profiled ConfigFile
             serde_yaml::from_str::<ConfigFile>(&content)
-                .context("Failed to parse profiled configuration file")?
+                .with_context(|| "Failed to parse profiled configuration file")?
         }
     } else {
         ConfigFile::default()

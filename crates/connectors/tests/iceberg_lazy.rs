@@ -132,6 +132,7 @@ async fn test_iceberg_lazy_loading_and_concurrency() -> Result<()> {
         name: "test_table".to_string(),
         schema: "".to_string(),
         partition_column: None,
+        description: None,
         columns: vec![],
     }];
 

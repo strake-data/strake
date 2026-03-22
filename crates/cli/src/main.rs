@@ -13,8 +13,7 @@
 //!
 //! # Exploration
 //!
-//! - `introspect`: Discover tables in upstream sources.
-//! - `search`: Find specific tables across all sources.
+//! - `search`: Find specific tables in an upstream source.
 //! - `add`: Quickly add a discovered table to `sources.yaml`.
 
 use clap::{Parser, Subcommand};
@@ -37,6 +36,7 @@ use output::OutputFormat;
 /// The main CLI structure for Strake.
 #[derive(Parser)]
 #[command(name = "strake-cli")]
+#[command(version)]
 #[command(about = "Manage Strake configuration and metadata", long_about = None)]
 struct Cli {
     /// The subcommand to execute.
@@ -141,14 +141,6 @@ enum Commands {
         /// Enable inline impact annotation
         #[arg(long, default_value_t = false)]
         impact: bool,
-    },
-    /// Introspect a source to discover its schema (Legacy alias for search)
-    Introspect {
-        /// The name of the source or its connection string
-        source: String,
-        /// Path to the sources.yaml file
-        #[arg(default_value = "sources.yaml")]
-        file: String,
     },
     /// Search for tables in an upstream source
     Search {
@@ -432,9 +424,6 @@ async fn run_cli(
                 resolver_ctx,
             )
             .await;
-        }
-        Commands::Introspect { source, file } => {
-            return commands::search(source, file, None, cli.output, config, resolver_ctx).await;
         }
         Commands::Search {
             source,

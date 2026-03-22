@@ -10,7 +10,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! // pub trait MetadataStore: Send + Sync { ... }
 //! ```
 //!

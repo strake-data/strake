@@ -191,6 +191,7 @@ async fn introspect_tables(
             name: name.to_string(),
             schema: schema.to_string(),
             partition_column: None,
+            description: None,
             columns,
         });
     }

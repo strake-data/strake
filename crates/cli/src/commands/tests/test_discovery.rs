@@ -39,6 +39,7 @@ async fn test_search_success() {
         api_url: mock_server.uri(),
         database_url: None,
         metadata: None,
+        ai: None,
     };
 
     let result = search(
@@ -82,6 +83,7 @@ async fn test_add_new_source() {
         api_url: mock_server.uri(),
         database_url: None,
         metadata: None,
+        ai: None,
     };
 
     use crate::commands::discovery::AddOptions;

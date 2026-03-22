@@ -156,25 +156,52 @@ Search for tables and schemas in an upstream source.
 ### `add`
 
 <div class="api-signature">
-<code>strake-cli add &lt;source&gt; &lt;table&gt; [file]</code>
+<code>strake-cli add &lt;source&gt; [table]</code>
 <span class="type">command</span>
 </div>
 
-Automatically adds a discovered table into your `sources.yaml`.
+Automatically adds one or more discovered tables into your `sources.yaml`.
 
 **Options:**
 
 `source` : `str`
 :   The name of the source.
 
-`table` : `str`
-:   The full name of the table to add (e.g., `schema.table`).
+`table` : `str`, *optional*
+:   The full name of the table to add (e.g., `schema.table`). Required unless `--all`, `--pattern`, or `--stdin` is used.
 
 `file` : `str`, *default: sources.yaml*
 :   Path to the configuration file to update.
 
-`--domain` : `str`, *optional*
-:   Specify the domain context for the search.
+`--full` : `bool`, *default: false*
+:   Perform deep introspection of the source (e.g., fetching constraints and native types).
+
+`--ai-descriptions` : `bool`, *default: false*
+:   Connect to the configured AI provider to generate natural language descriptions for the table and its columns.
+
+`--merge` : `bool`, *default: true*
+:   Fill in missing fields from introspection but preserve any existing manual edits in `sources.yaml`.
+
+`--overwrite` : `bool`, *default: false*
+:   Completely replace the existing table entry with fresh introspection results. If both `--merge` and `--overwrite` are provided, the last one wins.
+
+`--pattern` : `str`, *optional*
+:   Bulk add: Add all tables matching a glob pattern (e.g., `public.*`).
+
+`--all` : `bool`, *default: false*
+:   Bulk add: Add every table discoverable from the source.
+
+`--stdin` : `bool`, *default: false*
+:   Bulk add: Read a list of schema-qualified table names from standard input.
+
+`--yes` : `bool`, *default: false*
+:   Skip confirmation prompts for destructive changes or large bulk operations.
+
+`--dry-run` : `bool`, *default: false*
+:   Show the changes that would be made without persisting them.
+
+`--to-contracts` : `bool`, *default: false*
+:   Automatically promote the introspected schema to `contracts.yaml`.
 
 ---
 

@@ -99,6 +99,8 @@ impl SchemaIntrospector for DuckDBIntrospector {
             schema: table.schema.clone(),
             name: table.table.clone(),
             columns,
+            db_comment: None,
+            ai_description: None,
         })
     }
 }

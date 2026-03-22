@@ -9,7 +9,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! // rollback(&store, domain, version, force, format).await?;
 //! ```
 //!

@@ -109,6 +109,10 @@ The Strake Server can be configured via environment variables or a `.env` file. 
 | `STRAKE_SERVER__CATALOG` | `strake` | The default catalog name |
 | `STRAKE_SERVER__GLOBAL_CONNECTION_BUDGET` | `100` | Max concurrent connection budget for the server |
 | `STRAKE_API_URL` | `http://localhost:8080/api/v1` | Public URL for the Strake API |
+| `STRAKE_AI_PROVIDER` | `None` | AI provider for metadata enrichment (`gemini`, `openai`) |
+| `STRAKE_AI_MODEL` | `None` | Overrides the AI model used for descriptions |
+| `GOOGLE_API_KEY` | `None` | API key for Gemini provider |
+| `OPENAI_API_KEY` | `None` | API key for OpenAI provider |
 | `STRAKE_AUTH__ENABLED` | `false` | Enable/Disable authentication checks |
 | `STRAKE_AUTH__API_KEY` | *(empty)* | Static API key for auth (required if enabled) |
 | `STRAKE_RETRY__MAX_ATTEMPTS` | `5` | Max retries for establishing upstream connections |
