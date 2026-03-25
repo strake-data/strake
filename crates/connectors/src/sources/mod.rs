@@ -33,16 +33,50 @@ use async_trait::async_trait;
 use datafusion::prelude::SessionContext;
 use strake_common::config::SourceConfig;
 
+#[allow(missing_docs)]
 pub mod file;
+#[allow(missing_docs)]
 pub mod flight;
+#[allow(missing_docs)]
 pub mod grpc;
+#[allow(missing_docs)]
 pub mod iceberg;
+pub mod predicate_caching;
+#[allow(missing_docs)]
 pub mod rest;
+#[allow(missing_docs)]
 pub mod rest_auth;
+#[allow(missing_docs)]
 pub mod schema_drift;
+#[allow(missing_docs)]
 pub mod sql;
 
+/// Ensures a schema exists in the catalog, creating it if necessary.
+pub fn ensure_schema(
+    context: &SessionContext,
+    catalog_name: &str,
+    schema_name: &str,
+) -> Result<Arc<dyn datafusion::catalog::SchemaProvider>> {
+    use datafusion::catalog::MemorySchemaProvider;
+
+    let catalog = context
+        .catalog(catalog_name)
+        .ok_or_else(|| anyhow::anyhow!("Catalog {} not found", catalog_name))?;
+
+    if let Some(schema) = catalog.schema(schema_name) {
+        Ok(schema)
+    } else {
+        let new_schema = Arc::new(MemorySchemaProvider::new());
+        catalog.register_schema(schema_name, new_schema.clone())?;
+        Ok(new_schema)
+    }
+}
+
 #[async_trait]
+/// Trait implemented by each data source connector.
+///
+/// A `SourceProvider` is responsible for interpreting a [`SourceConfig`] and
+/// registering the corresponding tables with a DataFusion [`SessionContext`].
 pub trait SourceProvider: Send + Sync {
     /// Returns the type of source this provider handles (e.g., "sql", "flight_sql")
     fn type_name(&self) -> &'static str;
@@ -56,22 +90,34 @@ pub trait SourceProvider: Send + Sync {
     ) -> Result<()>;
 }
 
+use std::sync::Arc;
+use strake_common::predicate_cache::PredicateCache;
+
 #[derive(Default)]
+/// Registry that maps source type names to their [`SourceProvider`] implementations.
 pub struct SourceRegistry {
     providers: std::collections::HashMap<&'static str, Box<dyn SourceProvider>>,
+    /// Shared predicate cache used by caching data source providers.
+    pub predicate_cache: Arc<PredicateCache>,
 }
 
 impl SourceRegistry {
+    /// Create a new, empty `SourceRegistry` with a fresh [`PredicateCache`].
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            providers: std::collections::HashMap::new(),
+            predicate_cache: Arc::new(PredicateCache::new()),
+        }
     }
 }
 
 impl SourceRegistry {
+    /// Register a provider implementation, keyed on [`SourceProvider::type_name`].
     pub fn register_provider(&mut self, provider: Box<dyn SourceProvider>) {
         self.providers.insert(provider.type_name(), provider);
     }
 
+    /// Locate the appropriate provider for `config` and call its `register` method.
     pub async fn register_source(
         &self,
         context: &SessionContext,
@@ -92,14 +138,22 @@ impl SourceRegistry {
     }
 }
 
+/// Construct a [`SourceRegistry`] pre-populated with all built-in providers.
 pub fn default_registry(global_retry: strake_common::config::RetrySettings) -> SourceRegistry {
     let mut registry = SourceRegistry::new();
+    let cache = registry.predicate_cache.clone();
+
     registry.register_provider(Box::new(sql::SqlSourceProvider { global_retry }));
     registry.register_provider(Box::new(flight::FlightSqlSourceProvider));
-    registry.register_provider(Box::new(file::FileSourceProvider));
+    registry.register_provider(Box::new(file::FileSourceProvider {
+        predicate_cache: cache.clone(),
+    }));
     registry.register_provider(Box::new(rest::RestSourceProvider { global_retry }));
     registry.register_provider(Box::new(grpc::GrpcSourceProvider { global_retry }));
-    registry.register_provider(Box::new(iceberg::IcebergSourceProvider { global_retry }));
+    registry.register_provider(Box::new(iceberg::IcebergSourceProvider {
+        global_retry,
+        predicate_cache: cache,
+    }));
 
     registry
 }

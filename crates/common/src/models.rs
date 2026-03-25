@@ -43,13 +43,17 @@ fn default_cache_ttl_seconds() -> u64 {
     3600
 }
 
+fn default_predicate_cache() -> bool {
+    false
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SourcesConfig {
     pub domain: Option<String>,
     pub sources: Vec<SourceConfig>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Validate)]
+#[derive(Debug, Serialize, Deserialize, Clone, Validate, Default)]
 pub struct SourceConfig {
     #[validate(length(min = 1))]
     pub name: String,
@@ -82,12 +86,15 @@ pub struct SourceConfig {
     #[validate(nested)]
     pub tables: Vec<TableConfig>,
 
+    #[serde(default = "default_predicate_cache")]
+    pub predicate_cache: bool,
+
     // Flatten other loose config
     #[serde(flatten)]
     pub config: serde_json::Value,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Validate)]
+#[derive(Debug, Serialize, Deserialize, Clone, Validate, Default)]
 pub struct TableConfig {
     #[validate(length(min = 1))]
     pub name: String,
@@ -97,18 +104,22 @@ pub struct TableConfig {
 
     pub partition_column: Option<String>,
     pub description: Option<String>,
+    pub path: Option<String>,
+    pub snapshot_id: Option<i64>,
 
     #[serde(default)]
     #[validate(nested)]
     pub columns: Vec<ColumnConfig>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Validate)]
+#[derive(Debug, Serialize, Deserialize, Clone, Validate, Default)]
 pub struct ColumnConfig {
     pub name: String,
     #[serde(rename = "type")]
     pub data_type: String,
     pub length: Option<u32>,
+    pub precision: Option<u8>,
+    pub scale: Option<u8>,
     #[serde(default)]
     pub primary_key: bool,
     #[serde(default)]
@@ -124,11 +135,15 @@ pub fn tables_equal(left: &TableConfig, right: &TableConfig) -> bool {
         && left.name == right.name
         && left.partition_column == right.partition_column
         && left.description == right.description
+        && left.path == right.path
+        && left.snapshot_id == right.snapshot_id
         && left.columns.len() == right.columns.len()
         && left.columns.iter().zip(&right.columns).all(|(l, r)| {
             l.name == r.name
                 && l.data_type == r.data_type
                 && l.length == r.length
+                && l.precision == r.precision
+                && l.scale == r.scale
                 && l.primary_key == r.primary_key
                 && l.unique == r.unique
                 && l.not_null == r.not_null
@@ -143,6 +158,7 @@ pub fn sources_equal(left: &SourceConfig, right: &SourceConfig) -> bool {
         && left.username == right.username
         && left.max_concurrent_queries == right.max_concurrent_queries
         && left.default_limit == right.default_limit
+        && left.predicate_cache == right.predicate_cache
         && left.tables.len() == right.tables.len()
         && left
             .tables

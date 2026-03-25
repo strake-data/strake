@@ -238,8 +238,12 @@ impl fmt::Debug for IcebergRestConfig {
     }
 }
 
+use std::sync::Arc;
+use strake_common::predicate_cache::PredicateCache;
+
 pub struct IcebergSourceProvider {
     pub global_retry: strake_common::config::RetrySettings,
+    pub predicate_cache: Arc<PredicateCache>,
 }
 
 #[async_trait]
@@ -282,6 +286,8 @@ impl SourceProvider for IcebergSourceProvider {
             &cfg,
             &config.tables,
             effective_retry,
+            self.predicate_cache.clone(),
+            config.predicate_cache,
         )
         .await
     }

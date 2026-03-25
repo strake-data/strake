@@ -20,6 +20,10 @@ secrecy = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 globset = "0.4"
+parquet = "57.1.0"
+datafusion-datasource = "51.0.0"
+datafusion-datasource-parquet = "51.0.0"
+bytes = "1.6"
 
 # Connectors
 duckdb = { version = "1.1", features = ["bundled"], default-features = false }
@@ -54,6 +58,7 @@ iceberg-datafusion = "0.8"
 aws-config = "1.8.14"
 aws-credential-types = "1.2.12"
 dashmap = "6.1.0"
+roaring = "0.10.12"
 
 [dev-dependencies]
 wiremock = "0.6"

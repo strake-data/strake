@@ -12,6 +12,7 @@ pub mod circuit_breaker;
 pub mod config;
 pub mod error;
 pub mod models;
+pub mod predicate_cache;
 pub mod retry;
 pub mod schema;
 pub mod scrubber;

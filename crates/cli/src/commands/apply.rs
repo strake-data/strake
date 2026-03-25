@@ -429,8 +429,10 @@ mod tests {
                     partition_column: None,
                     description: None,
                     columns: vec![],
+                    ..Default::default()
                 }],
                 config: serde_json::Value::Null,
+                ..Default::default()
             }],
         };
         let current = SourcesConfig {
@@ -450,8 +452,10 @@ mod tests {
                     partition_column: None,
                     description: None,
                     columns: vec![],
+                    ..Default::default()
                 }],
                 config: serde_json::Value::Null,
+                ..Default::default()
             }],
         };
 
@@ -488,9 +492,12 @@ mod tests {
                         unique: false,
                         not_null: false,
                         description: None,
+                        ..Default::default()
                     }],
+                    ..Default::default()
                 }],
                 config: serde_json::Value::Null,
+                ..Default::default()
             }],
         };
         let current = SourcesConfig {
@@ -517,9 +524,12 @@ mod tests {
                         unique: false,
                         not_null: false,
                         description: None,
+                        ..Default::default()
                     }],
+                    ..Default::default()
                 }],
                 config: serde_json::Value::Null,
+                ..Default::default()
             }],
         };
 

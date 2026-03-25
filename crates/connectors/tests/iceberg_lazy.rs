@@ -134,6 +134,7 @@ async fn test_iceberg_lazy_loading_and_concurrency() -> Result<()> {
         partition_column: None,
         description: None,
         columns: vec![],
+        ..Default::default()
     }];
 
     // 1. Register tables
@@ -145,6 +146,8 @@ async fn test_iceberg_lazy_loading_and_concurrency() -> Result<()> {
         &cfg,
         &tables,
         RetrySettings::default(),
+        Arc::new(strake_common::predicate_cache::PredicateCache::new()),
+        true,
     )
     .await
     .context("Failed to register Iceberg source")?;

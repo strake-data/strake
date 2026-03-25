@@ -149,6 +149,7 @@ async fn test_iceberg_rest_registration_mock() -> Result<()> {
         partition_column: None,
         description: None,
         columns: vec![],
+        ..Default::default()
     }];
 
     // Verify that the registration flow succeeds.
@@ -159,6 +160,8 @@ async fn test_iceberg_rest_registration_mock() -> Result<()> {
         &cfg,
         &tables,
         RetrySettings::default(),
+        Arc::new(strake_common::predicate_cache::PredicateCache::new()),
+        true,
     )
     .await
     .context("Failed to register Iceberg source in test")?;
@@ -176,6 +179,7 @@ async fn test_iceberg_invalid_warehouse_uri() -> Result<()> {
 
     let provider = IcebergSourceProvider {
         global_retry: RetrySettings::default(),
+        predicate_cache: Arc::new(strake_common::predicate_cache::PredicateCache::new()),
     };
 
     let cfg_json = json!({
@@ -195,6 +199,7 @@ async fn test_iceberg_invalid_warehouse_uri() -> Result<()> {
         default_limit: None,
         cache: None,
         max_concurrent_queries: None,
+        ..Default::default()
     };
 
     let ctx = SessionContext::new();

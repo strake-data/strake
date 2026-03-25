@@ -614,6 +614,7 @@ async fn test_per_datasource_cache_config() -> anyhow::Result<()> {
         password: None,
         max_concurrent_queries: None,
         tables: vec![],
+        ..Default::default()
     };
 
     let source_disabled = SourceConfig {
@@ -632,6 +633,7 @@ async fn test_per_datasource_cache_config() -> anyhow::Result<()> {
         password: None,
         max_concurrent_queries: None,
         tables: vec![],
+        ..Default::default()
     };
 
     let config = Config {

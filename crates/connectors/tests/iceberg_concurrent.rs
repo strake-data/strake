@@ -97,6 +97,7 @@ async fn test_iceberg_concurrent_table_access() -> Result<()> {
         partition_column: None,
         description: None,
         columns: vec![],
+        ..Default::default()
     }];
 
     // Register the table
@@ -107,6 +108,8 @@ async fn test_iceberg_concurrent_table_access() -> Result<()> {
         &cfg,
         &tables,
         RetrySettings::default(),
+        Arc::new(strake_common::predicate_cache::PredicateCache::new()),
+        true,
     )
     .await?;
 
@@ -269,6 +272,7 @@ async fn test_iceberg_lazy_loading_race_condition() -> Result<()> {
         partition_column: None,
         description: None,
         columns: vec![],
+        ..Default::default()
     }];
 
     register_iceberg_rest(
@@ -278,6 +282,8 @@ async fn test_iceberg_lazy_loading_race_condition() -> Result<()> {
         &cfg,
         &tables,
         RetrySettings::default(),
+        Arc::new(strake_common::predicate_cache::PredicateCache::new()),
+        true,
     )
     .await?;
 

@@ -139,6 +139,7 @@ async fn introspect_tables(
         tables: vec![],
         config: serde_json::Value::Null,
         max_concurrent_queries: None,
+        ..Default::default()
     };
 
     for table_full in tables {
@@ -169,6 +170,7 @@ async fn introspect_tables(
                         unique: false,
                         not_null: !field.is_nullable(),
                         description: None,
+                        ..Default::default()
                     });
                 }
             }
@@ -183,6 +185,7 @@ async fn introspect_tables(
                     unique: false,
                     not_null: true,
                     description: None,
+                    ..Default::default()
                 });
             }
         }
@@ -193,6 +196,7 @@ async fn introspect_tables(
             partition_column: None,
             description: None,
             columns,
+            ..Default::default()
         });
     }
 
@@ -222,6 +226,7 @@ async fn list_sources(State(state): State<Arc<QueryState>>) -> Json<SourcesConfi
                 tables: vec![], // Details fetched via introspection
                 config: serde_json::Value::Null,
                 max_concurrent_queries: None,
+                ..Default::default()
             }
         })
         .collect();

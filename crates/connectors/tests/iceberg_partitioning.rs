@@ -123,6 +123,7 @@ async fn test_iceberg_partition_pruning_support() -> Result<()> {
         partition_column: None,
         description: None,
         columns: vec![],
+        ..Default::default()
     }];
 
     register_iceberg_rest(
@@ -132,6 +133,8 @@ async fn test_iceberg_partition_pruning_support() -> Result<()> {
         &cfg,
         &tables,
         RetrySettings::default(),
+        Arc::new(strake_common::predicate_cache::PredicateCache::new()),
+        true,
     )
     .await?;
 

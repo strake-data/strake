@@ -35,6 +35,7 @@ async fn test_sqlite_integration() -> Result<()> {
             password: None,
             max_concurrent_queries: None,
             tables: vec![],
+            ..Default::default()
         }],
         cache: Default::default(),
     };
@@ -119,6 +120,7 @@ async fn test_sqlite_cross_db_federation() -> Result<()> {
                 password: None,
                 max_concurrent_queries: None,
                 tables: vec![],
+                ..Default::default()
             },
             SourceConfig {
                 name: "s2".to_string(),
@@ -135,6 +137,7 @@ async fn test_sqlite_cross_db_federation() -> Result<()> {
                 password: None,
                 max_concurrent_queries: None,
                 tables: vec![],
+                ..Default::default()
             },
         ],
         cache: Default::default(),

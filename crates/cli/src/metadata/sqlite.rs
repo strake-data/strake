@@ -461,6 +461,7 @@ impl MetadataStore for SqliteStore {
                                 unique: row.get("is_unique")?,
                                 not_null: row.get("is_not_null")?,
                                 description: None,
+                                ..Default::default()
                              })
                          })?;
 
@@ -473,7 +474,8 @@ impl MetadataStore for SqliteStore {
                             schema,
                             partition_column,
                             description: None,
-                            columns
+                            columns,
+                            ..Default::default()
                           });
                     }
 
@@ -488,6 +490,7 @@ impl MetadataStore for SqliteStore {
                          max_concurrent_queries: None,
                          tables,
                          config: serde_json::Value::Null,
+                         ..Default::default()
                     });
                 }
 

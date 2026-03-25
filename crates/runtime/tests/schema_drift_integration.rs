@@ -159,6 +159,7 @@ async fn test_schema_drift_federation() -> Result<()> {
             password: None,
             max_concurrent_queries: None,
             tables: vec![],
+            ..Default::default()
         }],
         cache: Default::default(),
     };

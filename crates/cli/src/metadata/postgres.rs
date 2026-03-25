@@ -457,6 +457,7 @@ impl MetadataStore for PostgresStore {
                             unique: col_row.get("is_unique"),
                             not_null: col_row.get("is_not_null"),
                             description: None,
+                            ..Default::default()
                         });
                     }
 
@@ -466,6 +467,7 @@ impl MetadataStore for PostgresStore {
                         partition_column,
                         description: None,
                         columns,
+                        ..Default::default()
                     });
                 }
 
@@ -480,6 +482,7 @@ impl MetadataStore for PostgresStore {
                     max_concurrent_queries: None,
                     tables,
                     config: serde_json::Value::Null,
+                    ..Default::default()
                 });
             }
 

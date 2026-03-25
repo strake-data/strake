@@ -14,6 +14,7 @@ fn test_diff_sources_no_changes() {
         default_limit: None,
         cache: None,
         config: serde_json::Value::Null,
+        ..Default::default()
     };
 
     let changes = diff_sources(&source, &source);
@@ -33,6 +34,7 @@ fn test_diff_sources_url_change() {
         default_limit: None,
         cache: None,
         config: serde_json::Value::Null,
+        ..Default::default()
     };
 
     let db = SourceConfig {
@@ -46,6 +48,7 @@ fn test_diff_sources_url_change() {
         default_limit: None,
         cache: None,
         config: serde_json::Value::Null,
+        ..Default::default()
     };
 
     let changes = diff_sources(&local, &db);
@@ -67,6 +70,7 @@ fn test_diff_tables_add_column() {
         not_null: false,
         length: None,
         description: None,
+        ..Default::default()
     };
 
     let local = TableConfig {
@@ -75,6 +79,7 @@ fn test_diff_tables_add_column() {
         columns: vec![local_col],
         partition_column: None,
         description: None,
+        ..Default::default()
     };
 
     let db = TableConfig {
@@ -83,6 +88,7 @@ fn test_diff_tables_add_column() {
         columns: vec![],
         partition_column: None,
         description: None,
+        ..Default::default()
     };
 
     let changes = diff_tables("test_source", &local, &db);

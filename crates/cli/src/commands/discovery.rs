@@ -623,6 +623,7 @@ fn merge_introspected(
             cache: None,
             tables: vec![],
             config: serde_json::Value::Object(Default::default()),
+            ..Default::default()
         });
         &mut config.sources[new_idx]
     };
@@ -680,6 +681,7 @@ fn merge_introspected(
                             description: intro_col
                                 .ai_description
                                 .map(|d| format!("{} [AI_GEN]", d)),
+                            ..Default::default()
                         });
                 }
             }
@@ -704,8 +706,10 @@ fn merge_introspected(
                     unique: false,
                     not_null: !c.nullable,
                     description: c.ai_description.map(|d| format!("{} [AI_GEN]", d)),
+                    ..Default::default()
                 })
                 .collect(),
+            ..Default::default()
         });
     }
 
