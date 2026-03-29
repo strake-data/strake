@@ -1,17 +1,22 @@
-#![allow(missing_docs)]
+//! # Predicate Caching
+//!
+//! Advanced predicate caching for Parquet and Iceberg data sources.
+//!
+//! Provides `CachingReaderFactory` and `RecordingExec` to enable
+//! row-group level filtering based on previous query results.
 
 use bytes::Bytes;
 use dashmap::DashMap;
-use futures::future::BoxFuture;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::file::metadata::ParquetMetaData;
 use std::any::Any;
 use std::ops::Range;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::task::{Context, Poll};
 
 use datafusion::arrow::array::{Array, BooleanArray, Int32RunArray, StringArray};
@@ -20,32 +25,41 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::logical_expr::Expr;
+/// Trait for table providers that support dynamic filtering.
+pub trait DynamicFilterSource: Any + Send + Sync {
+    /// Returns true if this source supports dynamic filtering.
+    fn supports_dynamic_filter(&self) -> bool;
+}
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::{
-    metrics::{ExecutionPlanMetricsSet, MetricBuilder, MetricsSet},
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, RecordBatchStream,
     SendableRecordBatchStream,
+    metrics::{ExecutionPlanMetricsSet, MetricBuilder, MetricsSet},
 };
+use datafusion_datasource::PartitionedFile;
 use datafusion_datasource::file_scan_config::FileScanConfigBuilder;
 use datafusion_datasource::source::DataSourceExec;
-use datafusion_datasource::PartitionedFile;
 use datafusion_datasource_parquet::source::ParquetSource;
 use datafusion_datasource_parquet::{DefaultParquetFileReaderFactory, ParquetFileReaderFactory};
 use iceberg::metadata_columns::RESERVED_COL_NAME_FILE;
 use strake_common::predicate_cache::{BlockKey, PredicateCache};
 
+/// Cache mode for predicate caching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheMode {
+    /// Recording phase: capture row group results.
     Recording,
+    /// Filtering phase: skip row groups based on cached results.
     Filtering,
 }
 
 /// Shared state for one file during a recording scan.
 #[derive(Debug)]
 pub struct FileRecordingState {
+    /// Path of the file on disk or object store.
     pub file_path: Arc<str>,
-    /// One entry per row group. 0=pending, 1=matched, 2=no_match
+    /// One entry per row group. 0=pending, 1=matched, 2=no_match.
     pub row_group_results: Vec<AtomicU8>,
     /// Cumulative row counts at the entry of each row group.
     pub row_group_offsets: Vec<usize>,
@@ -68,12 +82,20 @@ impl FileRecordingState {
     }
 }
 
+/// A factory for creating `CachingAsyncFileReader`s.
 #[derive(Debug)]
 pub struct CachingReaderFactory {
+    /// Inner reader factory.
     pub inner: Arc<dyn ParquetFileReaderFactory>,
+    /// Predicate cache.
     pub cache: Arc<PredicateCache>,
+    /// Snapshot ID for cache isolation.
     pub snapshot_id: i64,
+    /// Recording states for current query.
     pub recording_states: Arc<DashMap<String, Arc<FileRecordingState>>>,
+    /// Maps (file_path, partition_index) to the starting row offset for that partition.
+    pub partition_row_offsets: Arc<DashMap<(String, usize), usize>>,
+    /// Current cache mode.
     pub mode: CacheMode,
 }
 
@@ -86,6 +108,10 @@ impl ParquetFileReaderFactory for CachingReaderFactory {
         metrics: &ExecutionPlanMetricsSet,
     ) -> DataFusionResult<Box<dyn AsyncFileReader + Send>> {
         let file_path: Arc<str> = partitioned_file.object_meta.location.to_string().into();
+        let range = partitioned_file
+            .range
+            .clone()
+            .map(|r| (r.start as u64)..(r.end as u64));
         tracing::info!(
             file_path = %file_path,
             mode = ?self.mode,
@@ -104,18 +130,25 @@ impl ParquetFileReaderFactory for CachingReaderFactory {
             snapshot_id: self.snapshot_id,
             file_path,
             recording_states: Arc::clone(&self.recording_states),
+            partition_row_offsets: Arc::clone(&self.partition_row_offsets),
+            partition_index,
             mode: self.mode,
+            range,
         }))
     }
 }
 
+/// A wrapper around `AsyncFileReader` that records or filters row groups.
 pub struct CachingAsyncFileReader {
     inner: Box<dyn AsyncFileReader + Send>,
     cache: Arc<PredicateCache>,
     snapshot_id: i64,
     file_path: Arc<str>,
     recording_states: Arc<DashMap<String, Arc<FileRecordingState>>>,
+    partition_row_offsets: Arc<DashMap<(String, usize), usize>>,
+    partition_index: usize,
     mode: CacheMode,
+    range: Option<Range<u64>>,
 }
 
 impl CachingAsyncFileReader {
@@ -155,7 +188,8 @@ impl AsyncFileReader for CachingAsyncFileReader {
             let metadata = self.inner.get_metadata(options).await?;
 
             if self.mode == CacheMode::Recording {
-                self.recording_states
+                let state = self
+                    .recording_states
                     .entry(self.file_path.to_string())
                     .or_insert_with(|| {
                         Arc::new(FileRecordingState::new(
@@ -163,6 +197,25 @@ impl AsyncFileReader for CachingAsyncFileReader {
                             &metadata,
                         ))
                     });
+
+                // Calculate the start row offset for this partition within the file.
+                // This is critical for multi-partition recording.
+                let mut start_row = 0;
+                if let Some(range) = &self.range {
+                    // Find the first row group that overlaps with our byte range
+                    for (i, rg) in metadata.row_groups().iter().enumerate() {
+                        let rg_offset = rg.file_offset().unwrap_or(0) as u64;
+                        if rg_offset >= range.start {
+                            start_row = state.row_group_offsets[i];
+                            break;
+                        }
+                    }
+                }
+
+                self.partition_row_offsets.insert(
+                    (self.file_path.to_string(), self.partition_index),
+                    start_row,
+                );
             }
 
             match self.mode {
@@ -184,11 +237,13 @@ impl AsyncFileReader for CachingAsyncFileReader {
     }
 }
 
+/// An execution plan that records predicate matches for row groups.
 #[derive(Debug)]
 pub struct RecordingExec {
     inner: Arc<dyn ExecutionPlan>,
     physical_predicate: Arc<dyn PhysicalExpr>,
     recording_states: Arc<DashMap<String, Arc<FileRecordingState>>>,
+    partition_row_offsets: Arc<DashMap<(String, usize), usize>>,
     cache: Arc<PredicateCache>,
     snapshot_id: i64,
     properties: PlanProperties,
@@ -196,10 +251,12 @@ pub struct RecordingExec {
 }
 
 impl RecordingExec {
+    /// Create a new `RecordingExec` plan.
     pub fn new(
         inner: Arc<dyn ExecutionPlan>,
         physical_predicate: Arc<dyn PhysicalExpr>,
         recording_states: Arc<DashMap<String, Arc<FileRecordingState>>>,
+        partition_row_offsets: Arc<DashMap<(String, usize), usize>>,
         cache: Arc<PredicateCache>,
         snapshot_id: i64,
     ) -> Self {
@@ -208,10 +265,17 @@ impl RecordingExec {
             inner,
             physical_predicate,
             recording_states,
+            partition_row_offsets,
             cache,
             snapshot_id,
             metrics: ExecutionPlanMetricsSet::new(),
         }
+    }
+}
+
+impl DynamicFilterSource for RecordingExec {
+    fn supports_dynamic_filter(&self) -> bool {
+        true
     }
 }
 
@@ -254,6 +318,7 @@ impl ExecutionPlan for RecordingExec {
             child,
             Arc::clone(&self.physical_predicate),
             Arc::clone(&self.recording_states),
+            Arc::clone(&self.partition_row_offsets),
             Arc::clone(&self.cache),
             self.snapshot_id,
         )))
@@ -266,18 +331,23 @@ impl ExecutionPlan for RecordingExec {
     ) -> DataFusionResult<SendableRecordBatchStream> {
         let stream = self.inner.execute(partition, context)?;
         let output_rows = MetricBuilder::new(&self.metrics).output_rows(partition);
+        let output_bytes = MetricBuilder::new(&self.metrics).counter("output_bytes", partition);
         let elapsed_compute = MetricBuilder::new(&self.metrics).elapsed_compute(partition);
 
         Ok(Box::pin(RecordingStream {
             inner: stream,
             physical_predicate: Arc::clone(&self.physical_predicate),
             recording_states: Arc::clone(&self.recording_states),
+            partition_row_offsets: Arc::clone(&self.partition_row_offsets),
+            partition_index: partition,
             cache: Arc::clone(&self.cache),
             snapshot_id: self.snapshot_id,
             output_rows,
+            output_bytes,
             elapsed_compute,
             committed: false,
             rows_processed: 0,
+            base_row_offset: 0,
             current_file_path: None,
         }))
     }
@@ -289,13 +359,14 @@ impl ExecutionPlan for RecordingExec {
 
 /// A TableProvider that injects predicate caching into the execution plan.
 #[derive(Debug)]
-pub struct PredicateCachingTableProvider {
+pub struct CachingTableProvider {
     inner: Arc<dyn TableProvider>,
     cache: Arc<PredicateCache>,
     snapshot_id: i64,
 }
 
-impl PredicateCachingTableProvider {
+impl CachingTableProvider {
+    /// Create a new `CachingTableProvider`.
     pub fn new(
         inner: Arc<dyn TableProvider>,
         cache: Arc<PredicateCache>,
@@ -310,7 +381,7 @@ impl PredicateCachingTableProvider {
 }
 
 #[async_trait::async_trait]
-impl TableProvider for PredicateCachingTableProvider {
+impl TableProvider for CachingTableProvider {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -342,6 +413,7 @@ impl TableProvider for PredicateCachingTableProvider {
         };
 
         let recording_states = Arc::new(DashMap::new());
+        let partition_row_offsets = Arc::new(DashMap::new());
 
         let new_plan = inject_factory_into_plan(
             inner_plan,
@@ -349,6 +421,7 @@ impl TableProvider for PredicateCachingTableProvider {
             Arc::clone(&self.cache),
             self.snapshot_id,
             Arc::clone(&recording_states),
+            Arc::clone(&partition_row_offsets),
             mode,
         )?;
 
@@ -362,6 +435,7 @@ impl TableProvider for PredicateCachingTableProvider {
                     new_plan,
                     physical_predicate,
                     recording_states,
+                    partition_row_offsets,
                     Arc::clone(&self.cache),
                     self.snapshot_id,
                 )));
@@ -379,16 +453,29 @@ impl TableProvider for PredicateCachingTableProvider {
     }
 }
 
+impl DynamicFilterSource for CachingTableProvider {
+    fn supports_dynamic_filter(&self) -> bool {
+        // CachingTableProvider itself supports dynamic filtering signals
+        // to coordinate with RecordingExec.
+        true
+    }
+}
+
+/// A stream that records predicate matches during execution.
 pub struct RecordingStream {
     inner: SendableRecordBatchStream,
     physical_predicate: Arc<dyn PhysicalExpr>,
     recording_states: Arc<DashMap<String, Arc<FileRecordingState>>>,
+    partition_row_offsets: Arc<DashMap<(String, usize), usize>>,
+    partition_index: usize,
     cache: Arc<PredicateCache>,
     snapshot_id: i64,
     output_rows: datafusion::physical_plan::metrics::Count,
+    output_bytes: datafusion::physical_plan::metrics::Count,
     elapsed_compute: datafusion::physical_plan::metrics::Time,
     committed: bool,
     rows_processed: usize,
+    base_row_offset: usize,
     current_file_path: Option<String>,
 }
 
@@ -472,12 +559,19 @@ impl futures::Stream for RecordingStream {
                     if self.current_file_path.as_deref() != Some(&file_path) {
                         self.current_file_path = Some(file_path.clone());
                         self.rows_processed = 0;
+                        // Look up the starting row offset for this partition/file combination
+                        self.base_row_offset = self
+                            .partition_row_offsets
+                            .get(&(file_path.clone(), self.partition_index))
+                            .map(|v| *v)
+                            .unwrap_or(0);
                     }
 
                     if let Some(state) = self.recording_states.get(&file_path) {
-                        // Map rows_processed to row_group_index using offsets
+                        // Map local processed rows to global row_group_index using offsets
+                        let global_row = self.base_row_offset + self.rows_processed;
                         let row_group_index =
-                            match state.row_group_offsets.binary_search(&self.rows_processed) {
+                            match state.row_group_offsets.binary_search(&global_row) {
                                 Ok(idx) => idx,
                                 Err(idx) => idx.saturating_sub(1),
                             };
@@ -508,10 +602,14 @@ impl futures::Stream for RecordingStream {
                             }
                         }
                     }
-                    self.rows_processed += batch.num_rows();
+                    self.rows_processed = self
+                        .rows_processed
+                        .checked_add(batch.num_rows())
+                        .expect("row count overflow in predicate cache recording - query exceeds maximum row count");
                 }
 
                 self.output_rows.add(batch.num_rows());
+                self.output_bytes.add(batch.get_array_memory_size());
                 self.elapsed_compute.add_duration(started.elapsed());
                 Poll::Ready(Some(Ok(batch)))
             }
@@ -554,12 +652,14 @@ impl Drop for RecordingStream {
     }
 }
 
+/// Injects the `CachingReaderFactory` into a Parquet execution plan.
 pub fn inject_factory_into_plan(
     plan: Arc<dyn ExecutionPlan>,
     runtime_env: Arc<datafusion::execution::runtime_env::RuntimeEnv>,
     cache: Arc<PredicateCache>,
     snapshot_id: i64,
     recording_states: Arc<DashMap<String, Arc<FileRecordingState>>>,
+    partition_row_offsets: Arc<DashMap<(String, usize), usize>>,
     mode: CacheMode,
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
     if let Some(data_source_exec) = plan.as_any().downcast_ref::<DataSourceExec>() {
@@ -582,9 +682,10 @@ pub fn inject_factory_into_plan(
 
         let factory = Arc::new(CachingReaderFactory {
             inner: inner_factory,
-            cache,
+            cache: Arc::clone(&cache),
             snapshot_id,
-            recording_states,
+            recording_states: Arc::clone(&recording_states),
+            partition_row_offsets: Arc::clone(&partition_row_offsets),
             mode,
         });
 
@@ -605,21 +706,38 @@ pub fn inject_factory_into_plan(
             cache,
             snapshot_id,
             recording_states,
+            partition_row_offsets,
             mode,
         )?;
         return plan.with_new_children(vec![new_child]);
     }
 
     // Handle EmptyExec or other nodes gracefully by just returning the original plan.
-    // This happens if a glob matches no files or a table is empty.
     if plan.name() == "EmptyExec" {
         return Ok(plan);
     }
 
-    Err(DataFusionError::Internal(format!(
-        "inject_factory_into_plan: unexpected plan topology '{}'. Expected DataSourceExec or ProjectionExec -> DataSourceExec.",
-        plan.name()
-    )))
+    let children = plan
+        .children()
+        .into_iter()
+        .map(Arc::clone)
+        .collect::<Vec<_>>();
+    let new_children = children
+        .into_iter()
+        .map(|child| {
+            inject_factory_into_plan(
+                child,
+                Arc::clone(&runtime_env),
+                Arc::clone(&cache),
+                snapshot_id,
+                Arc::clone(&recording_states),
+                Arc::clone(&partition_row_offsets),
+                mode,
+            )
+        })
+        .collect::<DataFusionResult<Vec<_>>>()?;
+
+    plan.with_new_children(new_children)
 }
 
 impl FileRecordingState {
@@ -690,9 +808,13 @@ mod tests {
             inner,
             physical_predicate,
             recording_states: Arc::clone(&recording_states),
+            partition_row_offsets: Arc::new(DashMap::new()),
+            partition_index: 0,
             cache: Arc::new(PredicateCache::new()),
+            base_row_offset: 0,
             snapshot_id: 1,
             output_rows: MetricBuilder::new(&metrics).output_rows(0),
+            output_bytes: MetricBuilder::new(&metrics).output_bytes(0),
             elapsed_compute: MetricBuilder::new(&metrics).elapsed_compute(0),
             committed: false,
             rows_processed: 0,
@@ -739,9 +861,13 @@ mod tests {
             inner,
             physical_predicate,
             recording_states: Arc::clone(&recording_states),
+            partition_row_offsets: Arc::new(DashMap::new()),
+            partition_index: 0,
             cache: Arc::new(PredicateCache::new()),
+            base_row_offset: 0,
             snapshot_id: 1,
             output_rows: MetricBuilder::new(&metrics).output_rows(0),
+            output_bytes: MetricBuilder::new(&metrics).output_bytes(0),
             elapsed_compute: MetricBuilder::new(&metrics).elapsed_compute(0),
             committed: false,
             rows_processed: 0,
@@ -792,9 +918,13 @@ mod tests {
             inner,
             physical_predicate,
             recording_states: Arc::clone(&recording_states),
+            partition_row_offsets: Arc::new(DashMap::new()),
+            partition_index: 0,
             cache: Arc::new(PredicateCache::new()),
+            base_row_offset: 0,
             snapshot_id: 1,
             output_rows: MetricBuilder::new(&metrics).output_rows(0),
+            output_bytes: MetricBuilder::new(&metrics).output_bytes(0),
             elapsed_compute: MetricBuilder::new(&metrics).elapsed_compute(0),
             committed: false,
             rows_processed: 0,

@@ -1,26 +1,78 @@
+//! # Authentication and Authorization
+//!
+//! This module provides the central framework for managing user identity,
+//! hierarchical permissions, and dynamic data masking rules throughout the
+//! Strake query engine and CLI.
+//!
+//! ## Core Components
+//!
+//! - **Identity**: Represents a logged-in user or system actor, including their
+//!   unique identifier and associated roles/groups.
+//! - **Permissions**: Fine-grained access control strings (e.g., `tables:read:public.*`)
+//!   used to enforce security boundaries at the catalog, schema, and table levels.
+//! - **Data Masking**: Policy-driven rules like `Redact`, `Hash`, or `KeepFirst(N)`
+//!   that protect sensitive PII and confidential information in query results.
+//!
+//! ## Usage Example
+//!
+//! ```rust
+//! use strake_common::auth::{AuthenticatedUser, MaskingRule};
+//! use strake_common::models::ActorName;
+//!
+//! // Create a new identity with specific permissions
+//! let mut user = AuthenticatedUser::default();
+//! user.id = ActorName::from("alice");
+//! user.permissions = vec!["sales:*".to_string()].into();
+//!
+//! // Check if the user has permission to read a specific table
+//! if user.has_permission("sales:deals:read") {
+//!     println!("Access granted");
+//! }
+//! ```
+//!
+//! ## Safety and Compliance
+//!
+//! Identity documentation and permission strings are designed to be easily
+//! auditable. All sensitive identity metadata should be integrated with
+//! the `secrecy` crate where appropriate to prevent accidental logging or
+//! memory exposure.
+
+use crate::models::ActorName;
 use datafusion::common::config::{ConfigEntry, ConfigExtension, ExtensionOptions};
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 
+/// Rules for masking sensitive data in query results.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MaskingRule {
+    /// Completely redact the value, replacing it with a fixed placeholder or null.
     Redact,
+    /// Apply a cryptographic hash to the value to preserve uniqueness while obscuring the original data.
     Hash,
+    /// Keep only the first N characters of the value and redact any remaining characters.
     KeepFirst(usize),
+    /// Replace the value with a specified default string value.
     Default(String),
     // Allow raw value for flexibility until strict schema is defined
+    /// Apply a custom masking rule defined by a JSON-serializable structure.
     Custom(serde_json::Value),
 }
 
+/// A set of permissions parsed and optimized for efficient checking.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct PermissionSet {
+    /// Exact string matches for permissions.
     exact: HashSet<String>,
-    prefixes: Vec<String>, // Prefixes without the trailing :*
+    /// Prefix matches (e.g., "governance:*" results in "governance" prefix).
+    prefixes: Vec<String>,
+    /// Whether the user has top-level administrative access.
     is_admin: bool,
+    /// Whether the user has a global wildcard permission.
     global_wildcard: bool,
-    // Original raw permissions for serialization/display
+    /// Original raw permission strings for serialization.
     pub raw: Vec<String>,
 }
 
@@ -74,9 +126,13 @@ impl From<Vec<String>> for PermissionSet {
     }
 }
 
+/// Row-level security and data masking rules for a table.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[non_exhaustive]
 pub struct TableRules {
+    /// Optional SQL fragment used for row-level filtering.
     pub rls_filter: Option<String>,
+    /// Optional mapping of column names to masking rules.
     pub masking: Option<HashMap<String, MaskingRule>>,
 }
 
@@ -95,11 +151,15 @@ impl From<TableRules> for (Option<String>, Option<HashMap<String, MaskingRule>>)
     }
 }
 
+/// Representation of a user who has been successfully authenticated.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[non_exhaustive]
 pub struct AuthenticatedUser {
-    pub id: String,
+    /// Unique identifier for the user.
+    pub id: ActorName,
+    /// Set of permissions assigned to the user.
     pub permissions: PermissionSet,
-    // table_name -> rules
+    /// Map of table names to row-level security rules.
     pub rules: HashMap<String, TableRules>,
 }
 
@@ -143,10 +203,10 @@ impl AuthenticatedUser {
         for prefix in &self.permissions.prefixes {
             if permission.starts_with(prefix) {
                 // Strict hierarchy: "foo:*" matches "foo:bar" but not "foo"
-                if let Some(rest) = permission.get(prefix.len()..) {
-                    if rest.starts_with(':') {
-                        return true;
-                    }
+                if let Some(rest) = permission.get(prefix.len()..)
+                    && rest.starts_with(':')
+                {
+                    return true;
                 }
             }
         }
@@ -226,14 +286,14 @@ mod tests {
     #[test]
     fn test_has_permission_admin_bypass() {
         let user = AuthenticatedUser {
-            id: "test-user".to_string(),
+            id: "test-user".into(),
             permissions: PermissionSet::from(vec!["admin".to_string()]),
             ..Default::default()
         };
         assert!(user.has_permission("any:action"));
 
         let system_admin = AuthenticatedUser {
-            id: "sys-admin".to_string(),
+            id: "sys-admin".into(),
             permissions: PermissionSet::from(vec!["system:admin".to_string()]),
             ..Default::default()
         };

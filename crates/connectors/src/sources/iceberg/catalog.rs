@@ -1,8 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use dashmap::DashMap;
-use iceberg::table::Table;
 use iceberg::NamespaceIdent;
+use iceberg::table::Table;
 use iceberg::{Catalog, CatalogBuilder, TableIdent};
 use iceberg_catalog_rest::{RestCatalog, RestCatalogBuilder};
 use moka::future::Cache;

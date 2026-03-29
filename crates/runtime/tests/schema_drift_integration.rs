@@ -14,8 +14,8 @@ use strake_common::circuit_breaker::{
 };
 use strake_common::config::SourceConfig;
 use strake_common::config::{Config, ResourceConfig};
-use strake_connectors::sources::schema_drift::SchemaDriftTableProvider;
 use strake_connectors::sources::SourceProvider;
+use strake_connectors::sources::schema_drift::SchemaDriftTableProvider;
 use strake_runtime::federation::{FederationEngine, FederationEngineOptions};
 
 /// Creates a mock DataFusion TableProvider pretending to be a remote source.
@@ -137,7 +137,7 @@ impl SourceProvider for MockDriftedProvider {
         let with_drift = Arc::new(SchemaDriftTableProvider::new(with_cb));
 
         context.register_table(
-            datafusion::sql::TableReference::full(catalog_name, "public", config.name.clone()),
+            datafusion::sql::TableReference::full(catalog_name, "public", config.name.name.clone()),
             with_drift,
         )?;
 
@@ -147,22 +147,13 @@ impl SourceProvider for MockDriftedProvider {
 
 #[tokio::test]
 async fn test_schema_drift_federation() -> Result<()> {
-    let config = Config {
-        sources: vec![SourceConfig {
-            name: "drifted_src".to_string(),
-            source_type: "mock_drift".to_string(),
-            url: None,
-            default_limit: None,
-            cache: None,
-            config: serde_json::Value::Null,
-            username: None,
-            password: None,
-            max_concurrent_queries: None,
-            tables: vec![],
-            ..Default::default()
-        }],
-        cache: Default::default(),
-    };
+    let mut config = Config::default();
+    let mut s1 = SourceConfig::default();
+    s1.name = "drifted_src".into();
+    s1.source_type = strake_common::models::SourceType::Other("mock_drift".to_string());
+    s1.tables = vec![];
+    config.sources = vec![s1];
+    config.cache = Default::default();
 
     let engine = FederationEngine::new(FederationEngineOptions {
         config,

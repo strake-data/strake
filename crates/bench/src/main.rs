@@ -1,3 +1,18 @@
+//! # Strake Benchmark Suite
+//!
+//! Performance testing and latency analysis for the Strake query engine.
+//!
+//! ## Overview
+//!
+//! Includes end-to-end benchmarks against various data sources,
+//! supporting TPC-H query sets and chaos injection for resilience testing.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! CONFIG_FILE=config/my_source.yaml cargo run -p strake-bench -- run --queries 1 6
+//! ```
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use rand::Rng;
@@ -75,9 +90,11 @@ async fn run_benchmarks(
 
     let config_path =
         std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config/tpch.yaml".to_string());
-    let config = Config::from_file(&config_path).unwrap_or(Config {
-        sources: vec![],
-        cache: Default::default(),
+    let config = Config::from_file(&config_path).unwrap_or({
+        let mut s = Config::default();
+        s.sources = vec![];
+        s.cache = Default::default();
+        s
     });
 
     // Increase limits for benchmarking to allow full TPC-H scans at SF=0.5 (3M rows)
@@ -104,6 +121,7 @@ async fn run_benchmarks(
         info!("Running TPC-H Q{} for {} iterations...", q, iterations);
 
         let sql = get_tpch_query(q)?;
+        let mut rng = rand::rng();
 
         for i in 1..=iterations {
             let start = Instant::now();
@@ -112,7 +130,7 @@ async fn run_benchmarks(
             let mut result_status = "SUCCESS".to_string();
             let mut error_msg = None;
 
-            if rand::rng().random_bool(chaos_prob) {
+            if rng.random_bool(chaos_prob) {
                 warn!(
                     "Injecting chaos: Simulated Source Timeout for Q{} Iteration {}",
                     q, i

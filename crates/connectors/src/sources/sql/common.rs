@@ -39,26 +39,26 @@ pub enum SqlDialect {
     DuckDB,
 }
 
-pub struct SqlSourceParams<'a> {
-    pub context: &'a SessionContext,
-    pub catalog_name: &'a str,
-    pub name: &'a str,
-    pub connection_string: &'a str,
+pub struct SqlSourceParams {
+    pub context: Arc<SessionContext>,
+    pub catalog_name: String,
+    pub name: String,
+    pub connection_string: String,
     pub pool_size: usize,
     pub cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
-    pub explicit_tables: &'a Option<Vec<strake_common::config::TableConfig>>,
+    pub explicit_tables: Arc<Option<Vec<strake_common::config::TableConfig>>>,
     pub retry: strake_common::config::RetrySettings,
     pub max_concurrent_queries: usize,
 }
 
-pub struct SqlRegistrationOptions<'a> {
-    pub context: &'a SessionContext,
-    pub catalog_name: &'a str,
-    pub name: &'a str,
+pub struct SqlRegistrationOptions {
+    pub context: Arc<SessionContext>,
+    pub catalog_name: String,
+    pub name: String,
     pub dialect: SqlDialect,
-    pub connection_string: &'a str,
+    pub connection_string: String,
     pub pool_size: usize,
-    pub explicit_tables: &'a Option<Vec<strake_common::config::TableConfig>>,
+    pub explicit_tables: Arc<Option<Vec<strake_common::config::TableConfig>>>,
     pub retry: strake_common::config::RetrySettings,
     pub max_concurrent_queries: usize,
 }

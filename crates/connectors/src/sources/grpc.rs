@@ -13,8 +13,8 @@ use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor};
 use serde::Deserialize;
 use strake_common::config::{RetrySettings, SourceConfig, TableConfig};
 use tonic::{
-    codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder},
     Status,
+    codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder},
 };
 use tower::ServiceExt;
 
@@ -60,12 +60,11 @@ impl SourceProvider for GrpcSourceProvider {
         config: &SourceConfig,
     ) -> Result<()> {
         let mut raw_config = config.config.clone();
-        if let Some(url) = &config.url {
-            if let Some(obj) = raw_config.as_object_mut() {
-                if !obj.contains_key("url") {
-                    obj.insert("url".to_string(), serde_json::Value::String(url.clone()));
-                }
-            }
+        if let Some(url) = &config.url
+            && let Some(obj) = raw_config.as_object_mut()
+            && !obj.contains_key("url")
+        {
+            obj.insert("url".to_string(), serde_json::Value::String(url.clone()));
         }
 
         let grpc_config: GrpcSourceConfig = serde_json::from_value(raw_config)
@@ -94,7 +93,7 @@ impl SourceProvider for GrpcSourceProvider {
             let provider = Arc::new(GrpcTableProvider::new(grpc_config, schema, pool));
 
             context.register_table(
-                datafusion::sql::TableReference::full(catalog_name, "public", config.name.clone()),
+                datafusion::sql::TableReference::full(catalog_name, "public", config.name.as_ref()),
                 provider,
             )?;
         } else {
@@ -102,10 +101,10 @@ impl SourceProvider for GrpcSourceProvider {
                 let (default_schema, pool) =
                     create_schema_and_pool_from_config(&grpc_config).await?;
 
-                let schema = if !table_cfg.columns.is_empty() {
+                let schema = if !table_cfg.column_definitions.is_empty() {
                     // Convert TableConfig columns to GrpcSourceConfig columns
                     let grpc_cols: Vec<ColumnConfig> = table_cfg
-                        .columns
+                        .column_definitions
                         .iter()
                         .map(|c| ColumnConfig {
                             name: c.name.clone(),
@@ -155,10 +154,11 @@ impl SourceProvider for GrpcSourceProvider {
 
 use datafusion::datasource::TableProvider;
 use datafusion::physical_expr::EquivalenceProperties;
-use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::Partitioning;
 use datafusion::physical_plan::SendableRecordBatchStream;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder, MetricsSet};
 use datafusion::physical_plan::{DisplayAs, PlanProperties};
 
 #[derive(Debug)]
@@ -222,6 +222,7 @@ struct GrpcExec {
     #[allow(dead_code)] // TODO: Implement limit pushdown
     limit: Option<usize>,
     cache: PlanProperties,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl GrpcExec {
@@ -257,6 +258,7 @@ impl GrpcExec {
             projection,
             limit,
             cache,
+            metrics: ExecutionPlanMetricsSet::new(),
         })
     }
 }
@@ -300,16 +302,20 @@ impl ExecutionPlan for GrpcExec {
 
     fn execute(
         &self,
-        _partition: usize,
+        partition: usize,
         _context: Arc<datafusion::execution::TaskContext>,
     ) -> datafusion::error::Result<SendableRecordBatchStream> {
         let config = self.config.clone();
         let schema = self.schema.clone();
-
         let pool = self.pool.clone();
+
+        let output_rows = MetricBuilder::new(&self.metrics).output_rows(partition);
+        let output_bytes = MetricBuilder::new(&self.metrics).counter("output_bytes", partition);
+        let elapsed_compute = MetricBuilder::new(&self.metrics).elapsed_compute(partition);
 
         // Return a stream that executes gRPC in background
         let stream = futures::stream::once(async move {
+            let start = std::time::Instant::now();
             // 1. Load Descriptor Pool
             // Fix [Performance]: Use pre-loaded pool or error if not found
             let pool = pool.ok_or_else(|| {
@@ -454,6 +460,11 @@ impl ExecutionPlan for GrpcExec {
             }
 
             let batch = arrow::compute::concat_batches(&final_schema, &batches)?;
+
+            output_rows.add(batch.num_rows());
+            output_bytes.add(batch.get_array_memory_size());
+            elapsed_compute.add_duration(start.elapsed());
+
             Ok(batch)
         });
 
@@ -469,6 +480,10 @@ impl ExecutionPlan for GrpcExec {
         Ok(datafusion::physical_plan::Statistics::new_unknown(
             &self.schema,
         ))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 }
 

@@ -1,21 +1,14 @@
+#![allow(clippy::field_reassign_with_default)]
 use crate::commands::diff_logic::{diff_sources, diff_tables};
 use crate::models::{ColumnConfig, SourceConfig, TableConfig};
 
 #[test]
 fn test_diff_sources_no_changes() {
-    let source = SourceConfig {
-        name: "test".to_string(),
-        source_type: "postgres".to_string(),
-        url: Some("postgres://localhost:5432/db".to_string()),
-        tables: vec![],
-        username: None,
-        password: None,
-        max_concurrent_queries: None,
-        default_limit: None,
-        cache: None,
-        config: serde_json::Value::Null,
-        ..Default::default()
-    };
+    let mut source = SourceConfig::default();
+    source.name = "test".into();
+    source.source_type = strake_common::models::SourceType::Other("postgres".to_string());
+    source.url = Some("postgres://localhost:5432/db".to_string());
+    source.tables = vec![];
 
     let changes = diff_sources(&source, &source);
     assert!(changes.is_empty());
@@ -23,33 +16,17 @@ fn test_diff_sources_no_changes() {
 
 #[test]
 fn test_diff_sources_url_change() {
-    let local = SourceConfig {
-        name: "test".to_string(),
-        source_type: "postgres".to_string(),
-        url: Some("postgres://new:5432/db".to_string()),
-        tables: vec![],
-        username: None,
-        password: None,
-        max_concurrent_queries: None,
-        default_limit: None,
-        cache: None,
-        config: serde_json::Value::Null,
-        ..Default::default()
-    };
+    let mut local = SourceConfig::default();
+    local.name = "test".into();
+    local.source_type = strake_common::models::SourceType::Other("postgres".to_string());
+    local.url = Some("postgres://new:5432/db".to_string());
+    local.tables = vec![];
 
-    let db = SourceConfig {
-        name: "test".to_string(),
-        source_type: "postgres".to_string(),
-        url: Some("postgres://old:5432/db".to_string()),
-        tables: vec![],
-        username: None,
-        password: None,
-        max_concurrent_queries: None,
-        default_limit: None,
-        cache: None,
-        config: serde_json::Value::Null,
-        ..Default::default()
-    };
+    let mut db = SourceConfig::default();
+    db.name = "test".into();
+    db.source_type = strake_common::models::SourceType::Other("postgres".to_string());
+    db.url = Some("postgres://old:5432/db".to_string());
+    db.tables = vec![];
 
     let changes = diff_sources(&local, &db);
     assert_eq!(changes.len(), 1);
@@ -62,34 +39,18 @@ fn test_diff_sources_url_change() {
 
 #[test]
 fn test_diff_tables_add_column() {
-    let local_col = ColumnConfig {
-        name: "new_col".to_string(),
-        data_type: "int".to_string(),
-        primary_key: false,
-        unique: false,
-        not_null: false,
-        length: None,
-        description: None,
-        ..Default::default()
-    };
+    let mut local = TableConfig::default();
+    local.name = "users".to_string();
+    local.schema = "public".to_string();
+    let mut col = ColumnConfig::default();
+    col.name = "new_col".to_string();
+    col.data_type = "int".to_string();
+    local.column_definitions = vec![col];
 
-    let local = TableConfig {
-        name: "users".to_string(),
-        schema: "public".to_string(),
-        columns: vec![local_col],
-        partition_column: None,
-        description: None,
-        ..Default::default()
-    };
-
-    let db = TableConfig {
-        name: "users".to_string(),
-        schema: "public".to_string(),
-        columns: vec![],
-        partition_column: None,
-        description: None,
-        ..Default::default()
-    };
+    let mut db = TableConfig::default();
+    db.name = "users".to_string();
+    db.schema = "public".to_string();
+    db.column_definitions = vec![];
 
     let changes = diff_tables("test_source", &local, &db);
     assert_eq!(changes.len(), 1);
@@ -99,6 +60,6 @@ fn test_diff_tables_add_column() {
     );
     assert_eq!(
         changes[0].path,
-        "sources[test_source].tables[public.users].columns[new_col]"
+        "sources[test_source].tables[public.users].column_definitions[new_col]"
     );
 }

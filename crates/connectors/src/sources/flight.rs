@@ -4,13 +4,13 @@
 //! low-overhead data transfer.
 use anyhow::{Context, Result};
 use arrow::array::Array;
-use arrow_flight::sql::client::FlightSqlServiceClient;
 use arrow_flight::sql::CommandGetTables;
+use arrow_flight::sql::client::FlightSqlServiceClient;
 use datafusion::datasource::TableProvider;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
-use datafusion_table_providers::flight::sql::FlightSqlDriver;
 use datafusion_table_providers::flight::FlightTableFactory;
+use datafusion_table_providers::flight::sql::FlightSqlDriver;
 use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,7 +41,7 @@ impl SourceProvider for FlightSqlSourceProvider {
         let cfg: FlightSqlConfig = serde_json::from_value(config.config.clone())
             .context("Failed to parse Flight SQL source configuration")?;
 
-        register_flight_sql_source(context, &config.name, &cfg.url).await
+        register_flight_sql_source(context, config.name.as_ref(), &cfg.url).await
     }
 }
 

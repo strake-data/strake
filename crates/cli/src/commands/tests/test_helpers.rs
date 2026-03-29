@@ -77,9 +77,12 @@ sources:
 
     assert!(result.is_ok());
     let config = result.unwrap();
-    assert_eq!(config.domain.as_deref(), Some("test_domain"));
+    assert_eq!(
+        config.domain.as_ref().map(|d| d.as_ref()),
+        Some("test_domain")
+    );
     assert_eq!(config.sources.len(), 1);
-    assert_eq!(config.sources[0].name, "source1");
+    assert_eq!(config.sources[0].name, "source1".into());
 }
 
 #[tokio::test]

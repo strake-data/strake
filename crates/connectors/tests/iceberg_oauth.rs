@@ -4,8 +4,8 @@ use secrecy::SecretString;
 use serde_json::json;
 use std::sync::Arc;
 use strake_common::config::{RetrySettings, TableConfig};
-use strake_connectors::sources::iceberg::provider::register_iceberg_rest;
 use strake_connectors::sources::iceberg::IcebergRestConfig;
+use strake_connectors::sources::iceberg::provider::register_iceberg_rest;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -114,7 +114,7 @@ async fn test_iceberg_oauth_flow() -> Result<()> {
         max_concurrent_queries: None,
     };
 
-    let ctx = SessionContext::new();
+    let ctx = Arc::new(SessionContext::new());
     ctx.register_catalog(
         "strake",
         Arc::new(datafusion::catalog::MemoryCatalogProvider::new()),
@@ -124,21 +124,18 @@ async fn test_iceberg_oauth_flow() -> Result<()> {
     // This should triggers:
     // a. OAuth token fetch (POST /oauth/token)
     // b. Catalog config fetch (GET /v1/config) with Bearer token
-    let tables = vec![TableConfig {
-        name: "test_table".to_string(),
-        schema: "".to_string(),
-        partition_column: None,
-        description: None,
-        columns: vec![],
-        ..Default::default()
-    }];
+    let mut t = TableConfig::default();
+    t.name = "test_table".to_string();
+    t.schema = "".to_string();
+    let tables = Arc::new(vec![t]);
+    let cfg = Arc::new(cfg);
 
     register_iceberg_rest(
-        &ctx,
-        "strake",
-        "oauth_source",
-        &cfg,
-        &tables,
+        Arc::clone(&ctx),
+        "strake".to_string(),
+        "oauth_source".to_string(),
+        Arc::clone(&cfg),
+        Arc::clone(&tables),
         RetrySettings::default(),
         Arc::new(strake_common::predicate_cache::PredicateCache::new()),
         true,

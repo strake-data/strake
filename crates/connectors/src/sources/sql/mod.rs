@@ -76,7 +76,7 @@ impl SourceProvider for SqlSourceProvider {
         // If schema is empty or "public", use the source name as the schema namespace.
         for table in &mut tables {
             if table.schema.is_empty() || table.schema == "public" {
-                table.schema = config.name.clone();
+                table.schema = config.name.to_string();
             }
         }
 
@@ -87,13 +87,13 @@ impl SourceProvider for SqlSourceProvider {
         };
 
         register_sql_source(common::SqlRegistrationOptions {
-            context,
-            catalog_name,
-            name: &config.name,
+            context: Arc::new(context.clone()),
+            catalog_name: catalog_name.to_string(),
+            name: config.name.to_string(),
             dialect: sql_config.dialect,
-            connection_string: &sql_config.connection,
+            connection_string: sql_config.connection.clone(),
             pool_size: sql_config.pool_size,
-            explicit_tables: &explicit_tables,
+            explicit_tables: Arc::new(explicit_tables),
             retry: effective_retry,
             max_concurrent_queries: config.max_concurrent_queries.unwrap_or(0),
         })
@@ -102,7 +102,7 @@ impl SourceProvider for SqlSourceProvider {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn register_sql_source(options: common::SqlRegistrationOptions<'_>) -> Result<()> {
+pub async fn register_sql_source(options: common::SqlRegistrationOptions) -> Result<()> {
     use strake_common::circuit_breaker::{AdaptiveCircuitBreaker, CircuitBreakerConfig};
     let cb = Arc::new(AdaptiveCircuitBreaker::new(CircuitBreakerConfig::default()));
 

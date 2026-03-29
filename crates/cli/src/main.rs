@@ -23,12 +23,13 @@ mod commands;
 mod config;
 mod exit_codes;
 mod impact;
-mod metadata;
+pub mod metadata;
 mod models;
 mod output;
 mod secrets;
 
 use crate::config::CliConfig;
+use strake_common::models::{DomainName, SourceName};
 use strake_error::ErrorCategory;
 
 use output::OutputFormat;
@@ -108,7 +109,7 @@ enum Commands {
         file: Option<String>,
         /// Specify domain to check status for
         #[arg(long)]
-        domain: Option<String>,
+        domain: Option<DomainName>,
         /// Timeout for reachability checks in milliseconds
         #[arg(long, default_value_t = 5000)]
         timeout: u64,
@@ -116,7 +117,7 @@ enum Commands {
     /// Safely remove a table from sources.yaml
     Remove {
         /// The name of the source
-        source: String,
+        source: SourceName,
         /// The name of the table
         #[arg(required_unless_present = "source_only")]
         table: Option<String>,
@@ -145,18 +146,18 @@ enum Commands {
     /// Search for tables in an upstream source
     Search {
         /// The name of the source
-        source: String,
+        source: SourceName,
         /// Path to the sources.yaml file
         #[arg(default_value = "sources.yaml")]
         file: String,
         /// Optional domain to search within
         #[arg(long)]
-        domain: Option<String>,
+        domain: Option<DomainName>,
     },
     /// Add a table from an upstream source to sources.yaml
     Add {
         /// The name of the source
-        source: String,
+        source: SourceName,
         /// The full table name (schema.table)
         #[arg(required_unless_present_any = ["pattern", "all", "stdin"])]
         table: Option<String>,
@@ -207,7 +208,7 @@ enum Commands {
         file: String,
         /// Specify domain to describe
         #[arg(long)]
-        domain: Option<String>,
+        domain: Option<DomainName>,
     },
     /// Manage domains (list, history)
     Domain {
@@ -244,13 +245,13 @@ enum DomainCommands {
     History {
         /// The name of the domain
         #[arg(default_value = "default")]
-        name: String,
+        name: DomainName,
     },
     /// Rollback a domain to a previous version
     Rollback {
         /// The name of the domain
         #[arg(default_value = "default")]
-        name: String,
+        name: DomainName,
         /// The version to rollback to
         #[arg(long)]
         to_version: i32,
@@ -431,9 +432,9 @@ async fn run_cli(
             domain,
         } => {
             return commands::search(
-                source,
+                source.as_ref(),
                 file,
-                domain.as_deref(),
+                domain.as_ref().map(|d| d.as_ref()),
                 cli.output,
                 config,
                 resolver_ctx,
@@ -482,8 +483,14 @@ async fn run_cli(
         }
         Commands::Describe { file, domain } => {
             let store = metadata::init_store(config).await?;
-            return commands::describe(&*store, file, domain.as_deref(), cli.output, resolver_ctx)
-                .await;
+            return commands::describe(
+                &*store,
+                file,
+                domain.as_ref().map(|d| d.as_ref()),
+                cli.output,
+                resolver_ctx,
+            )
+            .await;
         }
         Commands::Domain { subcommand } => {
             let store = metadata::init_store(config).await?;
@@ -494,7 +501,7 @@ async fn run_cli(
                 DomainCommands::History { name } => {
                     return commands::show_domain_history(
                         &*store,
-                        name.to_string(),
+                        name.clone(),
                         cli.output,
                         resolver_ctx,
                     )
@@ -536,7 +543,7 @@ async fn run_cli(
             return commands::status(
                 &*store,
                 file.as_deref(),
-                domain.as_deref(),
+                domain.as_ref().map(|d| d.as_ref()),
                 *timeout,
                 cli.output,
                 resolver_ctx,
@@ -552,7 +559,7 @@ async fn run_cli(
             source_only,
         } => {
             return commands::remove(
-                source,
+                source.as_ref(),
                 table.as_deref(),
                 file.as_deref(),
                 *dry_run,

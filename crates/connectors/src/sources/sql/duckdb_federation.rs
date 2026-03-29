@@ -77,9 +77,10 @@ impl SQLExecutor for DuckDBExecutor {
         // Upgrade duckdb crate when it supports arrow 57
 
         // For now, return an error indicating this needs the table provider approach
-        Err(datafusion::error::DataFusionError::NotImplemented(
-            format!("DuckDB federation execute not yet implemented due to Arrow version mismatch. Query: {}", query_owned)
-        ))
+        Err(datafusion::error::DataFusionError::NotImplemented(format!(
+            "DuckDB federation execute not yet implemented due to Arrow version mismatch. Query: {}",
+            query_owned
+        )))
     }
 
     async fn table_names(&self) -> datafusion::error::Result<Vec<String>> {

@@ -166,10 +166,11 @@ impl Default for CacheConfig {
 
 impl IcebergRestConfig {
     pub fn validate(&self) -> Result<()> {
-        if let Some(max) = self.max_concurrent_queries {
-            if max > 10_000 {
-                anyhow::bail!("max_concurrent_queries cannot exceed 10000");
-            }
+        //// TODO: Remove hardcoded limits
+        if let Some(max) = self.max_concurrent_queries
+            && max > 10_000
+        {
+            anyhow::bail!("max_concurrent_queries cannot exceed 10000");
         }
 
         // Validate version if specified
@@ -280,11 +281,11 @@ impl SourceProvider for IcebergSourceProvider {
 
         let effective_retry = self.global_retry;
         register_iceberg_rest(
-            context,
-            catalog_name,
-            &config.name,
-            &cfg,
-            &config.tables,
+            Arc::new(context.clone()),
+            catalog_name.to_string(),
+            config.name.to_string(),
+            Arc::new(cfg),
+            Arc::new(config.tables.clone()),
             effective_retry,
             self.predicate_cache.clone(),
             config.predicate_cache,

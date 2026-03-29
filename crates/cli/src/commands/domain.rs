@@ -30,17 +30,16 @@ use crate::secrets::ResolverContext;
 use crate::{
     exit_codes,
     metadata::{MetadataStore, models::ApplyLogEntry},
-    models,
+    models::{self, DomainName},
     output::{self, OutputFormat},
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use owo_colors::OwoColorize;
-use serde_json::json;
 
 pub async fn rollback(
     store: &dyn MetadataStore,
-    domain: &str,
+    domain: &DomainName,
     to_version: i32,
     force: bool,
     format: OutputFormat,
@@ -79,12 +78,12 @@ pub async fn rollback(
 
     store
         .log_apply_event(ApplyLogEntry {
-            domain: domain.to_string(),
+            domain: domain.clone(),
             version: new_version,
-            user_id,
-            sources_added: serde_json::to_value(&apply_res.sources_added).unwrap_or(json!([])),
-            sources_deleted: serde_json::to_value(&apply_res.sources_deleted).unwrap_or(json!([])),
-            tables_modified: json!([]),
+            user_id: user_id.into(),
+            sources_added: apply_res.sources_added.clone(),
+            sources_deleted: apply_res.sources_deleted.clone(),
+            tables_modified: Vec::new(),
             config_hash,
             config_yaml,
             timestamp: None,
@@ -97,8 +96,16 @@ pub async fn rollback(
             ApplyResult {
                 domain: domain.to_string(),
                 version: new_version,
-                added: apply_res.sources_added,
-                deleted: apply_res.sources_deleted,
+                added: apply_res
+                    .sources_added
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                deleted: apply_res
+                    .sources_deleted
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
                 dry_run: false,
                 diff: None,
             },
@@ -126,9 +133,9 @@ pub async fn list_domains(
         let mut results = Vec::new();
         for d in domains {
             results.push(DomainEntry {
-                name: d.name,
+                name: d.name.to_string(),
                 version: d.version,
-                created_at: d.created_at.unwrap_or_else(chrono::Utc::now),
+                created_at: d.created_at.unwrap_or_else(Utc::now),
             });
         }
         output::print_success(format, &results)?;
@@ -158,7 +165,7 @@ pub async fn list_domains(
 
 pub async fn show_domain_history(
     store: &dyn MetadataStore,
-    domain: String,
+    domain: DomainName,
     format: OutputFormat,
     _ctx: &ResolverContext,
 ) -> Result<i32> {
@@ -167,24 +174,12 @@ pub async fn show_domain_history(
     if format.is_machine_readable() {
         let mut results = Vec::new();
         for entry in history {
-            // Explicit types for closure parameters to fix inference
-            let added_count = entry
-                .sources_added
-                .as_array()
-                .map(|a: &Vec<serde_json::Value>| a.len())
-                .unwrap_or(0);
-            let deleted_count = entry
-                .sources_deleted
-                .as_array()
-                .map(|d: &Vec<serde_json::Value>| d.len())
-                .unwrap_or(0);
-
             results.push(DomainHistoryEntry {
                 version: entry.version,
-                user_id: entry.user_id,
+                user_id: entry.user_id.to_string(),
                 timestamp: entry.timestamp.unwrap_or_else(chrono::Utc::now),
-                added: added_count,
-                deleted: deleted_count,
+                added: entry.sources_added.len(),
+                deleted: entry.sources_deleted.len(),
             });
         }
         output::print_success(format, &results)?;
@@ -206,16 +201,8 @@ pub async fn show_domain_history(
     println!("{}", "-".repeat(70).dimmed());
 
     for entry in history {
-        let added_list = entry
-            .sources_added
-            .as_array()
-            .map(|a: &Vec<serde_json::Value>| a.len())
-            .unwrap_or(0);
-        let deleted_list = entry
-            .sources_deleted
-            .as_array()
-            .map(|d: &Vec<serde_json::Value>| d.len())
-            .unwrap_or(0);
+        let added_list = entry.sources_added.len();
+        let deleted_list = entry.sources_deleted.len();
         let ts_str = entry
             .timestamp
             .map(|ts: DateTime<Utc>| ts.format("%Y-%m-%d %H:%M").to_string())
@@ -224,7 +211,7 @@ pub async fn show_domain_history(
         println!(
             "{:<18} {:<15} {:<20} {} / {}",
             format!("v{}", entry.version).yellow().bold(),
-            entry.user_id.dimmed(),
+            entry.user_id.as_ref().dimmed(),
             ts_str.dimmed(),
             format!("+{}", added_list).green(),
             format!("-{}", deleted_list).red()

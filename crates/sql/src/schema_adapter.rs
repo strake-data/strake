@@ -219,17 +219,20 @@ impl ExtensionPlanner for SchemaAdapterPlanner {
                     }
                 });
 
-            let physical_idx =
-                physical_idx.ok_or_else(|| {
-                    DataFusionError::Internal(format!(
+            let physical_idx = physical_idx.ok_or_else(|| {
+                DataFusionError::Internal(format!(
                     "SchemaAdapter: Cannot map logical field '{}' (index {}) to physical schema. \
                      Physical has {} fields: {:?}",
                     logical_name,
                     logical_idx,
                     input_schema.fields().len(),
-                    input_schema.fields().iter().map(|f| f.name()).collect::<Vec<_>>()
+                    input_schema
+                        .fields()
+                        .iter()
+                        .map(|f| f.name())
+                        .collect::<Vec<_>>()
                 ))
-                })?;
+            })?;
 
             let physical_field = input_schema.field(physical_idx);
 

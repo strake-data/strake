@@ -121,7 +121,7 @@ async fn test_scoped_subquery_generation() -> Result<()> {
     // Now project from it.
     let plan = subquery.select(vec![col("name")])?.into_optimized_plan()?;
 
-    println!("Plan before SQL gen:\n{}", plan.display_indent());
+    println!("Plan before SQL generator:\n{}", plan.display_indent());
     let sql = get_sql_for_plan(&plan, "postgres")?.expect("sql generated");
     println!("Generated SQL: {}", sql);
 

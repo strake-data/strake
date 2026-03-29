@@ -6,22 +6,19 @@ use tracing_subscriber::layer::SubscriberExt;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_telemetry_emission() -> anyhow::Result<()> {
     // Start a simple HTTP server to act as OTLP collector
-    use axum::{body::Bytes, routing::post, Router};
+    use axum::{Router, body::Bytes};
     use std::sync::{Arc, Mutex};
 
     let received_data = Arc::new(Mutex::new(Vec::new()));
     let received_clone = received_data.clone();
 
-    let app = Router::new().route(
-        "/v1/traces",
-        post(move |body: Bytes| {
-            let data = received_clone.clone();
-            async move {
-                data.lock().unwrap().push(body.to_vec());
-                axum::http::StatusCode::OK
-            }
-        }),
-    );
+    let app = Router::new().fallback(move |_uri: axum::http::Uri, body: Bytes| {
+        let data = received_clone.clone();
+        async move {
+            data.lock().unwrap().push(body.to_vec());
+            axum::http::StatusCode::OK
+        }
+    });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;

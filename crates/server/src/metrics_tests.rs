@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use super::super::{metrics_handler, ACTIVE_QUERIES, QUERY_COUNT};
+    use super::super::{ACTIVE_QUERIES, QUERY_COUNT, metrics_handler};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
 

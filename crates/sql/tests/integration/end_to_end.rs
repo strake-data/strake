@@ -2,15 +2,15 @@ use crate::fixtures::*;
 use datafusion::common::Result;
 use datafusion::functions_aggregate::expr_fn::sum;
 use datafusion::functions_window::row_number::row_number;
-use datafusion::logical_expr::{placeholder, LogicalPlan, LogicalPlanBuilder};
+use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder, placeholder};
 
 #[tokio::test]
 async fn test_table_scan_generation() -> Result<()> {
     let ctx = setup_context().await?;
     let plan = ctx.table("users").await?.into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         assert!(
@@ -29,8 +29,8 @@ async fn test_projection_generation() -> Result<()> {
         .select(vec![col("id"), col("name")])?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         assert!(
@@ -49,8 +49,8 @@ async fn test_filter_generation() -> Result<()> {
         .filter(col("id").eq(lit(1)))?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         assert!(sql.contains("SELECT \"rel_0\".\"id\", \"rel_0\".\"name\" FROM \"users\" AS \"rel_0\" WHERE \"rel_0\".\"id\" = 1"));
@@ -70,8 +70,8 @@ async fn test_subquery_alias_scope_isolation() -> Result<()> {
         .select(vec![col("id")])?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         // Now explicit columns instead of *
@@ -105,8 +105,8 @@ async fn test_join_generation() -> Result<()> {
         )?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         assert!(sql.contains(
@@ -145,8 +145,8 @@ async fn test_aggregate_generation() -> Result<()> {
         .aggregate(vec![col("name")], vec![sum(col("id"))])?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         assert!(sql.contains("SUM(") || sql.contains("sum("));
@@ -165,8 +165,8 @@ async fn test_sort_limit_generation() -> Result<()> {
         .limit(0, Some(10))?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         assert!(sql.contains("ORDER BY"));
@@ -187,8 +187,8 @@ async fn test_dynamic_limit_generation() -> Result<()> {
         input: Arc::new(table_plan),
     });
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         assert!(sql.contains("LIMIT $1"));
@@ -208,14 +208,16 @@ async fn test_window_function_generation() -> Result<()> {
     let plan = ctx
         .table("users")
         .await?
-        .window(vec![Expr::WindowFunction(Box::new(
-            datafusion::logical_expr::expr::WindowFunction::new(udf, vec![]),
-        ))
-        .alias("cnt")])?
+        .window(vec![
+            Expr::WindowFunction(Box::new(
+                datafusion::logical_expr::expr::WindowFunction::new(udf, vec![]),
+            ))
+            .alias("cnt"),
+        ])?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         assert!(sql.to_uppercase().contains("ROW_NUMBER()"));
@@ -241,8 +243,8 @@ async fn test_union_generation() -> Result<()> {
         .union(ctx.table("users2").await?)?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         assert!(sql.contains("UNION ALL"));
@@ -259,8 +261,8 @@ async fn test_distinct_generation() -> Result<()> {
         .distinct()?
         .build()?;
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         assert!(sql.contains("SELECT DISTINCT"));
@@ -274,8 +276,8 @@ async fn test_empty_relation_generation() -> Result<()> {
 
     let plan = datafusion::logical_expr::LogicalPlanBuilder::empty(false).build()?;
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         assert!(sql.contains("1 = 0"));
@@ -309,8 +311,8 @@ async fn test_recursive_query_generation() -> Result<()> {
         is_distinct: false,
     });
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         assert!(sql.contains("WITH RECURSIVE"));

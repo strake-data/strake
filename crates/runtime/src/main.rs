@@ -1,11 +1,18 @@
-//! Strake Runtime Entry Point.
+//! # Strake Runtime
 //!
-//! Binary that configures and launches the Strake Federation Engine.
-//! It handles:
-//! - Telemetry initialization
-//! - Configuration loading
-//! - Runtime setup (`tokio`)
-//! - Engine instantiation and query execution loop
+//! The core execution engine for Strake. This binary initializes the
+//! `FederationEngine` and provides the standalone query interface.
+//!
+//! ## Overview
+//!
+//! Responsible for telemetry initialization, configuration validation,
+//! and orchestrating the DataFusion session state for federated queries.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! cargo run -p strake-runtime -- --config config/strake.yaml
+//! ```
 use strake_common::config::{AppConfig, Config};
 use strake_runtime::federation::FederationEngine;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -31,9 +38,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Tracing initialized");
 
     // Load configuration
-    let config = Config {
-        sources: vec![],
-        cache: Default::default(),
+    let config = {
+        let mut s = Config::default();
+        s.sources = vec![];
+        s.cache = Default::default();
+        s
     };
 
     let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {

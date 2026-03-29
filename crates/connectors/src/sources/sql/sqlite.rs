@@ -27,7 +27,7 @@ impl SqlMetadataFetcher for SqliteMetadataFetcher {
     }
 }
 
-pub async fn register_sqlite(params: SqlSourceParams<'_>) -> Result<()> {
+pub async fn register_sqlite(params: SqlSourceParams) -> Result<()> {
     let context = params.context;
     let catalog_name = params.catalog_name;
     let name = params.name;
@@ -38,10 +38,16 @@ pub async fn register_sqlite(params: SqlSourceParams<'_>) -> Result<()> {
     let max_concurrent_queries = params.max_concurrent_queries;
 
     retry_async(
-        &format!("register_sqlite({})", name),
+        format!("register_sqlite({})", name.clone()),
         retry_settings,
         move || {
             let cb = cb.clone();
+            let context = context.clone();
+            let catalog_name = catalog_name.clone();
+            let name = name.clone();
+            let connection_string = connection_string.clone();
+            let explicit_tables = explicit_tables.clone();
+
             async move {
                 try_register_sqlite(
                     context,
@@ -61,16 +67,16 @@ pub async fn register_sqlite(params: SqlSourceParams<'_>) -> Result<()> {
 
 #[allow(clippy::too_many_arguments)]
 async fn try_register_sqlite(
-    context: &SessionContext,
-    catalog_name: &str,
-    name: &str,
-    connection_string: &str,
+    context: Arc<SessionContext>,
+    catalog_name: String,
+    name: String,
+    connection_string: String,
     cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
-    explicit_tables: &Option<Vec<TableConfig>>,
+    explicit_tables: Arc<Option<Vec<TableConfig>>>,
     max_concurrent_queries: usize,
 ) -> Result<()> {
     let pool = SqliteConnectionPool::new(
-        connection_string,
+        &connection_string,
         Mode::File,
         JoinPushDown::Disallow,
         vec![],
@@ -82,7 +88,7 @@ async fn try_register_sqlite(
     let inner_factory = SqliteTableFactory::new(Arc::new(pool));
 
     // Create federation provider
-    let executor = super::sqlite_federation::SqliteExecutor::new(connection_string.to_string());
+    let executor = super::sqlite_federation::SqliteExecutor::new(connection_string.clone());
     let federation_provider = executor.create_federation_provider();
 
     let factory = FederatedSqliteTableFactory {
@@ -90,36 +96,37 @@ async fn try_register_sqlite(
         federation_provider,
     };
 
-    let tables_to_register: Vec<(String, String)> = if let Some(config_tables) = explicit_tables {
-        config_tables
-            .iter()
-            .map(|t| {
-                // FIX: Transform schema - use source name if empty, "public", or "main"
-                let target_schema =
-                    if t.schema.is_empty() || t.schema == "public" || t.schema == "main" {
-                        name.to_string()
-                    } else {
-                        t.schema.clone()
-                    };
-                (t.name.clone(), target_schema)
-            })
-            .collect()
-    } else {
-        introspect_sqlite_tables(connection_string)
-            .await?
-            .into_iter()
-            .map(|t| (t, name.to_string()))
-            .collect()
-    };
+    let tables_to_register: Vec<(String, String)> =
+        if let Some(config_tables) = explicit_tables.as_ref() {
+            config_tables
+                .iter()
+                .map(|t| {
+                    // FIX: Transform schema - use source name if empty, "public", or "main"
+                    let target_schema =
+                        if t.schema.is_empty() || t.schema == "public" || t.schema == "main" {
+                            name.to_string()
+                        } else {
+                            t.schema.clone()
+                        };
+                    (t.name.clone(), target_schema)
+                })
+                .collect()
+        } else {
+            introspect_sqlite_tables(&connection_string)
+                .await?
+                .into_iter()
+                .map(|t| (t, name.to_string()))
+                .collect()
+        };
 
     let fetcher: Option<Box<dyn SqlMetadataFetcher>> = Some(Box::new(SqliteMetadataFetcher {
-        db_path: connection_string.to_string(),
+        db_path: connection_string.clone(),
     }));
 
     register_tables(
-        context,
-        catalog_name,
-        name,
+        &context,
+        &catalog_name,
+        &name,
         fetcher,
         &factory,
         cb,
@@ -147,7 +154,8 @@ impl SqlProviderFactory for FederatedSqliteTableFactory {
             .inner
             .table_provider(table_ref.clone())
             .await
-            .map_err(|e| anyhow::anyhow!(e))?;
+            .map_err(|e| anyhow::anyhow!(e))
+            .context("Failed to create inner SQLite table provider")?;
 
         // Wrap the inner provider with metadata and circuit breaker
         let wrapped_inner = super::wrappers::wrap_provider(inner_provider, cb, metadata);

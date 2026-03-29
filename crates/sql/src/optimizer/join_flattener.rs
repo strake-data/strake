@@ -204,64 +204,64 @@ impl OptimizerRule for JoinTreeFlattener {
         plan.transform_up(&|node| {
             if let LogicalPlan::Join(join) = &node {
                 // Check if left is NaryJoin
-                if let LogicalPlan::Extension(ext) = join.left.as_ref() {
-                    if let Some(nary) = ext.node.as_any().downcast_ref::<NaryJoinNode>() {
-                        let left_join_type = nary
-                            .branches
-                            .last()
-                            .map(|b| b.join_type)
-                            .unwrap_or(JoinType::Inner);
+                if let LogicalPlan::Extension(ext) = join.left.as_ref()
+                    && let Some(nary) = ext.node.as_any().downcast_ref::<NaryJoinNode>()
+                {
+                    let left_join_type = nary
+                        .branches
+                        .last()
+                        .map(|b| b.join_type)
+                        .unwrap_or(JoinType::Inner);
 
-                        if Self::can_flatten(left_join_type, join.join_type) {
-                            let mut branches = nary.branches.clone();
-                            branches.push(JoinBranch {
-                                input: join.right.as_ref().clone(),
-                                join_type: join.join_type,
-                                on: join.on.clone(),
-                                filter: join.filter.clone(),
-                            });
-
-                            return Ok(Transformed::yes(LogicalPlan::Extension(
-                                datafusion::logical_expr::Extension {
-                                    node: Arc::new(NaryJoinNode {
-                                        base: nary.base.clone(),
-                                        branches,
-                                        schema: join.schema.clone(),
-                                    }),
-                                },
-                            )));
-                        }
-                    }
-                }
-
-                // Check if left is Join
-                if let LogicalPlan::Join(left_join) = join.left.as_ref() {
-                    if Self::can_flatten(left_join.join_type, join.join_type) {
-                        let branches = vec![
-                            JoinBranch {
-                                input: left_join.right.as_ref().clone(),
-                                join_type: left_join.join_type,
-                                on: left_join.on.clone(),
-                                filter: left_join.filter.clone(),
-                            },
-                            JoinBranch {
-                                input: join.right.as_ref().clone(),
-                                join_type: join.join_type,
-                                on: join.on.clone(),
-                                filter: join.filter.clone(),
-                            },
-                        ];
+                    if Self::can_flatten(left_join_type, join.join_type) {
+                        let mut branches = nary.branches.clone();
+                        branches.push(JoinBranch {
+                            input: join.right.as_ref().clone(),
+                            join_type: join.join_type,
+                            on: join.on.clone(),
+                            filter: join.filter.clone(),
+                        });
 
                         return Ok(Transformed::yes(LogicalPlan::Extension(
                             datafusion::logical_expr::Extension {
                                 node: Arc::new(NaryJoinNode {
-                                    base: left_join.left.as_ref().clone(),
+                                    base: nary.base.clone(),
                                     branches,
                                     schema: join.schema.clone(),
                                 }),
                             },
                         )));
                     }
+                }
+
+                // Check if left is Join
+                if let LogicalPlan::Join(left_join) = join.left.as_ref()
+                    && Self::can_flatten(left_join.join_type, join.join_type)
+                {
+                    let branches = vec![
+                        JoinBranch {
+                            input: left_join.right.as_ref().clone(),
+                            join_type: left_join.join_type,
+                            on: left_join.on.clone(),
+                            filter: left_join.filter.clone(),
+                        },
+                        JoinBranch {
+                            input: join.right.as_ref().clone(),
+                            join_type: join.join_type,
+                            on: join.on.clone(),
+                            filter: join.filter.clone(),
+                        },
+                    ];
+
+                    return Ok(Transformed::yes(LogicalPlan::Extension(
+                        datafusion::logical_expr::Extension {
+                            node: Arc::new(NaryJoinNode {
+                                base: left_join.left.as_ref().clone(),
+                                branches,
+                                schema: join.schema.clone(),
+                            }),
+                        },
+                    )));
                 }
             }
             Ok(Transformed::no(node))

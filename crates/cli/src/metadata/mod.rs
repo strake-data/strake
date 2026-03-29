@@ -28,13 +28,14 @@
 
 use anyhow::Result;
 use futures::future::BoxFuture;
-use strake_common::models::SourcesConfig;
+use strake_common::models::{DomainName, SourcesConfig};
 
 pub mod models;
 pub mod postgres;
 pub mod sqlite;
 use models::{ApplyLogEntry, ApplyResult, DomainStatus};
 
+/// Interface for metadata storage backends that manage domain configurations and history.
 pub trait MetadataStore: Send + Sync {
     /// Initialize the metadata store (e.g., create tables if they don't exist)
     fn init(&self) -> BoxFuture<'_, Result<()>>;
@@ -47,12 +48,12 @@ pub trait MetadataStore: Send + Sync {
     ) -> BoxFuture<'a, Result<ApplyResult>>;
 
     /// Get current version of a domain
-    fn get_domain_version<'a>(&'a self, domain: &'a str) -> BoxFuture<'a, Result<i32>>;
+    fn get_domain_version<'a>(&'a self, domain: &'a DomainName) -> BoxFuture<'a, Result<i32>>;
 
     /// Increment domain version with optimistic locking
     fn increment_domain_version<'a>(
         &'a self,
-        domain: &'a str,
+        domain: &'a DomainName,
         expected_version: i32,
     ) -> BoxFuture<'a, Result<i32>>;
 
@@ -62,17 +63,17 @@ pub trait MetadataStore: Send + Sync {
     /// Get history of apply events
     fn get_history<'a>(
         &'a self,
-        domain: &'a str,
+        domain: &'a DomainName,
         limit: i64,
     ) -> BoxFuture<'a, Result<Vec<ApplyLogEntry>>>;
 
     /// Get the sources configuration as stored in the DB (for diffing)
-    fn get_sources<'a>(&'a self, domain: &'a str) -> BoxFuture<'a, Result<SourcesConfig>>;
+    fn get_sources<'a>(&'a self, domain: &'a DomainName) -> BoxFuture<'a, Result<SourcesConfig>>;
 
     /// Get valid configuration YAML for a specific history version
     fn get_history_config<'a>(
         &'a self,
-        domain: &'a str,
+        domain: &'a DomainName,
         version: i32,
     ) -> BoxFuture<'a, Result<String>>;
 

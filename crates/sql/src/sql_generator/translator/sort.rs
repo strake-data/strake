@@ -4,12 +4,12 @@ use crate::sql_generator::expr::ExprTranslator;
 use sqlparser::ast::{Expr as SqlExpr, LimitClause, OrderBy, OrderByExpr, OrderByKind};
 
 pub(crate) fn handle_sort(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     sort: &datafusion::logical_expr::Sort,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
-    let mut query = gen.plan_to_query(&sort.input)?;
+    let mut query = generator.plan_to_query(&sort.input)?;
 
-    let mut translator = ExprTranslator::new(&mut gen.context, &gen.dialect);
+    let mut translator = ExprTranslator::new(&mut generator.context, &generator.dialect);
     let order_by_exprs = sort
         .expr
         .iter()

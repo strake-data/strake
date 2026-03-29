@@ -1,5 +1,6 @@
 use crate::license::{LicenseCache, LicenseState};
 use chrono::Utc;
+use futures::StreamExt;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -8,6 +9,7 @@ use arrow::array::{Array, ArrayBuilder, StringArray, StringBuilder};
 use arrow::datatypes::{DataType, Field, Schema, UnionFields, UnionMode};
 use arrow::ipc::writer::IpcWriteOptions;
 use arrow::record_batch::RecordBatch;
+use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::flight_service_server::FlightService as gRPCFlightService;
 use arrow_flight::sql::server::FlightSqlService;
 use arrow_flight::sql::{
@@ -157,38 +159,50 @@ impl StrakeFlightSqlService {
             timestamp = %Utc::now().to_rfc3339(),
         );
 
-        let result = self.engine.execute_query(sql, user).await;
+        let result = self.engine.execute_query_stream(sql, user).await;
 
-        match &result {
-            Ok((schema, batches, warnings)) => {
+        match result {
+            Ok((schema, stream, collector)) => {
                 tracing::info!(
                     target: "audit",
                     event = "query_success",
                     user_id = %user_id,
                     sql = %scrubbed_sql,
                     duration_ms = start.elapsed().as_millis() as u64,
-                    rows_returned = batches.iter().map(|b| b.num_rows()).sum::<usize>(),
                     timestamp = %Utc::now().to_rfc3339(),
                 );
 
-                let flight_data =
-                    arrow_flight::utils::batches_to_flight_data(schema, batches.clone())
-                        .map_err(|e| Status::internal(e.to_string()))?;
+                let encoder =
+                    FlightDataEncoderBuilder::new()
+                        .with_schema(schema)
+                        .build(stream.map(|b| {
+                            b.map_err(|e| {
+                                arrow_flight::error::FlightError::ExternalError(Box::new(e))
+                            })
+                        }));
 
-                let stream = futures::stream::iter(flight_data.into_iter().map(Ok));
-                let stream: Pin<
+                let flight_stream = encoder.map(
+                    |res: Result<arrow_flight::FlightData, arrow_flight::error::FlightError>| {
+                        res.map_err(|e: arrow_flight::error::FlightError| {
+                            Status::internal(e.to_string())
+                        })
+                    },
+                );
+
+                let flight_stream: Pin<
                     Box<dyn Stream<Item = Result<arrow_flight::FlightData, Status>> + Send>,
-                > = Box::pin(stream);
-                let mut response = Response::new(stream);
+                > = Box::pin(flight_stream);
 
-                for warning in warnings {
-                    if let Some((k, v)) = warning.split_once(": ") {
-                        if let (Ok(key), Ok(val)) = (
+                let mut response = Response::new(flight_stream);
+
+                for warning in collector.take_all() {
+                    if let Some((k, v)) = warning.split_once(": ")
+                        && let (Ok(key), Ok(val)) = (
                             tonic::metadata::MetadataKey::from_str(k),
                             tonic::metadata::MetadataValue::try_from(v),
-                        ) {
-                            response.metadata_mut().append(key, val);
-                        }
+                        )
+                    {
+                        response.metadata_mut().append(key, val);
                     }
                 }
 
@@ -204,9 +218,9 @@ impl StrakeFlightSqlService {
                     duration_ms = start.elapsed().as_millis() as u64,
                     timestamp = %chrono::Utc::now().to_rfc3339(),
                 );
-                Err(Self::to_status_with_metadata(
-                    anyhow::anyhow!(e.to_string()),
-                ))
+                Err(Self::to_status_with_metadata(anyhow::anyhow!(
+                    e.to_string()
+                )))
             }
         }
     }

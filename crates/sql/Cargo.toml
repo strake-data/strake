@@ -2,7 +2,7 @@
 name = "strake-sql"
 version.workspace = true
 license.workspace = true
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 strake-common = { path = "../common" }

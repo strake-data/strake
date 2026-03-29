@@ -10,9 +10,9 @@ use sqlparser::ast::{
 };
 use std::sync::Arc;
 use strake_sql::dialects::FunctionMapper;
+use strake_sql::sql_generator::SqlGenerator;
 use strake_sql::sql_generator::context::ColumnEntry;
 use strake_sql::sql_generator::dialect::GeneratorDialect;
-use strake_sql::sql_generator::SqlGenerator;
 
 async fn setup_ctx() -> Result<SessionContext> {
     let ctx = SessionContext::new();
@@ -49,8 +49,8 @@ async fn test_join_column_collision() -> Result<()> {
         .select(vec![col("t1.id"), col("t2.id")])?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen.generate(&plan).unwrap();
+    with_generator!(generator, {
+        let sql = generator.generate(&plan).unwrap();
         println!("JOIN COLLISION SQL: {}", sql);
         // Should use systematic aliases rel_0, rel_1 for source tables
         assert!(sql.contains("\"rel_0\".\"id\""));
@@ -73,8 +73,8 @@ async fn test_nested_projection_aliases() -> Result<()> {
         .select(vec![col("id")])?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen.generate(&plan).unwrap();
+    with_generator!(generator, {
+        let sql = generator.generate(&plan).unwrap();
         println!("NESTED PROJECTION SQL: {}", sql);
         assert!(sql.contains("\"rel_0\".\"id\"") || sql.contains("\"rel_1\".\"id\""));
     });
@@ -96,8 +96,8 @@ async fn test_limit_validation() -> Result<()> {
         input: Arc::new(table_plan),
     });
 
-    with_generator!(gen, {
-        let res = gen.generate(&plan);
+    with_generator!(generator, {
+        let res = generator.generate(&plan);
         assert!(
             res.is_ok(),
             "Generator should allow dynamic limit expressions"
@@ -122,22 +122,24 @@ async fn test_recursion_limit() -> Result<()> {
         ));
     }
 
-    with_generator!(gen, {
-        let res = gen.generate(&plan);
+    with_generator!(generator, {
+        let res = generator.generate(&plan);
         assert!(res.is_err());
         let err = res.unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("Maximum recursion depth (50) exceeded"));
+        assert!(
+            err.to_string()
+                .contains("Maximum recursion depth (50) exceeded")
+        );
     });
     Ok(())
 }
 
 #[tokio::test]
 async fn test_scope_violation_context() -> Result<()> {
-    with_generator!(gen, {
+    with_generator!(generator, {
         let col = datafusion::common::Column::new(None::<String>, "non_existent");
-        gen.context
+        generator
+            .context
             .enter_scope(
                 "rel_0".to_string(),
                 vec![
@@ -161,7 +163,7 @@ async fn test_scope_violation_context() -> Result<()> {
             )
             .commit();
 
-        let res = gen.context.resolve_column(&col, "TestNode");
+        let res = generator.context.resolve_column(&col, "TestNode");
         assert!(res.is_err());
         let err = res.unwrap_err();
         assert!(err.to_string().contains("Column 'non_existent' not found"));
@@ -197,8 +199,8 @@ async fn test_window_function_with_frame() -> Result<()> {
         .window(vec![window_expr.alias("row_num")])?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen.generate(&plan).unwrap();
+    with_generator!(generator, {
+        let sql = generator.generate(&plan).unwrap();
         println!("WINDOW FRAME SQL: {}", sql);
         assert!(sql.contains("ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING"));
     });
@@ -219,9 +221,9 @@ async fn test_nested_subquery_alias_stack_depth() -> Result<()> {
         .select(vec![col("id")])?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let _ = gen.generate(&plan).unwrap();
-        assert_eq!(gen.context.scope_stack_len(), 1);
+    with_generator!(generator, {
+        let _ = generator.generate(&plan).unwrap();
+        assert_eq!(generator.context.scope_stack_len(), 1);
     });
     Ok(())
 }
@@ -244,8 +246,8 @@ async fn test_join_isolation() -> Result<()> {
         .select(vec![col("id")])?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen.generate(&plan).unwrap();
+    with_generator!(generator, {
+        let sql = generator.generate(&plan).unwrap();
         println!("JOIN ISOLATION SQL: {}", sql);
         assert!(!sql.starts_with("SELECT \"rel_0\"") && !sql.starts_with("SELECT \"rel_1\""));
         assert!(sql.contains("\"t1\" AS \"rel_0\""));
@@ -285,11 +287,12 @@ async fn test_function_mapper_security() -> Result<()> {
         std::sync::Arc::new(strake_sql::sql_generator::dialect::DefaultTypeMapper),
         "postgres",
     );
-    let mut gen = SqlGenerator::new(dialect);
+    let mut generator = SqlGenerator::new(dialect);
 
     let evil_input = "foo\"bar";
 
-    gen.context
+    generator
+        .context
         .enter_scope(
             "rel_0".to_string(),
             vec![ColumnEntry {
@@ -304,8 +307,10 @@ async fn test_function_mapper_security() -> Result<()> {
         )
         .commit();
 
-    let mut translator =
-        strake_sql::sql_generator::expr::ExprTranslator::new(&mut gen.context, &gen.dialect);
+    let mut translator = strake_sql::sql_generator::expr::ExprTranslator::new(
+        &mut generator.context,
+        &generator.dialect,
+    );
     let res = translator.translate_function("UNSAFE_FUNC", &[col(evil_input)], None);
 
     // The security fix should reject identifiers with quotes
@@ -318,7 +323,7 @@ async fn test_function_mapper_security() -> Result<()> {
 
 #[tokio::test]
 async fn test_context_underflow_guard() -> Result<()> {
-    let mut gen = SqlGenerator::new(GeneratorDialect::new(
+    let mut generator = SqlGenerator::new(GeneratorDialect::new(
         &PostgreSqlDialect {},
         None,
         std::sync::Arc::new(strake_sql::sql_generator::dialect::DefaultDialectCapabilities),
@@ -326,10 +331,10 @@ async fn test_context_underflow_guard() -> Result<()> {
         "postgres",
     ));
 
-    gen.context.pop_scope();
-    gen.context.pop_scope();
+    generator.context.pop_scope();
+    generator.context.pop_scope();
 
-    assert_eq!(gen.context.scope_stack_len(), 0);
+    assert_eq!(generator.context.scope_stack_len(), 0);
     Ok(())
 }
 
@@ -350,19 +355,21 @@ async fn test_kitchen_sink_query() -> Result<()> {
         .select(vec![col("t1.id"), col("name"), col("role")])?
         .filter(col("name").not_eq(lit("admin")))?
         .aggregate(vec![col("name")], vec![sum(col("id")).alias("total_id")])?
-        .window(vec![row_number()
-            .partition_by(vec![col("name")])
-            .order_by(vec![col("total_id").sort(false, false)])
-            .build()?
-            .alias("rn")])?
+        .window(vec![
+            row_number()
+                .partition_by(vec![col("name")])
+                .order_by(vec![col("total_id").sort(false, false)])
+                .build()?
+                .alias("rn"),
+        ])?
         .alias("sub")?
         .filter(col("rn").eq(lit(1)))?
         .sort(vec![col("total_id").sort(false, false)])?
         .limit(0, Some(10))?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen.generate(&plan).unwrap();
+    with_generator!(generator, {
+        let sql = generator.generate(&plan).unwrap();
         println!("KITCHEN SINK SQL:\n{}", sql);
 
         assert!(sql.contains("SELECT"));

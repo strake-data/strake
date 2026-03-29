@@ -78,6 +78,10 @@ version = "56.2.0"
 name = "async-channel"
 version = "1.9.0"
 
+[[bans.skip]]
+name = "bzip2"
+version = "0.5.2"
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "warn"

@@ -1,13 +1,26 @@
+//! # Strake REST API
+#![allow(clippy::field_reassign_with_default)]
+//!
+//! Implementation of the Strake control plane and query API via Axum.
+//!
+//! ## Overview
+//!
+//! Handles authentication, source introspection, and query execution
+//! via a set of modular Axum routers.
+//!
+//! ## Usage
+//!
+//! Generally managed via the `strake-server` binary which mounts these routes.
 use axum::{
+    Extension, Json, Router,
     extract::{Path, State},
     routing::{get, post},
-    Extension, Json, Router,
 };
 use chrono::Utc;
 use std::sync::Arc;
 use strake_common::models::{
-    QueryRequest, QueryResponse, SourcesConfig, TableDiscovery, ValidationRequest,
-    ValidationResponse,
+    QueryRequest, QueryResponse, SourceName, SourceType, SourcesConfig, TableDiscovery,
+    ValidationRequest, ValidationResponse,
 };
 use strake_runtime::federation::FederationEngine;
 
@@ -78,10 +91,10 @@ async fn validate_config(
 
     // Semantic validation (contracts) would go here or in enterprise override
 
-    Json(ValidationResponse {
-        valid: errors.is_empty(),
-        errors,
-    })
+    let mut resp = ValidationResponse::default();
+    resp.valid = errors.is_empty();
+    resp.errors = errors;
+    Json(resp)
 }
 
 async fn list_tables(
@@ -90,14 +103,14 @@ async fn list_tables(
 ) -> Json<Vec<TableDiscovery>> {
     let mut discovered = Vec::new();
 
-    if let Some(catalog) = engine.context().catalog(&engine.catalog_name) {
-        if let Some(schema) = catalog.schema(&source_name) {
-            for table_name in schema.table_names() {
-                discovered.push(TableDiscovery {
-                    name: table_name,
-                    schema: source_name.clone(),
-                });
-            }
+    if let Some(catalog) = engine.context().catalog(&engine.catalog_name)
+        && let Some(schema) = catalog.schema(&source_name)
+    {
+        for table_name in schema.table_names() {
+            let mut td = TableDiscovery::default();
+            td.name = table_name;
+            td.schema = source_name.clone();
+            discovered.push(td);
         }
     }
 
@@ -111,36 +124,28 @@ async fn introspect_tables(
 ) -> Json<SourcesConfig> {
     use strake_common::models::{ColumnConfig, SourceConfig, TableConfig};
 
-    let mut config = SourcesConfig {
-        domain: Some(domain.clone()),
-        sources: vec![],
-    };
+    let mut config = SourcesConfig::default();
+    config.domain = Some(domain.into());
+    config.sources = vec![];
 
     // Look up existing source URL in engine if possible
-    let engine_source = engine.get_source_config(&source_name);
+    let source_name_newtype = SourceName::from(source_name.clone());
+    let engine_source = engine.get_source_config(&source_name_newtype);
 
-    let mut source = SourceConfig {
-        name: source_name.clone(),
-        source_type: engine_source
-            .as_ref()
-            .map(|s| s.source_type.clone())
-            .unwrap_or_else(|| "sql".to_string()),
-        url: engine_source.as_ref().and_then(|s| {
-            // Internal config stores the connection string in the 'config' field for SQL sources
-            s.config
-                .get("connection")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        }),
-        username: None,
-        password: None,
-        default_limit: None,
-        cache: None,
-        tables: vec![],
-        config: serde_json::Value::Null,
-        max_concurrent_queries: None,
-        ..Default::default()
-    };
+    let mut source = SourceConfig::default();
+    source.name = source_name.clone().into();
+    source.source_type = engine_source
+        .as_ref()
+        .map(|s| s.source_type.clone())
+        .unwrap_or_else(|| SourceType::Other("sql".to_string()));
+    source.url = engine_source.as_ref().and_then(|s| {
+        // Internal config stores the connection string in the 'config' field for SQL sources
+        s.config
+            .get("connection")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    });
+    source.config = serde_json::Value::Null;
 
     for table_full in tables {
         let parts: Vec<&str> = table_full.split('.').collect();
@@ -162,42 +167,30 @@ async fn introspect_tables(
             Ok(provider) => {
                 let schema = provider.schema();
                 for field in schema.fields().iter() {
-                    columns.push(ColumnConfig {
-                        name: field.name().clone(),
-                        data_type: field.data_type().to_string(),
-                        length: None,
-                        primary_key: false,
-                        unique: false,
-                        not_null: !field.is_nullable(),
-                        description: None,
-                        ..Default::default()
-                    });
+                    let mut col = ColumnConfig::default();
+                    col.name = field.name().clone();
+                    col.data_type = field.data_type().to_string();
+                    col.not_null = !field.is_nullable();
+                    columns.push(col);
                 }
             }
             Err(e) => {
                 tracing::warn!("Failed to fetch schema for table {}: {}", table_ref, e);
                 // Fallback to minimal placeholder if DataFusion lookup fails
-                columns.push(ColumnConfig {
-                    name: "id".into(),
-                    data_type: "integer".into(),
-                    length: None,
-                    primary_key: true,
-                    unique: false,
-                    not_null: true,
-                    description: None,
-                    ..Default::default()
-                });
+                let mut col = ColumnConfig::default();
+                col.name = "id".into();
+                col.data_type = "integer".into();
+                col.primary_key = true;
+                col.not_null = true;
+                columns.push(col);
             }
         }
 
-        source.tables.push(TableConfig {
-            name: name.to_string(),
-            schema: schema.to_string(),
-            partition_column: None,
-            description: None,
-            columns,
-            ..Default::default()
-        });
+        let mut t_cfg = TableConfig::default();
+        t_cfg.name = name.to_string();
+        t_cfg.schema = schema.to_string();
+        t_cfg.column_definitions = columns;
+        source.tables.push(t_cfg);
     }
 
     config.sources.push(source);
@@ -211,30 +204,23 @@ async fn list_sources(State(state): State<Arc<QueryState>>) -> Json<SourcesConfi
     let api_sources = sources
         .into_iter()
         .map(|s| {
-            strake_common::models::SourceConfig {
-                name: s.name,
-                source_type: s.source_type,
-                url: s
-                    .config
-                    .get("connection")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string()),
-                username: None,
-                password: None,
-                default_limit: None,
-                cache: None,
-                tables: vec![], // Details fetched via introspection
-                config: serde_json::Value::Null,
-                max_concurrent_queries: None,
-                ..Default::default()
-            }
+            let mut sc = strake_common::models::SourceConfig::default();
+            sc.name = s.name;
+            sc.source_type = s.source_type;
+            sc.url = s
+                .config
+                .get("connection")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            sc.config = serde_json::Value::Null;
+            sc
         })
         .collect();
 
-    Json(SourcesConfig {
-        domain: Some(state.engine.catalog_name.clone()),
-        sources: api_sources,
-    })
+    let mut sc = SourcesConfig::default();
+    sc.domain = Some(state.engine.catalog_name.clone().into());
+    sc.sources = api_sources;
+    Json(sc)
 }
 
 async fn execute_query(
@@ -244,11 +230,11 @@ async fn execute_query(
 ) -> Json<QueryResponse> {
     // License Check
     if state.license_cache.current_state() == LicenseState::Invalid {
-        return Json(QueryResponse {
-            status: "error".to_string(),
-            message: Some("License invalid. Please renew subscription.".to_string()),
-            data: None,
-        });
+        let mut resp = QueryResponse::default();
+        resp.status = "error".to_string();
+        resp.message = Some("License invalid. Please renew subscription.".to_string());
+        resp.data = None;
+        return Json(resp);
     }
 
     let user_id = user.id.clone();
@@ -269,38 +255,44 @@ async fn execute_query(
             {
                 let mut writer = arrow_json::ArrayWriter::new(&mut buf);
                 if let Err(e) = writer.write_batches(&batches.iter().collect::<Vec<_>>()) {
-                    return Json(QueryResponse {
-                        status: "error".to_string(),
-                        data: None,
-                        message: Some(format!("JSON serialization error: {}", e)),
-                    });
+                    let mut resp = QueryResponse::default();
+                    resp.status = "error".to_string();
+                    resp.data = None;
+                    resp.message = Some(format!("JSON serialization error: {}", e));
+                    return Json(resp);
                 }
                 if let Err(e) = writer.finish() {
-                    return Json(QueryResponse {
-                        status: "error".to_string(),
-                        data: None,
-                        message: Some(format!("JSON writer finish error: {}", e)),
-                    });
+                    let mut resp = QueryResponse::default();
+                    resp.status = "error".to_string();
+                    resp.data = None;
+                    resp.message = Some(format!("JSON writer finish error: {}", e));
+                    return Json(resp);
                 }
             }
 
             match serde_json::from_slice::<serde_json::Value>(&buf) {
-                Ok(data) => Json(QueryResponse {
-                    status: "success".to_string(),
-                    data: Some(data),
-                    message: None,
-                }),
-                Err(e) => Json(QueryResponse {
-                    status: "error".to_string(),
-                    data: None,
-                    message: Some(format!("JSON parse error: {}", e)),
-                }),
+                Ok(data) => {
+                    let mut resp = QueryResponse::default();
+                    resp.status = "success".to_string();
+                    resp.data = Some(data);
+                    resp.message = None;
+                    Json(resp)
+                }
+                Err(e) => {
+                    let mut resp = QueryResponse::default();
+                    resp.status = "error".to_string();
+                    resp.data = None;
+                    resp.message = Some(format!("JSON parse error: {}", e));
+                    Json(resp)
+                }
             }
         }
-        Err(e) => Json(QueryResponse {
-            status: "error".to_string(),
-            data: None,
-            message: Some(e.to_string()),
-        }),
+        Err(e) => {
+            let mut resp = QueryResponse::default();
+            resp.status = "error".to_string();
+            resp.data = None;
+            resp.message = Some(e.to_string());
+            Json(resp)
+        }
     }
 }

@@ -92,12 +92,12 @@ impl OptimizerRule for FlattenJoinsRule {
         _config: &dyn OptimizerConfig,
     ) -> Result<Transformed<LogicalPlan>> {
         plan.transform_up(&|node| {
-            if let LogicalPlan::Projection(ref projection) = node {
-                if self.is_removable_projection(projection) {
-                    // Remove the projection and return its input.
-                    // Since it's a ref, we need to clone the input.
-                    return Ok(Transformed::yes(projection.input.as_ref().clone()));
-                }
+            if let LogicalPlan::Projection(ref projection) = node
+                && self.is_removable_projection(projection)
+            {
+                // Remove the projection and return its input.
+                // Since it's a ref, we need to clone the input.
+                return Ok(Transformed::yes(projection.input.as_ref().clone()));
             }
             Ok(Transformed::no(node))
         })

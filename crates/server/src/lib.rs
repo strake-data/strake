@@ -6,7 +6,7 @@
 //! - **Observability**: Prometheus metrics and OpenTelemetry tracing.
 use anyhow::Context;
 use arrow_flight::flight_service_server::FlightServiceServer;
-use axum::{response::IntoResponse, routing::get, Json, Router};
+use axum::{Json, Router, response::IntoResponse, routing::get};
 use once_cell::sync::Lazy;
 use prometheus::{Encoder, IntCounter, IntGauge, Opts, Registry, TextEncoder};
 use serde_json::json;
@@ -18,7 +18,7 @@ use strake_runtime::federation::FederationEngine;
 use tonic::transport::Server;
 use tonic::transport::{Identity, ServerTlsConfig};
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 // Global metrics registry
 pub static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);

@@ -155,12 +155,11 @@ impl IcebergAuthProvider for AwsIrsaAuth {
         // Fast path: check cache first (5 min buffer before expiry)
         {
             let read = self.cache.read().await;
-            if let Some((creds, expiry)) = read.as_ref() {
-                if let Some(valid_until) = expiry.checked_sub(Duration::from_secs(300)) {
-                    if SystemTime::now() < valid_until {
-                        return Ok(Some(creds.clone()));
-                    }
-                }
+            if let Some((creds, expiry)) = read.as_ref()
+                && let Some(valid_until) = expiry.checked_sub(Duration::from_secs(300))
+                && SystemTime::now() < valid_until
+            {
+                return Ok(Some(creds.clone()));
             }
         }
 
@@ -170,13 +169,12 @@ impl IcebergAuthProvider for AwsIrsaAuth {
         // Double-check after acquiring lock (another task may have refreshed)
         {
             let read = self.cache.read().await;
-            if let Some((creds, expiry)) = read.as_ref() {
-                if let Some(valid_until) = expiry.checked_sub(Duration::from_secs(300)) {
-                    if SystemTime::now() < valid_until {
-                        tracing::debug!("AWS credentials refreshed by another task");
-                        return Ok(Some(creds.clone()));
-                    }
-                }
+            if let Some((creds, expiry)) = read.as_ref()
+                && let Some(valid_until) = expiry.checked_sub(Duration::from_secs(300))
+                && SystemTime::now() < valid_until
+            {
+                tracing::debug!("AWS credentials refreshed by another task");
+                return Ok(Some(creds.clone()));
             }
         }
 

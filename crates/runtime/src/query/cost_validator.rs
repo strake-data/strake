@@ -53,44 +53,43 @@ impl PhysicalOptimizerRule for CostBasedValidator {
         datafusion::physical_plan::accept(plan.as_ref(), &mut cost_visitor)?;
 
         // Validate against thresholds
-        if let Some(max_rows) = self.max_rows {
-            if cost_visitor.max_rows > max_rows {
-                let context = strake_error::ErrorContext::BudgetExceeded {
-                    estimated_rows: cost_visitor.max_rows,
-                    limit: max_rows,
-                    suggestion:
-                        "Add a LIMIT clause or increase the 'max_output_rows' in query limits"
-                            .to_string(),
-                };
+        if let Some(max_rows) = self.max_rows
+            && cost_visitor.max_rows > max_rows
+        {
+            let context = strake_error::ErrorContext::BudgetExceeded {
+                estimated_rows: cost_visitor.max_rows,
+                limit: max_rows,
+                suggestion: "Add a LIMIT clause or increase the 'max_output_rows' in query limits"
+                    .to_string(),
+            };
 
-                return Err(DataFusionError::External(Box::new(
-                    strake_error::StrakeError::new(
-                        strake_error::ErrorCode::BudgetExceeded,
-                        format!(
-                            "Query estimated {} rows exceeds limit of {}",
-                            cost_visitor.max_rows, max_rows
-                        ),
-                    )
-                    .with_context(context),
-                )));
-            }
+            return Err(DataFusionError::External(Box::new(
+                strake_error::StrakeError::new(
+                    strake_error::ErrorCode::BudgetExceeded,
+                    format!(
+                        "Query estimated {} rows exceeds limit of {}",
+                        cost_visitor.max_rows, max_rows
+                    ),
+                )
+                .with_context(context),
+            )));
         }
 
-        if let Some(max_bytes) = self.max_bytes {
-            if cost_visitor.max_bytes > max_bytes {
-                // Note: BudgetExceeded context for bytes could be added to ErrorContext in future
-                // For now using the same error code but generic message
-                return Err(DataFusionError::External(Box::new(
-                    strake_error::StrakeError::new(
-                        strake_error::ErrorCode::BudgetExceeded,
-                        format!(
-                            "Query estimated {} bytes exceeds limit of {}",
-                            cost_visitor.max_bytes, max_bytes
-                        ),
-                    )
-                    .with_hint("Refine your query to select fewer columns or use filters"),
-                )));
-            }
+        if let Some(max_bytes) = self.max_bytes
+            && cost_visitor.max_bytes > max_bytes
+        {
+            // Note: BudgetExceeded context for bytes could be added to ErrorContext in future
+            // For now using the same error code but generic message
+            return Err(DataFusionError::External(Box::new(
+                strake_error::StrakeError::new(
+                    strake_error::ErrorCode::BudgetExceeded,
+                    format!(
+                        "Query estimated {} bytes exceeds limit of {}",
+                        cost_visitor.max_bytes, max_bytes
+                    ),
+                )
+                .with_hint("Refine your query to select fewer columns or use filters"),
+            )));
         }
 
         Ok(plan)
@@ -139,8 +138,8 @@ mod tests {
 
     // Fix imports based on likely locations in DataFusion v51
     use datafusion::physical_expr::EquivalenceProperties;
-    use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::Partitioning;
+    use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 
     #[derive(Debug)]
     struct MockExec {
@@ -230,10 +229,12 @@ mod tests {
         let result = validator.optimize(plan, &config);
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("exceeds limit of 500000"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds limit of 500000")
+        );
     }
 
     #[test]

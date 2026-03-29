@@ -1,6 +1,7 @@
 //! # Postgres Metadata Store
 //!
 //! Postgres backend implementation of the `MetadataStore` trait.
+#![allow(clippy::field_reassign_with_default)]
 //!
 //! ## Overview
 //!
@@ -31,19 +32,24 @@ use super::{
     models::{ApplyLogEntry, ApplyResult},
 };
 use anyhow::{Context, Result, anyhow};
+use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
 use secrecy::ExposeSecret;
-use strake_common::models::{ColumnConfig, SourceConfig, SourcesConfig, TableConfig};
+use strake_common::models::{
+    ColumnConfig, DomainName, SourceConfig, SourceName, SourcesConfig, TableConfig,
+};
 use tokio_postgres::{Client, NoTls};
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// Postgres implementation of the `MetadataStore`.
 pub struct PostgresStore {
     client: Arc<Mutex<Client>>,
 }
 
 impl PostgresStore {
+    /// Creates a new `PostgresStore` with the given database URL.
     pub async fn new(db_url: &str) -> Result<Self> {
         let (client, connection) = tokio_postgres::connect(db_url, NoTls)
             .await
@@ -103,12 +109,16 @@ impl MetadataStore for PostgresStore {
         })
     }
 
-    fn get_domain_version<'a>(&'a self, domain: &'a str) -> BoxFuture<'a, Result<i32>> {
+    fn get_domain_version<'a>(&'a self, domain: &'a DomainName) -> BoxFuture<'a, Result<i32>> {
         let client_ptr = self.client.clone();
+        let domain_str = domain.to_string();
         Box::pin(async move {
             let client = client_ptr.lock().await;
             let row = client
-                .query_opt("SELECT version FROM domains WHERE name = $1", &[&domain])
+                .query_opt(
+                    "SELECT version FROM domains WHERE name = $1",
+                    &[&domain_str],
+                )
                 .await
                 .context("Failed to query domain version")?;
 
@@ -118,7 +128,7 @@ impl MetadataStore for PostgresStore {
                     client
                         .execute(
                             "INSERT INTO domains (name, version) VALUES ($1, 1) ON CONFLICT DO NOTHING",
-                            &[&domain],
+                            &[&domain_str],
                         )
                         .await?;
                     Ok(1)
@@ -129,16 +139,17 @@ impl MetadataStore for PostgresStore {
 
     fn increment_domain_version<'a>(
         &'a self,
-        domain: &'a str,
+        domain: &'a DomainName,
         expected_version: i32,
     ) -> BoxFuture<'a, Result<i32>> {
         let client_ptr = self.client.clone();
+        let domain_str = domain.to_string();
         Box::pin(async move {
             let client = client_ptr.lock().await;
             let rows = client
                 .execute(
                     "UPDATE domains SET version = version + 1 WHERE name = $1 AND version = $2",
-                    &[&domain, &expected_version],
+                    &[&domain_str, &expected_version],
                 )
                 .await
                 .context("Failed to increment domain version")?;
@@ -146,7 +157,7 @@ impl MetadataStore for PostgresStore {
             if rows == 0 {
                 return Err(anyhow!(
                     "Optimistic locking failure: Domain '{}' version has changed (expected v{})",
-                    domain,
+                    domain_str,
                     expected_version
                 ));
             }
@@ -168,7 +179,11 @@ impl MetadataStore for PostgresStore {
                 .await
                 .context("Failed to begin apply transaction")?;
 
-            let domain = config.domain.as_deref().unwrap_or(DEFAULT_DOMAIN);
+            let domain = config
+                .domain
+                .as_ref()
+                .map(|d| d.as_ref())
+                .unwrap_or(DEFAULT_DOMAIN);
 
             // Ensure domain exists
             tx.execute(
@@ -187,7 +202,7 @@ impl MetadataStore for PostgresStore {
                      VALUES ($1, $2, $3, $4, $5, $6) 
                      ON CONFLICT (domain_name, name) DO UPDATE SET type=$2, url=$3, username=$4, password=$5
                      RETURNING id, (xmax = 0) as is_new",
-                    &[&source.name, &source.source_type, &source.url, &source.username, &source.password.as_ref().map(|s| s.expose_secret()), &domain],
+                    &[&source.name.to_string(), &source.source_type.to_string(), &source.url, &source.username, &source.password.as_ref().map(|s| s.expose_secret()), &domain],
                 ).await.context("Failed to upsert source")?;
 
                 let source_id: i32 = source_rows[0].get(0);
@@ -224,7 +239,7 @@ impl MetadataStore for PostgresStore {
 
                     let mut active_column_names: Vec<String> = Vec::new();
 
-                    for (idx, col) in table.columns.iter().enumerate() {
+                    for (idx, col) in table.column_definitions.iter().enumerate() {
                         tx.execute(
                             "INSERT INTO columns (table_id, name, data_type, length, is_primary_key, is_unique, is_not_null, position)
                              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -313,7 +328,7 @@ impl MetadataStore for PostgresStore {
                         ));
                     }
                     for row in to_delete {
-                        sources_deleted.push(row.get(0));
+                        sources_deleted.push(row.get::<_, String>(0).into());
                     }
 
                     tx.execute(
@@ -341,7 +356,7 @@ impl MetadataStore for PostgresStore {
                         ));
                     }
                     for row in to_delete {
-                        sources_deleted.push(row.get(0));
+                        sources_deleted.push(row.get::<_, String>(0).into());
                     }
                     tx.execute("DELETE FROM sources WHERE domain_name = $1", &[&domain])
                         .await?;
@@ -363,10 +378,16 @@ impl MetadataStore for PostgresStore {
         let client_ptr = self.client.clone();
         Box::pin(async move {
             let client = client_ptr.lock().await;
+            let added: Vec<String> = entry.sources_added.iter().map(|s| s.to_string()).collect();
+            let deleted: Vec<String> = entry
+                .sources_deleted
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
             client.execute(
                 "INSERT INTO apply_history (domain_name, version, user_id, sources_added, sources_deleted, tables_modified, config_hash, config_yaml)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                &[&entry.domain, &entry.version, &entry.user_id, &entry.sources_added, &entry.sources_deleted, &entry.tables_modified, &entry.config_hash, &entry.config_yaml],
+                &[&entry.domain.to_string(), &entry.version, &entry.user_id.to_string(), &added, &deleted, &entry.tables_modified, &entry.config_hash, &entry.config_yaml],
             ).await.context("Failed to log apply history")?;
             Ok(())
         })
@@ -374,26 +395,37 @@ impl MetadataStore for PostgresStore {
 
     fn get_history<'a>(
         &'a self,
-        domain: &'a str,
+        domain: &'a DomainName,
         limit: i64,
     ) -> BoxFuture<'a, Result<Vec<ApplyLogEntry>>> {
         let client_ptr = self.client.clone();
+        let domain_str = domain.to_string();
         Box::pin(async move {
             let client = client_ptr.lock().await;
-            let rows = client.query(
-                "SELECT domain_name, version, user_id, sources_added, sources_deleted, tables_modified, config_hash, config_yaml, timestamp 
-                 FROM apply_history WHERE domain_name = $1 ORDER BY version DESC LIMIT $2",
-                &[&domain, &limit],
-            ).await?;
+            let rows = client
+                .query(
+                    "SELECT domain_name, version, user_id, sources_added, sources_deleted, tables_modified, config_hash, config_yaml, timestamp 
+                     FROM apply_history WHERE domain_name = $1 ORDER BY version DESC LIMIT $2",
+                    &[&domain_str, &limit],
+                )
+                .await?;
 
             let mut entries = Vec::new();
             for row in rows {
                 entries.push(ApplyLogEntry {
-                    domain: row.get("domain_name"),
+                    domain: row.get::<_, String>("domain_name").into(),
                     version: row.get("version"),
-                    user_id: row.get("user_id"),
-                    sources_added: row.get("sources_added"),
-                    sources_deleted: row.get("sources_deleted"),
+                    user_id: row.get::<_, String>("user_id").into(),
+                    sources_added: row
+                        .get::<_, Vec<String>>("sources_added")
+                        .into_iter()
+                        .map(SourceName::from)
+                        .collect(),
+                    sources_deleted: row
+                        .get::<_, Vec<String>>("sources_deleted")
+                        .into_iter()
+                        .map(SourceName::from)
+                        .collect(),
                     tables_modified: row.get("tables_modified"),
                     config_hash: row.get("config_hash"),
                     config_yaml: row.get("config_yaml"),
@@ -404,14 +436,15 @@ impl MetadataStore for PostgresStore {
         })
     }
 
-    fn get_sources<'a>(&'a self, domain: &'a str) -> BoxFuture<'a, Result<SourcesConfig>> {
+    fn get_sources<'a>(&'a self, domain: &'a DomainName) -> BoxFuture<'a, Result<SourcesConfig>> {
         let client_ptr = self.client.clone();
+        let domain_str = domain.to_string();
         Box::pin(async move {
             let client = client_ptr.lock().await;
             let rows = client
                 .query(
-                    "SELECT id, name, type, url FROM sources WHERE domain_name = $1",
-                    &[&domain],
+                    "SELECT id, name, type, url, username, password FROM sources WHERE domain_name = $1",
+                    &[&domain_str],
                 )
                 .await
                 .context("Failed to query sources")?;
@@ -423,6 +456,8 @@ impl MetadataStore for PostgresStore {
                 let name: String = row.get("name");
                 let source_type: String = row.get("type");
                 let url: Option<String> = row.get("url");
+                let username: Option<String> = row.get("username");
+                let password: Option<String> = row.get("password");
 
                 let table_rows = client
                     .query(
@@ -449,73 +484,74 @@ impl MetadataStore for PostgresStore {
 
                     let mut columns = Vec::new();
                     for col_row in column_rows {
-                        columns.push(ColumnConfig {
-                            name: col_row.get("name"),
-                            data_type: col_row.get("data_type"),
-                            length: col_row.get("length"),
-                            primary_key: col_row.get("is_primary_key"),
-                            unique: col_row.get("is_unique"),
-                            not_null: col_row.get("is_not_null"),
-                            description: None,
-                            ..Default::default()
-                        });
+                        let mut col = ColumnConfig::default();
+                        col.name = col_row.get("name");
+                        col.data_type = col_row.get("data_type");
+                        col.length = col_row.get("length");
+                        col.primary_key = col_row.get("is_primary_key");
+                        col.unique = col_row.get("is_unique");
+                        col.not_null = col_row.get("is_not_null");
+                        col.description = None;
+                        columns.push(col);
                     }
 
-                    tables.push(TableConfig {
-                        name: table_name,
-                        schema,
-                        partition_column,
-                        description: None,
-                        columns,
-                        ..Default::default()
-                    });
+                    let mut t_cfg = TableConfig::default();
+                    t_cfg.name = table_name;
+                    t_cfg.schema = schema;
+                    t_cfg.partition_column = partition_column;
+                    t_cfg.description = None;
+                    t_cfg.column_definitions = columns;
+                    tables.push(t_cfg);
                 }
 
-                sources.push(SourceConfig {
-                    name,
-                    source_type,
-                    url,
-                    username: None,
-                    password: None,
-                    default_limit: None,
-                    cache: None,
-                    max_concurrent_queries: None,
-                    tables,
-                    config: serde_json::Value::Null,
-                    ..Default::default()
-                });
+                let mut s = SourceConfig::default();
+                s.name = name.into();
+                s.source_type = source_type
+                    .parse()
+                    .unwrap_or(strake_common::models::SourceType::Other(source_type));
+                s.url = url;
+                s.username = username;
+                s.password = password.map(secrecy::SecretString::from);
+                s.default_limit = None;
+                s.cache = None;
+                s.max_concurrent_queries = None;
+                s.tables = tables;
+                s.config = serde_json::Value::Null;
+                sources.push(s);
             }
 
-            Ok(SourcesConfig {
-                domain: Some(domain.to_string()),
-                sources,
-            })
+            let mut config = SourcesConfig::default();
+            config.domain = Some(domain.clone());
+            config.sources = sources;
+            Ok(config)
         })
     }
 
     fn get_history_config<'a>(
         &'a self,
-        domain: &'a str,
+        domain: &'a DomainName,
         version: i32,
     ) -> BoxFuture<'a, Result<String>> {
         let client_ptr = self.client.clone();
+        let domain_str = domain.to_string();
         Box::pin(async move {
             let client = client_ptr.lock().await;
             let row = client
                 .query_opt(
                     "SELECT config_yaml FROM apply_history WHERE domain_name = $1 AND version = $2",
-                    &[&domain, &version],
+                    &[&domain_str, &version],
                 )
                 .await
                 .context("Failed to query apply history for config")?;
 
-            match row {
-                Some(r) => Ok(r.get(0)),
-                None => Err(anyhow!(
+            if let Some(r) = row {
+                Ok(r.get(0))
+            } else {
+                Err(anyhow!(
                     "Version {} not found for domain '{}'",
                     version,
-                    domain
-                )),
+                    domain_str
+                ))
             }
         })
     }
@@ -534,9 +570,9 @@ impl MetadataStore for PostgresStore {
             let mut results = Vec::new();
             for row in rows {
                 results.push(super::models::DomainStatus {
-                    name: row.get("name"),
+                    name: row.get::<_, String>("name").into(),
                     version: row.get("version"),
-                    created_at: row.get("created_at"),
+                    created_at: row.get::<_, Option<DateTime<Utc>>>("created_at"),
                 });
             }
             Ok(results)

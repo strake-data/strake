@@ -89,7 +89,7 @@ async fn test_add_new_source() {
     use crate::commands::discovery::AddOptions;
     let result = add(
         AddOptions {
-            source: "new_source".to_string(),
+            source: "new_source".into(),
             table: Some("public.users".to_string()),
             pattern: None,
             all: false,

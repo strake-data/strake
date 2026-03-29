@@ -2,7 +2,7 @@
 name = "strake-bench"
 version.workspace = true
 license = "MIT OR Apache-2.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 strake-runtime = { path = "../runtime" }

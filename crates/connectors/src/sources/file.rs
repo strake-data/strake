@@ -21,19 +21,19 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use datafusion::datasource::TableProvider;
 use datafusion::datasource::file_format::csv::CsvFormat;
 use datafusion::datasource::file_format::json::JsonFormat;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
 };
-use datafusion::datasource::TableProvider;
 use datafusion::prelude::SessionContext;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::sources::ensure_schema;
 use crate::sources::SourceProvider;
+use crate::sources::ensure_schema;
 use strake_common::config::{ColumnConfig, SourceConfig, TableConfig};
 use thiserror::Error;
 use url::Url;
@@ -80,8 +80,9 @@ impl SourceProvider for FileSourceProvider {
         catalog_name: &str,
         config: &SourceConfig,
     ) -> Result<()> {
-        match config.source_type.as_str() {
-            "parquet" => {
+        use strake_common::models::SourceType;
+        match &config.source_type {
+            SourceType::Parquet => {
                 #[derive(serde::Deserialize)]
                 struct ParquetConfig {
                     path: String,
@@ -103,7 +104,7 @@ impl SourceProvider for FileSourceProvider {
                 register_parquet(
                     context,
                     catalog_name,
-                    &config.name,
+                    config.name.as_ref(),
                     &cfg.path,
                     &tables,
                     self.predicate_cache.clone(),
@@ -111,7 +112,7 @@ impl SourceProvider for FileSourceProvider {
                 )
                 .await
             }
-            "csv" => {
+            SourceType::Csv => {
                 #[derive(serde::Deserialize)]
                 struct CsvConfig {
                     path: String,
@@ -136,7 +137,7 @@ impl SourceProvider for FileSourceProvider {
                 register_csv(
                     context,
                     catalog_name,
-                    &config.name,
+                    config.name.as_ref(),
                     &cfg.path,
                     cfg.has_header,
                     cfg.delimiter,
@@ -144,7 +145,7 @@ impl SourceProvider for FileSourceProvider {
                 )
                 .await
             }
-            "json" => {
+            SourceType::Json => {
                 #[derive(serde::Deserialize)]
                 struct JsonConfig {
                     path: String,
@@ -163,9 +164,16 @@ impl SourceProvider for FileSourceProvider {
                 };
 
                 register_object_store(context, &cfg.path, cfg.options.unwrap_or_default()).await?;
-                register_json(context, catalog_name, &config.name, &cfg.path, &tables).await
+                register_json(
+                    context,
+                    catalog_name,
+                    config.name.as_ref(),
+                    &cfg.path,
+                    &tables,
+                )
+                .await
             }
-            _ => Err(SourceError::UnsupportedType(config.source_type.clone()).into()),
+            _ => Err(SourceError::UnsupportedType(config.source_type.to_string()).into()),
         }
     }
 }
@@ -266,7 +274,7 @@ pub async fn register_parquet(
     cache: Arc<strake_common::predicate_cache::PredicateCache>,
     predicate_cache_enabled: bool,
 ) -> Result<()> {
-    use crate::sources::predicate_caching::PredicateCachingTableProvider;
+    use crate::sources::predicate_caching::CachingTableProvider;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -279,8 +287,8 @@ pub async fn register_parquet(
         for table_cfg in tables {
             let table_path = table_cfg.path.as_deref().unwrap_or(path);
             let table_url = ListingTableUrl::parse(table_path)?;
-            let resolved_schema = if !table_cfg.columns.is_empty() {
-                build_schema_from_config(&table_cfg.columns)?
+            let resolved_schema = if !table_cfg.column_definitions.is_empty() {
+                build_schema_from_config(&table_cfg.column_definitions)?
             } else {
                 listing_options
                     .infer_schema(&context.state(), &table_url)
@@ -299,7 +307,7 @@ pub async fn register_parquet(
                 hasher.finish() as i64
             });
             let provider: Arc<dyn TableProvider> = if predicate_cache_enabled {
-                Arc::new(PredicateCachingTableProvider::new(
+                Arc::new(CachingTableProvider::new(
                     provider,
                     cache.clone(),
                     snapshot_id,
@@ -330,11 +338,7 @@ pub async fn register_parquet(
         name.hash(&mut hasher);
         let snapshot_id = hasher.finish() as i64;
 
-        let wrapped = Arc::new(PredicateCachingTableProvider::new(
-            provider,
-            cache,
-            snapshot_id,
-        ));
+        let wrapped = Arc::new(CachingTableProvider::new(provider, cache, snapshot_id));
 
         let schema_provider = ensure_schema(context, catalog, "public")?;
         schema_provider.register_table(name.to_string(), wrapped)?;
@@ -365,8 +369,8 @@ pub async fn register_csv(
         for table_cfg in tables {
             let table_path = table_cfg.path.as_deref().unwrap_or(path);
             let table_url = ListingTableUrl::parse(table_path)?;
-            let resolved_schema = if !table_cfg.columns.is_empty() {
-                build_schema_from_config(&table_cfg.columns)?
+            let resolved_schema = if !table_cfg.column_definitions.is_empty() {
+                build_schema_from_config(&table_cfg.column_definitions)?
             } else {
                 listing_options
                     .infer_schema(&context.state(), &table_url)
@@ -419,8 +423,8 @@ pub async fn register_json(
         for table_cfg in tables {
             let table_path = table_cfg.path.as_deref().unwrap_or(path);
             let table_url = ListingTableUrl::parse(table_path)?;
-            let resolved_schema = if !table_cfg.columns.is_empty() {
-                build_schema_from_config(&table_cfg.columns)?
+            let resolved_schema = if !table_cfg.column_definitions.is_empty() {
+                build_schema_from_config(&table_cfg.column_definitions)?
             } else {
                 listing_options
                     .infer_schema(&context.state(), &table_url)
@@ -462,7 +466,7 @@ fn build_schema_from_config(
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::collections::HashMap;
 
-    let fields: Vec<Field> = columns
+    let fields: Result<Vec<Field>> = columns
         .iter()
         .map(|c| {
             let config_type: DataTypeConfig =
@@ -478,7 +482,21 @@ fn build_schema_from_config(
                 DataTypeConfig::Date => DataType::Date32,
                 DataTypeConfig::Decimal => {
                     let precision = c.precision.unwrap_or(15);
+                    if precision == 0 {
+                        anyhow::bail!(
+                            "Decimal precision must be at least 1 for column '{}'",
+                            c.name
+                        );
+                    }
                     let scale = c.scale.unwrap_or(2);
+                    if scale > precision {
+                        anyhow::bail!(
+                            "Invalid decimal spec for column '{}': scale ({}) > precision ({})",
+                            c.name,
+                            scale,
+                            precision
+                        );
+                    }
                     if precision <= 9 {
                         DataType::Decimal32(precision, scale as i8)
                     } else if precision <= 18 {
@@ -496,12 +514,12 @@ fn build_schema_from_config(
                 metadata.insert("characterMaximumLength".to_string(), len.to_string());
             }
 
-            let field = Field::new(&c.name, dt, nullable);
-            field.with_metadata(metadata)
+            let field = Field::new(&c.name, dt, nullable).with_metadata(metadata);
+            Ok(field)
         })
         .collect();
 
-    Ok(Arc::new(Schema::new(fields)))
+    Ok(Arc::new(Schema::new(fields?)))
 }
 
 #[cfg(test)]
@@ -512,26 +530,29 @@ mod tests {
     #[test]
     fn test_build_schema_decimals() {
         let cols = vec![
-            ColumnConfig {
-                name: "d32".into(),
-                data_type: "decimal".into(),
-                precision: Some(9),
-                scale: Some(2),
-                ..Default::default()
+            {
+                let mut c = ColumnConfig::default();
+                c.name = "d32".into();
+                c.data_type = "decimal".into();
+                c.precision = Some(9);
+                c.scale = Some(2);
+                c
             },
-            ColumnConfig {
-                name: "d64".into(),
-                data_type: "decimal".into(),
-                precision: Some(18),
-                scale: Some(2),
-                ..Default::default()
+            {
+                let mut c = ColumnConfig::default();
+                c.name = "d64".into();
+                c.data_type = "decimal".into();
+                c.precision = Some(18);
+                c.scale = Some(2);
+                c
             },
-            ColumnConfig {
-                name: "d128".into(),
-                data_type: "decimal".into(),
-                precision: Some(38),
-                scale: Some(2),
-                ..Default::default()
+            {
+                let mut c = ColumnConfig::default();
+                c.name = "d128".into();
+                c.data_type = "decimal".into();
+                c.precision = Some(38);
+                c.scale = Some(2);
+                c
             },
         ];
 
@@ -553,35 +574,41 @@ mod tests {
     #[test]
     fn test_build_schema_types() {
         let cols = vec![
-            ColumnConfig {
-                name: "i".into(),
-                data_type: "int".into(),
-                ..Default::default()
+            {
+                let mut c = ColumnConfig::default();
+                c.name = "i".into();
+                c.data_type = "int".into();
+                c
             },
-            ColumnConfig {
-                name: "bi".into(),
-                data_type: "bigint".into(),
-                ..Default::default()
+            {
+                let mut c = ColumnConfig::default();
+                c.name = "bi".into();
+                c.data_type = "bigint".into();
+                c
             },
-            ColumnConfig {
-                name: "s".into(),
-                data_type: "string".into(),
-                ..Default::default()
+            {
+                let mut c = ColumnConfig::default();
+                c.name = "s".into();
+                c.data_type = "string".into();
+                c
             },
-            ColumnConfig {
-                name: "f".into(),
-                data_type: "float".into(),
-                ..Default::default()
+            {
+                let mut c = ColumnConfig::default();
+                c.name = "f".into();
+                c.data_type = "float".into();
+                c
             },
-            ColumnConfig {
-                name: "b".into(),
-                data_type: "bool".into(),
-                ..Default::default()
+            {
+                let mut c = ColumnConfig::default();
+                c.name = "b".into();
+                c.data_type = "bool".into();
+                c
             },
-            ColumnConfig {
-                name: "d".into(),
-                data_type: "date".into(),
-                ..Default::default()
+            {
+                let mut c = ColumnConfig::default();
+                c.name = "d".into();
+                c.data_type = "date".into();
+                c
             },
         ];
 

@@ -21,6 +21,7 @@ use crate::{
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
+use strake_common::models::DomainName;
 
 pub async fn describe(
     store: &dyn MetadataStore,
@@ -29,7 +30,7 @@ pub async fn describe(
     format: OutputFormat,
     _ctx: &ResolverContext,
 ) -> Result<i32> {
-    let domain = domain.unwrap_or("default");
+    let domain_name = DomainName::from(domain.unwrap_or("default"));
 
     if !format.is_machine_readable() {
         println!(
@@ -39,10 +40,10 @@ pub async fn describe(
             "] Current Configuration in Metadata Store for"
                 .bold()
                 .cyan(),
-            domain.bold()
+            domain_name.bold()
         );
     }
-    let config = store.get_sources(domain).await?;
+    let config = store.get_sources(&domain_name).await?;
 
     if format.is_machine_readable() {
         output::print_success(format, &config)?;
@@ -79,7 +80,7 @@ pub async fn describe(
                 );
             }
             println!("    {}", "Columns:".dimmed());
-            for col in table.columns {
+            for col in table.column_definitions {
                 let mut attribs = Vec::new();
                 if col.primary_key {
                     attribs.push("PK".red().to_string());

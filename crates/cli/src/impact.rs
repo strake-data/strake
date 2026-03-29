@@ -1,5 +1,7 @@
+use regex::Regex;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 use strake_common::models::{ContractsConfig, SourcesConfig};
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize)]
@@ -66,23 +68,31 @@ pub enum ImpactSeverity {
     ContractBreaking,
 }
 
+static COL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"sources\[(\d+)\]\.tables\[(\d+)\]\.(?:column_definitions|columns)\[(\d+)\]")
+        .unwrap()
+});
+
+static TBL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"sources\[(\d+)\]\.tables\[(\d+)\]").unwrap());
+
 impl ReferenceGraph {
     pub fn build(sources: &SourcesConfig, contracts: &ContractsConfig) -> Self {
         let mut nodes = HashMap::new();
         let mut edges = Vec::new();
 
         for source in &sources.sources {
-            let s_id = NodeId::Source(source.name.clone());
+            let s_id = NodeId::Source(source.name.to_string());
             nodes.insert(
                 s_id.clone(),
                 GraphNode {
                     id: s_id.clone(),
-                    label: source.name.clone(),
+                    label: source.name.to_string(),
                 },
             );
 
             for table in &source.tables {
-                let t_id = NodeId::Table(source.name.clone(), table.name.clone());
+                let t_id = NodeId::Table(source.name.to_string(), table.name.clone());
                 nodes.insert(
                     t_id.clone(),
                     GraphNode {
@@ -92,9 +102,12 @@ impl ReferenceGraph {
                 );
                 edges.push((s_id.clone(), t_id.clone(), EdgeKind::TableOf));
 
-                for col in &table.columns {
-                    let c_id =
-                        NodeId::Column(source.name.clone(), table.name.clone(), col.name.clone());
+                for col in &table.column_definitions {
+                    let c_id = NodeId::Column(
+                        source.name.to_string(),
+                        table.name.clone(),
+                        col.name.clone(),
+                    );
                     nodes.insert(
                         c_id.clone(),
                         GraphNode {
@@ -164,34 +177,29 @@ impl ReferenceGraph {
     }
 
     fn parse_path(&self, path: &str, sources: &SourcesConfig) -> (String, String, Option<String>) {
-        use regex::Regex;
-        // Example: sources[0].tables[0].columns[0].type
-        let col_re = Regex::new(r"sources\[(\d+)\]\.tables\[(\d+)\]\.columns\[(\d+)\]").unwrap();
-        let tbl_re = Regex::new(r"sources\[(\d+)\]\.tables\[(\d+)\]").unwrap();
-
-        if let Some(caps) = col_re.captures(path) {
+        if let Some(caps) = COL_RE.captures(path) {
             let s_idx: usize = caps[1].parse().unwrap_or(0);
             let t_idx: usize = caps[2].parse().unwrap_or(0);
             let c_idx: usize = caps[3].parse().unwrap_or(0);
 
             let res = sources.sources.get(s_idx).and_then(|s| {
                 s.tables.get(t_idx).and_then(|t| {
-                    t.columns
+                    t.column_definitions
                         .get(c_idx)
-                        .map(|c| (s.name.clone(), t.name.clone(), Some(c.name.clone())))
+                        .map(|c| (s.name.to_string(), t.name.clone(), Some(c.name.clone())))
                 })
             });
             if let Some(res) = res {
                 return res;
             }
-        } else if let Some(caps) = tbl_re.captures(path) {
+        } else if let Some(caps) = TBL_RE.captures(path) {
             let s_idx: usize = caps[1].parse().unwrap_or(0);
             let t_idx: usize = caps[2].parse().unwrap_or(0);
 
             let res = sources.sources.get(s_idx).and_then(|s| {
                 s.tables
                     .get(t_idx)
-                    .map(|t| (s.name.clone(), t.name.clone(), None))
+                    .map(|t| (s.name.to_string(), t.name.clone(), None))
             });
             if let Some(res) = res {
                 return res;

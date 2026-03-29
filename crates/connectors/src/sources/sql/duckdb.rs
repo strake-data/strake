@@ -343,7 +343,7 @@ impl SqlProviderFactory for DuckDBTableFactory {
     }
 }
 
-pub async fn register_duckdb(params: SqlSourceParams<'_>) -> Result<()> {
+pub async fn register_duckdb(params: SqlSourceParams) -> Result<()> {
     let context = params.context;
     let catalog_name = params.catalog_name;
     let name = params.name;
@@ -354,10 +354,16 @@ pub async fn register_duckdb(params: SqlSourceParams<'_>) -> Result<()> {
     let max_concurrent_queries = params.max_concurrent_queries;
 
     retry_async(
-        &format!("register_duckdb({})", name),
+        format!("register_duckdb({})", name),
         retry_settings,
         move || {
             let cb = cb.clone();
+            let context = context.clone();
+            let catalog_name = catalog_name.clone();
+            let name = name.clone();
+            let connection_string = connection_string.clone();
+            let explicit_tables = explicit_tables.clone();
+
             async move {
                 try_register_duckdb(
                     context,
@@ -377,46 +383,47 @@ pub async fn register_duckdb(params: SqlSourceParams<'_>) -> Result<()> {
 
 #[allow(clippy::too_many_arguments)]
 async fn try_register_duckdb(
-    context: &SessionContext,
-    catalog_name: &str,
-    name: &str,
-    connection_string: &str,
+    context: Arc<SessionContext>,
+    catalog_name: String,
+    name: String,
+    connection_string: String,
     cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
-    explicit_tables: &Option<Vec<TableConfig>>,
+    explicit_tables: Arc<Option<Vec<TableConfig>>>,
     max_concurrent_queries: usize,
 ) -> Result<()> {
     // For DuckDB, connection is file path.
     // We don't use a pool yet, just path string.
-    let factory = DuckDBTableFactory::new(connection_string.to_string());
+    let factory = DuckDBTableFactory::new(connection_string.clone());
 
-    let tables_to_register: Vec<(String, String)> = if let Some(config_tables) = explicit_tables {
-        config_tables
-            .iter()
-            .map(|t| {
-                let schema = if t.schema.is_empty() || t.schema == "public" {
-                    name.to_string()
-                } else {
-                    t.schema.clone()
-                };
-                (t.name.clone(), schema)
-            })
-            .collect()
-    } else {
-        introspect_duckdb_tables(connection_string)
-            .await?
-            .into_iter()
-            .map(|t| (t, name.to_string()))
-            .collect()
-    };
+    let tables_to_register: Vec<(String, String)> =
+        if let Some(config_tables) = explicit_tables.as_ref() {
+            config_tables
+                .iter()
+                .map(|t| {
+                    let schema = if t.schema.is_empty() || t.schema == "public" {
+                        name.to_string()
+                    } else {
+                        t.schema.clone()
+                    };
+                    (t.name.clone(), schema)
+                })
+                .collect()
+        } else {
+            introspect_duckdb_tables(&connection_string)
+                .await?
+                .into_iter()
+                .map(|t| (t, name.to_string()))
+                .collect()
+        };
 
     let fetcher: Option<Box<dyn SqlMetadataFetcher>> = Some(Box::new(DuckDBMetadataFetcher {
-        db_path: connection_string.to_string(),
+        db_path: connection_string.clone(),
     }));
 
     register_tables(
-        context,
-        catalog_name,
-        name,
+        &context,
+        &catalog_name,
+        &name,
         fetcher,
         &factory,
         cb,
@@ -537,7 +544,10 @@ mod tests {
                     || msg.contains("IO Error: Failed to download")
                     || msg.contains("Extension \"substrait\" not found")
                 {
-                    println!("Skipping test: Substrait extension not available or cannot be downloaded: {}", msg);
+                    println!(
+                        "Skipping test: Substrait extension not available or cannot be downloaded: {}",
+                        msg
+                    );
                 } else {
                     return Err(e);
                 }

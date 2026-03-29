@@ -23,12 +23,20 @@ use arrow::record_batch::RecordBatch;
 use datafusion::logical_expr::LogicalPlan;
 use moka::future::Cache;
 use sha2::{Digest, Sha256};
+use strake_common::auth::AuthenticatedUser;
+use strake_common::models::ActorName;
 use tracing::{debug, info, warn};
 
+use arrow::datatypes::SchemaRef;
+use datafusion::error::DataFusionError;
+use datafusion::execution::SendableRecordBatchStream;
+use datafusion::physical_plan::RecordBatchStream;
+use futures::Stream;
+use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::file::properties::WriterProperties;
-use strake_common::auth::AuthenticatedUser;
+use std::pin::Pin;
+use std::task::{Context as TaskContext, Poll};
 
 /// Configuration for the query result cache
 #[derive(Debug, Clone)]
@@ -56,7 +64,7 @@ pub struct CacheKey {
     /// Hash of the logical plan (captures query semantics)
     plan_hash: String,
     /// User ID (for RBAC isolation)
-    user_id: String,
+    user_id: ActorName,
     /// User permissions (part of cache key for RLS)
     permissions_hash: String,
 }
@@ -81,7 +89,7 @@ impl CacheKey {
             perm_hasher.update(sorted_perms.join(",").as_bytes());
             (u.id.clone(), format!("{:x}", perm_hasher.finalize()))
         } else {
-            ("anonymous".to_string(), "none".to_string())
+            (ActorName::from("anonymous"), "none".to_string())
         };
 
         Self {
@@ -96,7 +104,7 @@ impl CacheKey {
         let mut hasher = Sha256::new();
         hasher.update(self.plan_hash.as_bytes());
         hasher.update(b"|"); // Delimiter to prevent boundary shifting collisions
-        hasher.update(self.user_id.as_bytes());
+        hasher.update(self.user_id.as_ref().as_bytes());
         hasher.update(b"|");
         hasher.update(self.permissions_hash.as_bytes());
         format!("query_{:x}.parquet", hasher.finalize())
@@ -111,6 +119,7 @@ struct CacheEntry {
 }
 
 /// Production-ready query result cache with moka
+#[derive(Clone)]
 pub struct QueryCache {
     config: CacheConfig,
     /// Moka cache for efficient concurrent LRU with automatic eviction
@@ -276,7 +285,38 @@ impl QueryCache {
         Ok(())
     }
 
-    /// Try to get cached query results
+    /// Try to get cached query results as a stream
+    pub async fn get_stream(&self, key: &CacheKey) -> Option<SendableRecordBatchStream> {
+        if !self.config.enabled {
+            return None;
+        }
+
+        let filename = key.to_filename();
+        let entry = self.cache.get(&filename).await?;
+
+        debug!(
+            target: "cache",
+            key = %filename,
+            size_bytes = entry.size_bytes,
+            "Cache hit (streaming)"
+        );
+
+        match self.open_parquet_stream(&entry.file_path).await {
+            Ok(stream) => Some(stream),
+            Err(e) => {
+                warn!(
+                    target: "cache",
+                    key = %filename,
+                    error = %e,
+                    "Failed to open cache stream, invalidating entry"
+                );
+                self.cache.invalidate(&filename).await;
+                None
+            }
+        }
+    }
+
+    /// Try to get cached query results as a Vec (legacy/small results)
     pub async fn get(&self, key: &CacheKey) -> Option<Vec<RecordBatch>> {
         if !self.config.enabled {
             return None;
@@ -311,7 +351,115 @@ impl QueryCache {
         }
     }
 
-    /// Store query results in cache
+    /// Store query result stream in cache
+    pub async fn put_stream(
+        &self,
+        key: CacheKey,
+        mut stream: SendableRecordBatchStream,
+    ) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        let filename = key.to_filename();
+        let file_path = self.config.directory.join(&filename);
+        let tmp_path = file_path.with_extension("tmp");
+
+        let schema = stream.schema();
+        let mut row_count = 0;
+        let mut success = true;
+
+        // Use a channel with a reasonable buffer for high-throughput streaming
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<RecordBatch>(100);
+
+        let tmp_path_buf = tmp_path.clone();
+        let schema_clone = schema.clone();
+
+        // Spawn blocking task for Parquet I/O. Note: we do NOT rename here anymore.
+        let write_task = tokio::task::spawn_blocking(move || -> Result<u64, anyhow::Error> {
+            let file = std::fs::File::create(&tmp_path_buf)?;
+            let props = WriterProperties::builder().build();
+            let mut writer = ArrowWriter::try_new(file, schema_clone, Some(props))?;
+
+            while let Some(batch) = rx.blocking_recv() {
+                writer.write(&batch)?;
+            }
+
+            writer.close()?;
+            let metadata = std::fs::metadata(&tmp_path_buf)?;
+            Ok::<u64, anyhow::Error>(metadata.len())
+        });
+
+        use futures::StreamExt;
+        while let Some(batch_res) = stream.next().await {
+            match batch_res {
+                Ok(batch) => {
+                    row_count += batch.num_rows();
+                    // If we can't keep up with the stream, we must abort the cache write
+                    // to prevent storing a partial result.
+                    if tx.try_send(batch).is_err() {
+                        warn!(
+                            target: "cache",
+                            key = %filename,
+                            "Cache writer lagging, aborting recording to prevent data corruption"
+                        );
+                        success = false;
+                        break;
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        target: "cache",
+                        key = %filename,
+                        error = %e,
+                        "Source stream error, aborting cache recording"
+                    );
+                    success = false;
+                    break;
+                }
+            }
+        }
+
+        // Explicitly drop transmitter to close the receiver in the blocking task
+        drop(tx);
+
+        // Wait for the writing task to finish
+        let write_result = write_task.await.context("Parquet write task panicked")?;
+
+        if success && row_count > 0 {
+            if let Ok(size_bytes) = write_result {
+                // Finalize the cache file atomically
+                if let Err(e) = tokio::fs::rename(&tmp_path, &file_path).await {
+                    warn!(target: "cache", error = %e, "Failed to finalize cache file");
+                    let _ = tokio::fs::remove_file(&tmp_path).await;
+                    return Ok(());
+                }
+
+                let entry = CacheEntry {
+                    file_path,
+                    size_bytes,
+                };
+                self.cache.insert(filename.clone(), entry).await;
+                debug!(
+                    target: "cache",
+                    key = %filename,
+                    rows = row_count,
+                    size_bytes,
+                    "Cached query result stream"
+                );
+            }
+        } else {
+            // Clean up temporary file on failure or empty result
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            if let Err(e) = write_result {
+                warn!(target: "cache", error = %e, "Cache write task failed");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Store query results in cache (legacy/small results)
     pub async fn put(&self, key: CacheKey, batches: &[RecordBatch]) -> Result<()> {
         if !self.config.enabled {
             return Ok(());
@@ -366,7 +514,7 @@ impl QueryCache {
         let path_buf = path.to_path_buf();
 
         // Run blocking Parquet I/O in dedicated thread pool
-        tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || -> Result<Vec<RecordBatch>, anyhow::Error> {
             let file = std::fs::File::open(&path_buf)
                 .with_context(|| format!("Failed to open cache file: {:?}", path_buf))?;
 
@@ -398,7 +546,7 @@ impl QueryCache {
         let batches_owned: Vec<RecordBatch> = batches.to_vec();
 
         // Run blocking Parquet I/O in dedicated thread pool
-        let size = tokio::task::spawn_blocking(move || {
+        let size = tokio::task::spawn_blocking(move || -> Result<u64, anyhow::Error> {
             // Write to temporary file first (atomic write pattern)
             let file = std::fs::File::create(&tmp_path)
                 .with_context(|| format!("Failed to create temp cache file: {:?}", tmp_path))?;
@@ -430,6 +578,53 @@ impl QueryCache {
         Ok(size)
     }
 
+    /// Internal helper to open a Parquet file as a stream
+    async fn open_parquet_stream(&self, path: &Path) -> Result<SendableRecordBatchStream> {
+        let path_buf = path.to_path_buf();
+
+        tokio::task::spawn_blocking(
+            move || -> Result<SendableRecordBatchStream, anyhow::Error> {
+                let file = std::fs::File::open(&path_buf)?;
+                let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                let schema = builder.schema().clone();
+                let reader = builder.build()?;
+
+                let stream = ParquetStream {
+                    reader: Box::new(reader),
+                    schema,
+                };
+
+                Ok::<SendableRecordBatchStream, anyhow::Error>(Box::pin(stream))
+            },
+        )
+        .await?
+    }
+}
+
+struct ParquetStream {
+    reader: Box<dyn datafusion::arrow::record_batch::RecordBatchReader + Send>,
+    schema: SchemaRef,
+}
+
+impl Stream for ParquetStream {
+    type Item = Result<RecordBatch, DataFusionError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+        match self.reader.next() {
+            Some(Ok(batch)) => Poll::Ready(Some(Ok(batch))),
+            Some(Err(e)) => Poll::Ready(Some(Err(DataFusionError::ArrowError(Box::new(e), None)))),
+            None => Poll::Ready(None),
+        }
+    }
+}
+
+impl RecordBatchStream for ParquetStream {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+}
+
+impl QueryCache {
     /// Get cache statistics
     pub async fn stats(&self) -> CacheStats {
         CacheStats {

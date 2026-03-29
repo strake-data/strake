@@ -1,5 +1,5 @@
 macro_rules! with_generator {
-    ($gen:ident, $body:block) => {
+    ($generator:ident, $body:block) => {
         let dialect_path = strake_sql::dialect_router::route_dialect("postgres");
         let (dialect_arc, capabilities, type_mapper, mapper) = match dialect_path {
             strake_sql::dialect_router::DialectPath::Native(d, c, t) => (d, c, t, None),
@@ -14,7 +14,7 @@ macro_rules! with_generator {
             "postgres",
         );
         #[allow(unused_mut)]
-        let mut $gen = strake_sql::sql_generator::SqlGenerator::new(generator_dialect);
+        let mut $generator = strake_sql::sql_generator::SqlGenerator::new(generator_dialect);
         $body
     };
 }

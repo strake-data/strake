@@ -2,7 +2,7 @@
 name = "strake-common"
 version.workspace = true
 license.workspace = true
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 strake-error = { path = "../error" }
@@ -11,6 +11,7 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
+futures = { workspace = true }
 secrecy = { workspace = true, features = ["serde"] }
 config = "0.15"
 validator = { version = "0.19", features = ["derive"] }
@@ -38,5 +39,6 @@ telemetry = ["opentelemetry", "opentelemetry-otlp", "opentelemetry_sdk", "tracin
 [dev-dependencies]
 serial_test = { workspace = true }
 temp-env = { workspace = true }
+tempfile = "3.16"
 proptest = "1.6"
 

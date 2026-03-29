@@ -60,11 +60,13 @@ pub async fn diff(
             .parent()
             .unwrap()
             .join("contracts.yaml");
-        let contracts = if contracts_file.exists() {
+        let contracts: strake_common::models::ContractsConfig = if contracts_file.exists() {
             let content = fs::read_to_string(&contracts_file)?;
             serde_yaml::from_str(&content)?
         } else {
-            strake_common::models::ContractsConfig { contracts: vec![] }
+            let mut c = strake_common::models::ContractsConfig::default();
+            c.contracts = vec![];
+            c
         };
 
         let graph = crate::impact::ReferenceGraph::build(&sources, &contracts);
@@ -135,8 +137,11 @@ pub(crate) async fn diff_internal(
     ctx: &ResolverContext,
 ) -> Result<DiffResult> {
     let local_config = parse_yaml(file_path, ctx).await?;
-    let domain = local_config.domain.as_deref().unwrap_or("default");
-    let db_config = store.get_sources(domain).await?;
+    let domain_name = local_config
+        .domain
+        .clone()
+        .unwrap_or_else(|| strake_common::models::DomainName::from("default"));
+    let db_config = store.get_sources(&domain_name).await?;
 
     let mut changes = Vec::new();
 
@@ -178,7 +183,7 @@ pub(crate) async fn diff_internal(
     }
 
     Ok(DiffResult {
-        domain: super::helpers::DomainName(domain.to_string()),
+        domain: domain_name,
         changes,
     })
 }
@@ -193,8 +198,8 @@ pub(crate) fn diff_sources(
         changes.push(DiffChange {
             change_type: super::helpers::ChangeType::Modified,
             path: format!("sources[{}].type", local.name),
-            previous: Some(db.source_type.clone()),
-            current: Some(local.source_type.clone()),
+            previous: Some(db.source_type.to_string()),
+            current: Some(local.source_type.to_string()),
         });
     }
 
@@ -219,14 +224,16 @@ pub(crate) fn diff_sources(
                     change_type: super::helpers::ChangeType::Added,
                     path: format!(
                         "sources[{}].tables[{}.{}]",
-                        local.name, local_table.schema, local_table.name
+                        local.name.as_ref(),
+                        local_table.schema,
+                        local_table.name
                     ),
                     previous: None,
                     current: None,
                 });
             }
             Some(db_table) => {
-                changes.extend(diff_tables(&local.name, local_table, db_table));
+                changes.extend(diff_tables(local.name.as_ref(), local_table, db_table));
             }
         }
     }
@@ -272,13 +279,17 @@ pub(crate) fn diff_tables(
     }
 
     // Columns
-    for local_col in &local.columns {
-        match db.columns.iter().find(|c| c.name == local_col.name) {
+    for local_col in &local.column_definitions {
+        match db
+            .column_definitions
+            .iter()
+            .find(|c| c.name == local_col.name)
+        {
             None => {
                 changes.push(DiffChange {
                     change_type: super::helpers::ChangeType::Added,
                     path: format!(
-                        "sources[{}].tables[{}.{}].columns[{}]",
+                        "sources[{}].tables[{}.{}].column_definitions[{}]",
                         source_name, local.schema, local.name, local_col.name
                     ),
                     previous: None,
@@ -290,7 +301,7 @@ pub(crate) fn diff_tables(
                     changes.push(DiffChange {
                         change_type: super::helpers::ChangeType::Modified,
                         path: format!(
-                            "sources[{}].tables[{}.{}].columns[{}].type",
+                            "sources[{}].tables[{}.{}].column_definitions[{}].type",
                             source_name, local.schema, local.name, local_col.name
                         ),
                         previous: Some(db_col.data_type.clone()),
@@ -301,12 +312,16 @@ pub(crate) fn diff_tables(
         }
     }
 
-    for db_col in &db.columns {
-        if !local.columns.iter().any(|c| c.name == db_col.name) {
+    for db_col in &db.column_definitions {
+        if !local
+            .column_definitions
+            .iter()
+            .any(|c| c.name == db_col.name)
+        {
             changes.push(DiffChange {
                 change_type: super::helpers::ChangeType::Deleted,
                 path: format!(
-                    "sources[{}].tables[{}.{}].columns[{}]",
+                    "sources[{}].tables[{}.{}].column_definitions[{}]",
                     source_name, local.schema, local.name, db_col.name
                 ),
                 previous: None,

@@ -19,26 +19,18 @@ async fn test_sqlite_integration() -> Result<()> {
         conn.execute("INSERT INTO users (name) VALUES (?)", ["Bob"])?;
     }
 
-    let config = Config {
-        sources: vec![SourceConfig {
-            name: "my_sqlite".to_string(),
-            source_type: "sql".to_string(),
-            url: Some(db_path.clone()),
-            default_limit: None,
-            cache: None,
-            config: serde_json::to_value(HashMap::from([
-                ("dialect".to_string(), "sqlite".to_string()),
-                ("connection".to_string(), db_path.clone()),
-            ]))
-            .unwrap(),
-            username: None,
-            password: None,
-            max_concurrent_queries: None,
-            tables: vec![],
-            ..Default::default()
-        }],
-        cache: Default::default(),
-    };
+    let mut config = Config::default();
+    let mut s1 = SourceConfig::default();
+    s1.name = "my_sqlite".into();
+    s1.source_type = strake_common::models::SourceType::Other("sql".to_string());
+    s1.url = Some(db_path.clone());
+    s1.config = serde_json::to_value(HashMap::from([
+        ("dialect".to_string(), "sqlite".to_string()),
+        ("connection".to_string(), db_path.clone()),
+    ]))
+    .unwrap();
+    config.sources = vec![s1];
+    config.cache = Default::default();
 
     let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
         config,
@@ -103,45 +95,29 @@ async fn test_sqlite_cross_db_federation() -> Result<()> {
         )?;
     }
 
-    let config = Config {
-        sources: vec![
-            SourceConfig {
-                name: "s1".to_string(),
-                source_type: "sql".to_string(),
-                url: Some(db1_path.clone()),
-                default_limit: None,
-                cache: None,
-                config: serde_json::to_value(HashMap::from([
-                    ("dialect".to_string(), "sqlite".to_string()),
-                    ("connection".to_string(), db1_path),
-                ]))
-                .unwrap(),
-                username: None,
-                password: None,
-                max_concurrent_queries: None,
-                tables: vec![],
-                ..Default::default()
-            },
-            SourceConfig {
-                name: "s2".to_string(),
-                source_type: "sql".to_string(),
-                url: Some(db2_path.clone()),
-                default_limit: None,
-                cache: None,
-                config: serde_json::to_value(HashMap::from([
-                    ("dialect".to_string(), "sqlite".to_string()),
-                    ("connection".to_string(), db2_path),
-                ]))
-                .unwrap(),
-                username: None,
-                password: None,
-                max_concurrent_queries: None,
-                tables: vec![],
-                ..Default::default()
-            },
-        ],
-        cache: Default::default(),
-    };
+    let mut config = Config::default();
+    let mut s1 = SourceConfig::default();
+    s1.name = "s1".into();
+    s1.source_type = strake_common::models::SourceType::Other("sql".to_string());
+    s1.url = Some(db1_path.clone());
+    s1.config = serde_json::to_value(HashMap::from([
+        ("dialect".to_string(), "sqlite".to_string()),
+        ("connection".to_string(), db1_path),
+    ]))
+    .unwrap();
+
+    let mut s2 = SourceConfig::default();
+    s2.name = "s2".into();
+    s2.source_type = strake_common::models::SourceType::Other("sql".to_string());
+    s2.url = Some(db2_path.clone());
+    s2.config = serde_json::to_value(HashMap::from([
+        ("dialect".to_string(), "sqlite".to_string()),
+        ("connection".to_string(), db2_path),
+    ]))
+    .unwrap();
+
+    config.sources = vec![s1, s2];
+    config.cache = Default::default();
 
     let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
         config,

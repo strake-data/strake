@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use globset::GlobMatcher;
 
 use crate::introspect::{IntrospectError, SchemaIntrospector, TableRef};
-use strake_common::schema::{normalize_type_str, IntrospectedColumn, IntrospectedTable};
+use strake_common::schema::{IntrospectedColumn, IntrospectedTable, normalize_type_str};
 
 pub struct DuckDBIntrospector {
     pub db_path: String,

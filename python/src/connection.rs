@@ -15,7 +15,7 @@ use pyo3::prelude::*;
 use std::collections::HashMap;
 
 use crate::backend::{Backend, EmbeddedBackend, RemoteBackend, StrakeQueryExecutor};
-use crate::errors::{to_py_exception, InternalError};
+use crate::errors::{InternalError, to_py_exception};
 use std::sync::{Arc, OnceLock};
 use strake_error::{ErrorCode, ErrorContext, StrakeError};
 use tokio::sync::Mutex;
@@ -166,17 +166,17 @@ fn scan_record_batch_for_injection(batch: &RecordBatch) -> Option<InjectionFindi
 
         match col.data_type() {
             DataType::Utf8 => {
-                if let Some(arr) = col.as_any().downcast_ref::<StringArray>() {
-                    if let Some(finding) = scan_string_array(column_name, arr) {
-                        return Some(finding);
-                    }
+                if let Some(arr) = col.as_any().downcast_ref::<StringArray>()
+                    && let Some(finding) = scan_string_array(column_name, arr)
+                {
+                    return Some(finding);
                 }
             }
             DataType::LargeUtf8 => {
-                if let Some(arr) = col.as_any().downcast_ref::<LargeStringArray>() {
-                    if let Some(finding) = scan_large_string_array(column_name, arr) {
-                        return Some(finding);
-                    }
+                if let Some(arr) = col.as_any().downcast_ref::<LargeStringArray>()
+                    && let Some(finding) = scan_large_string_array(column_name, arr)
+                {
+                    return Some(finding);
                 }
             }
             DataType::Dictionary(_, value_type) => {
@@ -185,18 +185,18 @@ fn scan_record_batch_for_injection(batch: &RecordBatch) -> Option<InjectionFindi
                 match value_type.as_ref() {
                     DataType::Utf8 => {
                         let values = downcast_dictionary_values_utf8(col);
-                        if let Some(values) = values {
-                            if let Some(finding) = scan_string_array(column_name, &values) {
-                                return Some(finding);
-                            }
+                        if let Some(values) = values
+                            && let Some(finding) = scan_string_array(column_name, &values)
+                        {
+                            return Some(finding);
                         }
                     }
                     DataType::LargeUtf8 => {
                         let values = downcast_dictionary_values_large_utf8(col);
-                        if let Some(values) = values {
-                            if let Some(finding) = scan_large_string_array(column_name, &values) {
-                                return Some(finding);
-                            }
+                        if let Some(values) = values
+                            && let Some(finding) = scan_large_string_array(column_name, &values)
+                        {
+                            return Some(finding);
                         }
                     }
                     _ => {}
@@ -373,41 +373,41 @@ impl StrakeConnection {
             AgentGuardMode::Disabled
         };
         for batch in batches {
-            if agent_guard_mode != AgentGuardMode::Disabled {
-                if let Some(finding) = scan_record_batch_for_injection(&batch) {
-                    let mut ctx = std::collections::HashMap::new();
-                    ctx.insert(
-                        "column".to_string(),
-                        serde_json::Value::String(finding.column.clone()),
-                    );
-                    ctx.insert(
-                        "pattern".to_string(),
-                        serde_json::Value::String(finding.pattern.clone()),
-                    );
-                    ctx.insert(
-                        "guard_mode".to_string(),
-                        serde_json::Value::String(format!("{agent_guard_mode:?}")),
-                    );
+            if agent_guard_mode != AgentGuardMode::Disabled
+                && let Some(finding) = scan_record_batch_for_injection(&batch)
+            {
+                let mut ctx = std::collections::HashMap::new();
+                ctx.insert(
+                    "column".to_string(),
+                    serde_json::Value::String(finding.column.clone()),
+                );
+                ctx.insert(
+                    "pattern".to_string(),
+                    serde_json::Value::String(finding.pattern.clone()),
+                );
+                ctx.insert(
+                    "guard_mode".to_string(),
+                    serde_json::Value::String(format!("{agent_guard_mode:?}")),
+                );
 
-                    if agent_guard_mode == AgentGuardMode::DryRun {
-                        tracing::warn!(
-                            target: "strake.guard",
-                            column = finding.column,
-                            pattern = finding.pattern,
-                            "Agent guard (dry_run): prompt-injection pattern detected in query results"
-                        );
-                    } else {
-                        let err = StrakeError::new(
-                            ErrorCode::PromptInjectionDetected,
-                            "Prompt-injection pattern detected in query results",
-                        )
-                        .with_context(ErrorContext::Generic { data: ctx })
-                        .with_hint(
-                            "Treat this source as untrusted; avoid feeding raw results into an LLM. \
-                             If this is expected, set STRAKE_AGENT_GUARD_MODE=dry_run or disabled.",
-                        );
-                        return Err(to_py_exception(py, err));
-                    }
+                if agent_guard_mode == AgentGuardMode::DryRun {
+                    tracing::warn!(
+                        target: "strake.guard",
+                        column = finding.column,
+                        pattern = finding.pattern,
+                        "Agent guard (dry_run): prompt-injection pattern detected in query results"
+                    );
+                } else {
+                    let err = StrakeError::new(
+                        ErrorCode::PromptInjectionDetected,
+                        "Prompt-injection pattern detected in query results",
+                    )
+                    .with_context(ErrorContext::Generic { data: ctx })
+                    .with_hint(
+                        "Treat this source as untrusted; avoid feeding raw results into an LLM. \
+                         If this is expected, set STRAKE_AGENT_GUARD_MODE=dry_run or disabled.",
+                    );
+                    return Err(to_py_exception(py, err));
                 }
             }
 

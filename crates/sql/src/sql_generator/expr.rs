@@ -331,7 +331,7 @@ impl<'a> ExprTranslator<'a> {
                 return Err(SqlGenError::UnsupportedPlan {
                     message: format!("Literal value: {:?}", val),
                     node_type: "Literal".to_string(),
-                })
+                });
             }
         };
         Ok(sqlparser::ast::Expr::Value(sql_value))
@@ -352,10 +352,10 @@ impl<'a> ExprTranslator<'a> {
 
             if let Some(translated) = mapper.translate(name, &sql_args) {
                 let mut expr = translated;
-                if let sqlparser::ast::Expr::Function(ref mut f) = expr {
-                    if f.over.is_none() {
-                        f.over = over;
-                    }
+                if let sqlparser::ast::Expr::Function(ref mut f) = expr
+                    && f.over.is_none()
+                {
+                    f.over = over;
                 }
                 return Ok(expr);
             }

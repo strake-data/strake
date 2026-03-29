@@ -57,7 +57,11 @@ pub async fn remove(
     let config: strake_common::models::SourcesConfig =
         serde_yaml::from_str(&raw).context("Failed to parse sources YAML")?;
 
-    let Some(source_config) = config.sources.iter().find(|entry| entry.name == source) else {
+    let Some(source_config) = config
+        .sources
+        .iter()
+        .find(|entry| entry.name.as_ref() == source)
+    else {
         emit_remove_result(
             format,
             RemoveResult {

@@ -38,8 +38,8 @@ async fn test_join_column_collision() -> Result<()> {
         .select(vec![col("t1.id"), col("t2.id")])?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         // Verify that the ON condition and SELECT use correct disambiguated aliases
@@ -76,8 +76,8 @@ async fn test_projection_provenance_above_join() -> Result<()> {
         .select(vec![col("t1.id"), col("t2.role")])?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         // Check that t0.id and t1.role are used in the same SELECT
@@ -100,8 +100,8 @@ async fn test_nested_subquery_alias_resets_source_alias() -> Result<()> {
         .select(vec![col("id")])?
         .into_optimized_plan()?;
 
-    with_generator!(gen, {
-        let sql = gen
+    with_generator!(generator, {
+        let sql = generator
             .generate(&plan)
             .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?;
         // Inner: SELECT t0.id FROM t1 AS t0

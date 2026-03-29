@@ -70,6 +70,7 @@ pub async fn parse_yaml(path: &str, ctx: &ResolverContext) -> Result<models::Sou
     serde_yaml::from_str(&content).context("Failed to parse YAML structure")
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ManifestPaths {
     pub sources: PathBuf,
@@ -146,15 +147,7 @@ pub struct ValidateResult {
     pub warnings: Vec<String>,
 }
 
-#[derive(Serialize, Clone, Debug)]
-#[serde(transparent)]
-pub struct DomainName(pub String);
-
-impl std::fmt::Display for DomainName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+use strake_common::models::DomainName;
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -205,14 +198,14 @@ pub struct ApplyResult {
 
 #[derive(Serialize)]
 pub struct SearchResult {
-    pub source: String,
-    pub domain: String,
+    pub source: strake_common::models::SourceName,
+    pub domain: Option<strake_common::models::DomainName>,
     pub tables: Vec<strake_common::models::TableDiscovery>,
 }
 
 #[derive(Serialize)]
 pub struct TestConnectionResult {
-    pub source: String,
+    pub source: strake_common::models::SourceName,
     pub valid: bool,
     pub error: Option<String>,
 }

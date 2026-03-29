@@ -1,4 +1,8 @@
-use datafusion::logical_expr::{col, lit, Expr};
+//! # Predicate Key Tests
+//!
+//! Property-based and smoke tests for `PredicateKey` stability and normalization.
+
+use datafusion::logical_expr::{Expr, col, lit};
 use proptest::{prop_assert_eq, prop_assert_ne, proptest};
 use strake_common::predicate_cache::PredicateKey;
 

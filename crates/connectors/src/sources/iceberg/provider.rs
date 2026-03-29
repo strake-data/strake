@@ -16,7 +16,7 @@ use super::auth::{
     AwsIrsaAuth, CompositeAuth, IcebergAuthProvider, OAuthIcebergAuth, S3Credentials,
     StaticTokenAuth,
 };
-use super::catalog::{create_rest_catalog, CachedRestCatalog};
+use super::catalog::{CachedRestCatalog, create_rest_catalog};
 use super::{IcebergRestConfig, TableVersionSpec};
 use strake_common::config::TableConfig;
 
@@ -79,18 +79,18 @@ enum LoadResult {
 }
 
 use crate::sources::predicate_caching::{
-    inject_factory_into_plan, CacheMode, FileRecordingState, RecordingExec,
+    CacheMode, FileRecordingState, RecordingExec, inject_factory_into_plan,
 };
 use strake_common::predicate_cache::PredicateCache;
 
 /// Register Iceberg tables with DataFusion context
 #[allow(clippy::too_many_arguments)]
 pub async fn register_iceberg_rest(
-    ctx: &SessionContext,
-    catalog_name: &str,
-    source_name: &str,
-    cfg: &IcebergRestConfig,
-    tables: &[TableConfig],
+    ctx: Arc<SessionContext>,
+    catalog_name: String,
+    source_name: String,
+    cfg: Arc<IcebergRestConfig>,
+    tables: Arc<Vec<TableConfig>>,
     retry_settings: RetrySettings,
     predicate_cache: Arc<PredicateCache>,
     predicate_cache_enabled: bool,
@@ -98,20 +98,25 @@ pub async fn register_iceberg_rest(
     let cb = Arc::new(AdaptiveCircuitBreaker::new(CircuitBreakerConfig::default()));
 
     retry_async(
-        &format!("iceberg_register({})", source_name),
+        format!("iceberg_register({})", source_name),
         retry_settings,
-        || {
+        move || {
             let cb = cb.clone();
             let predicate_cache = predicate_cache.clone();
+            let catalog_name = catalog_name.clone();
+            let source_name = source_name.clone();
+            let cfg = cfg.clone();
+            let tables = tables.clone();
+            let ctx = ctx.clone();
             async move {
                 try_register_iceberg_rest(
-                    ctx,
-                    catalog_name,
-                    source_name,
-                    cfg,
-                    tables,
-                    cb,
-                    predicate_cache,
+                    ctx.clone(),
+                    catalog_name.clone(),
+                    source_name.clone(),
+                    cfg.clone(),
+                    tables.clone(),
+                    cb.clone(),
+                    predicate_cache.clone(),
                     predicate_cache_enabled,
                 )
                 .await
@@ -123,11 +128,11 @@ pub async fn register_iceberg_rest(
 
 #[allow(clippy::too_many_arguments)]
 async fn try_register_iceberg_rest(
-    ctx: &SessionContext,
-    catalog_name: &str,
-    source_name: &str,
-    cfg: &IcebergRestConfig,
-    tables: &[TableConfig],
+    ctx: Arc<SessionContext>,
+    catalog_name: String,
+    source_name: String,
+    cfg: Arc<IcebergRestConfig>,
+    tables: Arc<Vec<TableConfig>>,
     cb: Arc<AdaptiveCircuitBreaker>,
     predicate_cache: Arc<PredicateCache>,
     predicate_cache_enabled: bool,
@@ -164,7 +169,7 @@ async fn try_register_iceberg_rest(
     let auth: Arc<dyn IcebergAuthProvider> = Arc::new(CompositeAuth::new(rest_auth, s3_auth));
 
     // 2. Create catalog with caching
-    let rest_catalog = create_rest_catalog(source_name, cfg, &auth).await?;
+    let rest_catalog = create_rest_catalog(&source_name, &cfg, &auth).await?;
     let cache_config = cfg.cache.clone().unwrap_or_default();
     let iceberg_catalog = Arc::new(CachedRestCatalog::new(rest_catalog, cache_config));
 
@@ -174,10 +179,10 @@ async fn try_register_iceberg_rest(
 
     // 3. Ensure target catalog exists in DataFusion
     let catalog = ctx
-        .catalog(catalog_name)
+        .catalog(&catalog_name)
         .ok_or_else(|| anyhow::anyhow!("Catalog '{}' not found", catalog_name))?;
 
-    let schema_name = cfg.namespace.as_deref().unwrap_or(source_name);
+    let schema_name = cfg.namespace.as_deref().unwrap_or(&source_name);
 
     if catalog.schema(schema_name).is_none() {
         tracing::debug!(
@@ -192,7 +197,7 @@ async fn try_register_iceberg_rest(
 
     // 4. Pre-fetch schema at registration time for planner correctness;
     // actual scan I/O is deferred to get_or_load().
-    for table_cfg in tables {
+    for table_cfg in tables.iter() {
         let namespace = match &cfg.namespace {
             Some(ns) if !ns.is_empty() => {
                 let parts: Vec<String> = ns.split('.').map(|s| s.to_string()).collect();
@@ -244,7 +249,7 @@ async fn try_register_iceberg_rest(
         // Use SQLTableSource for federation logic
         let sql_source = datafusion_federation::sql::SQLTableSource::new_with_schema(
             federation_provider.clone(),
-            TableReference::full(catalog_name, schema_name, table_cfg.name.as_str()).into(),
+            TableReference::full(catalog_name.clone(), schema_name, table_cfg.name.as_str()).into(),
             schema,
         );
 
@@ -257,11 +262,12 @@ async fn try_register_iceberg_rest(
         let enriched_provider =
             wrap_provider(federated_provider, cb.clone(), FetchedMetadata::default());
         let limited_provider = wrap_concurrent(enriched_provider, max_concurrency);
-        let qualified = TableReference::full(catalog_name, schema_name, table_cfg.name.as_str());
+        let qualified =
+            TableReference::full(catalog_name.clone(), schema_name, table_cfg.name.as_str());
         ctx.register_table(qualified, limited_provider)?;
 
         // Note: we track registration metric immediately as we don't load anymore
-        IcebergTelemetry::table_registered(catalog_name, schema_name, &table_cfg.name);
+        IcebergTelemetry::table_registered(&catalog_name, schema_name, &table_cfg.name);
     }
 
     Ok(())
@@ -618,6 +624,7 @@ impl TableProvider for LazyIcebergTableProvider {
 
                 let recording_states =
                     Arc::new(dashmap::DashMap::<String, Arc<FileRecordingState>>::new());
+                let partition_row_offsets = Arc::new(dashmap::DashMap::new());
 
                 let instrumented_plan = inject_factory_into_plan(
                     plan,
@@ -625,6 +632,7 @@ impl TableProvider for LazyIcebergTableProvider {
                     self.predicate_cache.clone(),
                     snapshot_id,
                     recording_states.clone(),
+                    partition_row_offsets.clone(),
                     cache_mode,
                 )?;
 
@@ -633,6 +641,7 @@ impl TableProvider for LazyIcebergTableProvider {
                         instrumented_plan,
                         physical_predicate,
                         recording_states,
+                        partition_row_offsets,
                         self.predicate_cache.clone(),
                         snapshot_id,
                     )) as Arc<dyn ExecutionPlan>)
@@ -660,10 +669,10 @@ impl TableProvider for LazyIcebergTableProvider {
         // Ensure loaded to delegate pushdown logic (needs schema/partition spec)
         let _ = self.schema();
 
-        if let Ok(guard) = self.state.try_read() {
-            if let LoadState::Loaded(provider) = &*guard {
-                return provider.supports_filters_pushdown(filters);
-            }
+        if let Ok(guard) = self.state.try_read()
+            && let LoadState::Loaded(provider) = &*guard
+        {
+            return provider.supports_filters_pushdown(filters);
         }
 
         Ok(vec![datafusion::logical_expr::TableProviderFilterPushDown::Unsupported; filters.len()])

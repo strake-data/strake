@@ -18,7 +18,7 @@ use thiserror::Error;
 use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tracing::{info_span, Instrument};
+use tracing::{Instrument, info_span};
 
 #[derive(Error, Debug)]
 pub enum SidecarError {
@@ -62,15 +62,15 @@ impl Drop for SidecarHandle {
 impl SidecarHandle {
     /// Gracefully shuts down the sidecar supervisor and the sidecar process.
     pub async fn shutdown(mut self) {
-        if let Some(tx) = self.shutdown_tx.take() {
-            if tx.send(()).is_err() {
-                tracing::error!("Failed to send shutdown signal to MCP Sidecar supervisor");
-            }
+        if let Some(tx) = self.shutdown_tx.take()
+            && tx.send(()).is_err()
+        {
+            tracing::error!("Failed to send shutdown signal to MCP Sidecar supervisor");
         }
-        if let Some(task) = self.task.take() {
-            if let Err(e) = task.await {
-                tracing::error!(error = %e, "MCP Sidecar supervisor task failed during shutdown");
-            }
+        if let Some(task) = self.task.take()
+            && let Err(e) = task.await
+        {
+            tracing::error!(error = %e, "MCP Sidecar supervisor task failed during shutdown");
         }
     }
 }

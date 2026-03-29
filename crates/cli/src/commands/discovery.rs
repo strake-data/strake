@@ -1,4 +1,5 @@
-//! # Discovery Commands
+//! # Discovery Command
+#![allow(clippy::field_reassign_with_default)]
 //!
 //! This module provides commands for discovering, searching, and importing data sources.
 //!
@@ -44,6 +45,7 @@ use crate::output::{self, OutputFormat};
 use crate::secrets::ResolverContext;
 use anyhow::{Context, Result, anyhow};
 use owo_colors::OwoColorize;
+use strake_common::models::DomainName;
 
 /// Performs a fuzzy search against all configured upstream sources to locate tables.
 ///
@@ -70,7 +72,7 @@ pub async fn search(
     config: &CliConfig,
     _ctx: &ResolverContext,
 ) -> Result<i32> {
-    let domain = domain.unwrap_or("default");
+    let domain_str = domain.unwrap_or("default");
 
     if !format.is_machine_readable() {
         println!(
@@ -79,14 +81,15 @@ pub async fn search(
             file_path.yellow(),
             "] Searching for tables in".bold().cyan(),
             source.bold(),
-            domain.bold()
+            domain_str.bold()
         );
     }
 
+    let domain_name = DomainName::from(domain_str);
     let client = get_client(config)?;
     let api_url = &config.api_url;
 
-    let url = format!("{}/introspect/{}/{}", api_url, domain, source);
+    let url = format!("{}/introspect/{}/{}", api_url, domain_name, source);
     let response = client
         .get(&url)
         .send()
@@ -103,8 +106,8 @@ pub async fn search(
         output::print_success(
             format,
             SearchResult {
-                source: source.to_string(),
-                domain: domain.to_string(),
+                source: source.parse().unwrap(),
+                domain: domain.map(|d| d.parse().unwrap()),
                 tables,
             },
         )?;
@@ -129,7 +132,7 @@ pub async fn search(
 #[derive(Debug, Clone)]
 pub struct AddOptions {
     /// Source name containing the table.
-    pub source: String,
+    pub source: strake_common::models::SourceName,
     /// Schema-qualified table name (e.g. `public.users`). Required unless `--all` or `--stdin` is set.
     pub table: Option<String>,
     /// Path to the target configuration file (e.g. `sources.yaml`).
@@ -191,12 +194,13 @@ pub async fn add(options: AddOptions, config: &CliConfig, ctx: &ResolverContext)
             options.file.yellow(),
             "] Introspecting".bold().cyan(),
             table_full_name.bold(),
-            options.source.bold()
+            options.source.as_ref().bold()
         );
     }
 
     // Resolve introspector
-    let introspector = resolve_introspector(&options.source, &options.file, config, ctx).await?;
+    let introspector =
+        resolve_introspector(options.source.as_ref(), &options.file, config, ctx).await?;
     let mut introspected = introspector
         .introspect_table(&table_ref, options.full)
         .await
@@ -245,10 +249,7 @@ pub async fn add(options: AddOptions, config: &CliConfig, ctx: &ResolverContext)
     let mut current_config = if std::path::Path::new(&options.file).exists() {
         parse_yaml(&options.file, ctx).await?
     } else {
-        strake_common::models::SourcesConfig {
-            domain: None,
-            sources: vec![],
-        }
+        strake_common::models::SourcesConfig::default()
     };
 
     merge_introspected(&mut current_config, &options, introspected.clone())?;
@@ -303,59 +304,60 @@ async fn promote_to_contracts(
         let content = tokio::fs::read_to_string(&contracts_file).await?;
         serde_yaml::from_str(&content)?
     } else {
-        strake_common::models::ContractsConfig { contracts: vec![] }
+        let mut cfg = strake_common::models::ContractsConfig::default();
+        cfg.contracts = vec![];
+        cfg
     };
 
     let table_full_name = format!("{}.{}", introspected.schema, introspected.name);
 
-    let new_contract = strake_common::models::Contract {
-        table: table_full_name.clone(),
-        strict: false, // Default from spec D7
-        columns: introspected
-            .columns
-            .iter()
-            .map(|col| {
-                let mut constraints = Vec::new();
-                for c in &col.constraints {
-                    if let strake_common::schema::ColumnConstraint::ContractRule(rule) = c {
-                        match rule {
-                            strake_common::schema::ContractRuleKind::Gt { value } => {
-                                constraints.push(strake_common::models::Constraint {
-                                    constraint_type: "gt".to_string(),
-                                    value: value.clone(),
-                                });
-                            }
-                            strake_common::schema::ContractRuleKind::Gte { value } => {
-                                constraints.push(strake_common::models::Constraint {
-                                    constraint_type: "gte".to_string(),
-                                    value: value.clone(),
-                                });
-                            }
-                            strake_common::schema::ContractRuleKind::Lt { value } => {
-                                constraints.push(strake_common::models::Constraint {
-                                    constraint_type: "lt".to_string(),
-                                    value: value.clone(),
-                                });
-                            }
-                            strake_common::schema::ContractRuleKind::Lte { value } => {
-                                constraints.push(strake_common::models::Constraint {
-                                    constraint_type: "lte".to_string(),
-                                    value: value.clone(),
-                                });
-                            }
-                            _ => {}
+    let mut new_contract = strake_common::models::Contract::default();
+    new_contract.table = table_full_name.clone();
+    new_contract.strict = false; // Default from spec D7
+    new_contract.columns = introspected
+        .columns
+        .iter()
+        .map(|col| {
+            let mut constraints = Vec::new();
+            for c in &col.constraints {
+                if let strake_common::schema::ColumnConstraint::ContractRule(rule) = c {
+                    match rule {
+                        strake_common::schema::ContractRuleKind::Gt { value } => {
+                            let mut ct = strake_common::models::Constraint::default();
+                            ct.constraint_type = "gt".to_string();
+                            ct.value = value.clone();
+                            constraints.push(ct);
                         }
+                        strake_common::schema::ContractRuleKind::Gte { value } => {
+                            let mut ct = strake_common::models::Constraint::default();
+                            ct.constraint_type = "gte".to_string();
+                            ct.value = value.clone();
+                            constraints.push(ct);
+                        }
+                        strake_common::schema::ContractRuleKind::Lt { value } => {
+                            let mut ct = strake_common::models::Constraint::default();
+                            ct.constraint_type = "lt".to_string();
+                            ct.value = value.clone();
+                            constraints.push(ct);
+                        }
+                        strake_common::schema::ContractRuleKind::Lte { value } => {
+                            let mut ct = strake_common::models::Constraint::default();
+                            ct.constraint_type = "lte".to_string();
+                            ct.value = value.clone();
+                            constraints.push(ct);
+                        }
+                        _ => {}
                     }
                 }
-                strake_common::models::ContractColumn {
-                    name: col.name.clone(),
-                    data_type: col.type_str.clone(),
-                    nullable: Some(col.nullable),
-                    constraints,
-                }
-            })
-            .collect(),
-    };
+            }
+            let mut cc = strake_common::models::ContractColumn::default();
+            cc.name = col.name.clone();
+            cc.data_type = col.type_str.clone();
+            cc.nullable = Some(col.nullable);
+            cc.constraints = constraints;
+            cc
+        })
+        .collect();
 
     if let Some(existing) = contracts_config
         .contracts
@@ -430,7 +432,8 @@ pub(crate) async fn bulk_add(
     config: &CliConfig,
     ctx: &ResolverContext,
 ) -> Result<i32> {
-    let introspector = resolve_introspector(&options.source, &options.file, config, ctx).await?;
+    let introspector =
+        resolve_introspector(options.source.as_ref(), &options.file, config, ctx).await?;
 
     let mut table_refs = Vec::new();
     if options.all {
@@ -494,10 +497,7 @@ pub(crate) async fn bulk_add(
     let mut current_config = if std::path::Path::new(&options.file).exists() {
         parse_yaml(&options.file, ctx).await?
     } else {
-        strake_common::models::SourcesConfig {
-            domain: None,
-            sources: vec![],
-        }
+        strake_common::models::SourcesConfig::default()
     };
 
     println!("Importing {} tables...", table_refs.len());
@@ -611,21 +611,15 @@ fn merge_introspected(
     let source = if let Some(idx) = config.sources.iter().position(|s| s.name == options.source) {
         &mut config.sources[idx]
     } else {
-        let new_idx = config.sources.len();
-        config.sources.push(strake_common::models::SourceConfig {
-            name: options.source.clone(),
-            source_type: introspected.source.clone(),
-            url: None, // TBD: How to get URL?
-            username: None,
-            max_concurrent_queries: None,
-            password: None,
-            default_limit: None,
-            cache: None,
-            tables: vec![],
-            config: serde_json::Value::Object(Default::default()),
-            ..Default::default()
-        });
-        &mut config.sources[new_idx]
+        let mut sc = strake_common::models::SourceConfig::default();
+        sc.name = options.source.clone();
+        sc.source_type = strake_common::models::SourceType::Other(introspected.source.clone());
+        sc.config = serde_json::Value::Object(Default::default());
+        config.sources.push(sc);
+        config
+            .sources
+            .last_mut()
+            .expect("Last added source must exist")
     };
 
     if options.overwrite {
@@ -650,7 +644,7 @@ fn merge_introspected(
         if options.merge {
             for intro_col in introspected.columns {
                 if let Some(existing_col) = existing_table
-                    .columns
+                    .column_definitions
                     .iter_mut()
                     .find(|c| c.name == intro_col.name)
                 {
@@ -669,48 +663,38 @@ fn merge_introspected(
                             intro_col.ai_description.map(|d| format!("{} [AI_GEN]", d));
                     }
                 } else {
-                    existing_table
-                        .columns
-                        .push(strake_common::models::ColumnConfig {
-                            name: intro_col.name,
-                            data_type: intro_col.type_str,
-                            length: None,
-                            primary_key: intro_col.is_primary_key,
-                            unique: false,
-                            not_null: !intro_col.nullable,
-                            description: intro_col
-                                .ai_description
-                                .map(|d| format!("{} [AI_GEN]", d)),
-                            ..Default::default()
-                        });
+                    let mut col = strake_common::models::ColumnConfig::default();
+                    col.name = intro_col.name;
+                    col.data_type = intro_col.type_str;
+                    col.primary_key = intro_col.is_primary_key;
+                    col.not_null = !intro_col.nullable;
+                    col.description = intro_col.ai_description.map(|d| format!("{} [AI_GEN]", d));
+                    existing_table.column_definitions.push(col);
                 }
             }
         }
     } else {
-        source.tables.push(strake_common::models::TableConfig {
-            name: introspected.name,
-            schema: introspected.schema,
-            partition_column: None,
-            description: introspected
-                .ai_description
-                .map(|d| format!("{} [AI_GEN]", d))
-                .or_else(|| introspected.db_comment.clone()),
-            columns: introspected
-                .columns
-                .into_iter()
-                .map(|c| strake_common::models::ColumnConfig {
-                    name: c.name,
-                    data_type: c.type_str,
-                    length: None,
-                    primary_key: c.is_primary_key,
-                    unique: false,
-                    not_null: !c.nullable,
-                    description: c.ai_description.map(|d| format!("{} [AI_GEN]", d)),
-                    ..Default::default()
-                })
-                .collect(),
-            ..Default::default()
-        });
+        let mut t_cfg = strake_common::models::TableConfig::default();
+        t_cfg.name = introspected.name;
+        t_cfg.schema = introspected.schema;
+        t_cfg.description = introspected
+            .ai_description
+            .map(|d| format!("{} [AI_GEN]", d))
+            .or_else(|| introspected.db_comment.clone());
+        t_cfg.column_definitions = introspected
+            .columns
+            .into_iter()
+            .map(|c| {
+                let mut col = strake_common::models::ColumnConfig::default();
+                col.name = c.name;
+                col.data_type = c.type_str;
+                col.primary_key = c.is_primary_key;
+                col.not_null = !c.nullable;
+                col.description = c.ai_description.map(|d| format!("{} [AI_GEN]", d));
+                col
+            })
+            .collect();
+        source.tables.push(t_cfg);
     }
 
     Ok(())
@@ -730,7 +714,7 @@ async fn resolve_introspector(
 
     if let Some(source) = current_config
         .as_ref()
-        .and_then(|c| c.sources.iter().find(|s| s.name == source_name))
+        .and_then(|c| c.sources.iter().find(|s| s.name.as_ref() == source_name))
     {
         match source.source_type.as_str() {
             "postgres" => {
@@ -861,7 +845,7 @@ impl strake_connectors::introspect::SchemaIntrospector for ApiIntrospector {
         let source_config = response_data
             .sources
             .into_iter()
-            .find(|s| s.name == self.source)
+            .find(|s| s.name.as_ref() == self.source)
             .ok_or_else(|| {
                 strake_connectors::introspect::IntrospectError::NotFound(format!(
                     "Source '{}' not found in API response",
@@ -881,11 +865,11 @@ impl strake_connectors::introspect::SchemaIntrospector for ApiIntrospector {
             })?;
 
         Ok(strake_common::schema::IntrospectedTable {
-            source: source_config.source_type,
+            source: source_config.source_type.to_string(),
             schema: table_config.schema,
             name: table_config.name,
             columns: table_config
-                .columns
+                .column_definitions
                 .into_iter()
                 .map(|c| strake_common::schema::IntrospectedColumn {
                     name: c.name,

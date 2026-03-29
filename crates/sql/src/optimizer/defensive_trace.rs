@@ -1,8 +1,8 @@
-use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::Result;
-use datafusion::logical_expr::{lit, Limit, LogicalPlan};
-use datafusion::optimizer::optimizer::OptimizerRule;
+use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::logical_expr::{Limit, LogicalPlan, lit};
 use datafusion::optimizer::OptimizerConfig;
+use datafusion::optimizer::optimizer::OptimizerRule;
 use std::sync::Arc;
 use tracing::warn;
 
@@ -86,8 +86,8 @@ fn has_aggregate(plan: &LogicalPlan) -> bool {
 mod tests {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::datasource::empty::EmptyTable;
     use datafusion::datasource::DefaultTableSource;
+    use datafusion::datasource::empty::EmptyTable;
     use datafusion::functions_aggregate::expr_fn::count;
     use datafusion::logical_expr::{col, logical_plan::builder::LogicalPlanBuilder};
     use datafusion::optimizer::optimizer::OptimizerContext;

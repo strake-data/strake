@@ -4,8 +4,8 @@ use secrecy::SecretString;
 use serde_json::json;
 use std::sync::Arc;
 use strake_common::config::{RetrySettings, TableConfig};
-use strake_connectors::sources::iceberg::provider::register_iceberg_rest;
 use strake_connectors::sources::iceberg::IcebergRestConfig;
+use strake_connectors::sources::iceberg::provider::register_iceberg_rest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -85,28 +85,25 @@ async fn test_iceberg_concurrent_table_access() -> Result<()> {
         max_concurrent_queries: None,
     };
 
-    let ctx = SessionContext::new();
+    let ctx = Arc::new(SessionContext::new());
     ctx.register_catalog(
         "strake",
         Arc::new(datafusion::catalog::MemoryCatalogProvider::new()),
     );
 
-    let tables = vec![TableConfig {
-        name: "test_table".to_string(),
-        schema: "".to_string(),
-        partition_column: None,
-        description: None,
-        columns: vec![],
-        ..Default::default()
-    }];
+    let mut t = TableConfig::default();
+    t.name = "test_table".to_string();
+    t.schema = "".to_string();
+    let tables = Arc::new(vec![t]);
+    let cfg = Arc::new(cfg);
 
     // Register the table
     register_iceberg_rest(
-        &ctx,
-        "strake",
-        "concurrent_source",
-        &cfg,
-        &tables,
+        Arc::clone(&ctx),
+        "strake".to_string(),
+        "concurrent_source".to_string(),
+        Arc::clone(&cfg),
+        Arc::clone(&tables),
         RetrySettings::default(),
         Arc::new(strake_common::predicate_cache::PredicateCache::new()),
         true,
@@ -117,7 +114,7 @@ async fn test_iceberg_concurrent_table_access() -> Result<()> {
     let mut handles: Vec<tokio::task::JoinHandle<Result<i32>>> = vec![];
 
     for i in 0..10 {
-        let ctx_clone = ctx.clone();
+        let ctx_clone = Arc::clone(&ctx);
         let handle = tokio::spawn(async move {
             // Try to access the table's schema concurrently
             let catalog = ctx_clone.catalog("strake");
@@ -260,27 +257,24 @@ async fn test_iceberg_lazy_loading_race_condition() -> Result<()> {
         max_concurrent_queries: None,
     };
 
-    let ctx = SessionContext::new();
+    let ctx = Arc::new(SessionContext::new());
     ctx.register_catalog(
         "strake",
         Arc::new(datafusion::catalog::MemoryCatalogProvider::new()),
     );
 
-    let tables = vec![TableConfig {
-        name: "race_test_table".to_string(),
-        schema: "".to_string(),
-        partition_column: None,
-        description: None,
-        columns: vec![],
-        ..Default::default()
-    }];
+    let mut t = TableConfig::default();
+    t.name = "race_test_table".to_string();
+    t.schema = "".to_string();
+    let tables = Arc::new(vec![t]);
+    let cfg = Arc::new(cfg);
 
     register_iceberg_rest(
-        &ctx,
-        "strake",
-        "race_source",
-        &cfg,
-        &tables,
+        Arc::clone(&ctx),
+        "strake".to_string(),
+        "race_source".to_string(),
+        Arc::clone(&cfg),
+        Arc::clone(&tables),
         RetrySettings::default(),
         Arc::new(strake_common::predicate_cache::PredicateCache::new()),
         true,
@@ -292,7 +286,7 @@ async fn test_iceberg_lazy_loading_race_condition() -> Result<()> {
     let mut handles: Vec<tokio::task::JoinHandle<Result<i32>>> = vec![];
 
     for i in 0..20 {
-        let ctx_clone = ctx.clone();
+        let ctx_clone = Arc::clone(&ctx);
         let handle = tokio::spawn(async move {
             let catalog = ctx_clone.catalog("strake");
             if catalog.is_none() {

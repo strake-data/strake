@@ -26,21 +26,27 @@
 //! // See `FederationEngine::new` for initialization
 //! ```
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use arrow::array::RecordBatch;
 use datafusion::catalog::CatalogProvider;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::optimizer::OptimizerRule;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 
 use datafusion_federation::FederationOptimizerRule;
 use tracing::{debug, info};
+
+use datafusion::execution::SendableRecordBatchStream;
+use datafusion::physical_plan::RecordBatchStream;
+use futures::{Stream, StreamExt};
+use std::pin::Pin;
+use std::task::{Context as TaskContext, Poll};
 
 use crate::query::cache::CacheConfig as InternalCacheConfig;
 use crate::query::cache::QueryCache;
@@ -50,6 +56,7 @@ use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use strake_common::config::{Config, ResourceConfig, SourceConfig};
+use strake_common::models::SourceName;
 use strake_connectors::sources::{self, SourceProvider, SourceRegistry};
 use strake_sql::optimizer::defensive_trace::DefensiveLimitRule;
 
@@ -63,7 +70,7 @@ pub struct FederationEngine {
     connection_budget: Arc<Semaphore>,
     cache: QueryCache,
     /// Per-source configurations for cache overrides
-    source_configs: HashMap<String, SourceConfig>,
+    source_configs: HashMap<SourceName, SourceConfig>,
     /// Global cache configuration (default)
     global_cache_config: strake_common::config::QueryCacheConfig,
     /// Query execution limits
@@ -148,7 +155,7 @@ impl FederationEngine {
         })
     }
 
-    pub fn get_source_config(&self, name: &str) -> Option<&SourceConfig> {
+    pub fn get_source_config(&self, name: &SourceName) -> Option<&SourceConfig> {
         self.source_configs.get(name)
     }
 
@@ -224,24 +231,26 @@ impl FederationEngine {
         let state = context.state();
 
         // Build optimizer pipeline: inherit defaults, append custom rules in order
-        let mut optimizer_rules = state.optimizer().rules.clone();
+        let mut rules: Vec<Arc<dyn OptimizerRule + Send + Sync>> =
+            datafusion::optimizer::optimizer::Optimizer::new().rules;
         for rule in extra_optimizer_rules {
-            optimizer_rules.push(rule);
+            rules.push(rule);
         }
 
-        optimizer_rules.push(Arc::new(FederationOptimizerRule::new()));
+        rules.push(Arc::new(FederationOptimizerRule::new()));
         // Ensure nested federated nodes are flattened to prevent unparser failures
-        optimizer_rules.push(Arc::new(
+        rules.push(Arc::new(
             crate::optimizer::flatten_federated::FlattenFederatedNodesRule::new(),
         ));
 
         if let Some(limit) = limits.default_limit {
-            optimizer_rules.push(Arc::new(DefensiveLimitRule::new(limit)));
+            rules.push(Arc::new(DefensiveLimitRule::new(limit)));
         }
 
         debug!("Optimizer rules registered:");
-        for (i, rule) in optimizer_rules.iter().enumerate() {
-            debug!("  {}: {}", i, rule.name());
+        for (i, rule) in rules.iter().enumerate() {
+            let name = OptimizerRule::name(rule.as_ref());
+            debug!("  {}: {}", i, name);
         }
 
         // Create physical planner with extension planners registered
@@ -257,7 +266,7 @@ impl FederationEngine {
         // IMPORTANT: Build state in a single chain to preserve QueryPlanner registration.
         // Calling SessionStateBuilder::new_from_existing twice would lose the query planner.
         let state = SessionStateBuilder::new_from_existing(state)
-            .with_optimizer_rules(optimizer_rules)
+            .with_optimizer_rules(rules)
             .with_query_planner(Arc::new(crate::query::planner::QueryPlanner::new()))
             .with_physical_optimizer_rules(physical_optimizers)
             .build();
@@ -305,15 +314,26 @@ impl FederationEngine {
         // If ANY source explicitly disables caching, we respect that (safety/freshness priority)
         let _ = plan.apply(|node| {
             if let LogicalPlan::TableScan(scan) = node {
-                let table_name = scan.table_name.table();
-                // Check if known source has cache config
-                // NOTE: This uses simple name matching. Robust implementation would resolve table -> source via registry.
-                if let Some(source_config) = self.source_configs.get(table_name) {
-                    if let Some(cache_override) = &source_config.cache {
-                        if !cache_override.enabled {
-                            explicit_disable = true;
-                            return Ok(TreeNodeRecursion::Stop);
-                        }
+                // In Strake, the source name could be in the 'schema' part OR the 'table' part
+                // typically depending on the connector type (e.g. database vs file).
+                let names_to_check = match &scan.table_name {
+                    datafusion::sql::TableReference::Full { schema, table, .. } => {
+                        vec![schema.as_ref(), table.as_ref()]
+                    }
+                    datafusion::sql::TableReference::Partial { schema, table } => {
+                        vec![schema.as_ref(), table.as_ref()]
+                    }
+                    datafusion::sql::TableReference::Bare { table } => vec![table.as_ref()],
+                };
+
+                for name in names_to_check {
+                    let sn = name.parse::<SourceName>().unwrap();
+                    if let Some(source_config) = self.source_configs.get(&sn)
+                        && let Some(cache_override) = &source_config.cache
+                        && !cache_override.enabled
+                    {
+                        explicit_disable = true;
+                        return Ok(TreeNodeRecursion::Stop);
                     }
                 }
             }
@@ -332,21 +352,63 @@ impl FederationEngine {
         Vec<arrow::record_batch::RecordBatch>,
         Vec<String>,
     )> {
-        self.active_queries.fetch_add(1, Ordering::Relaxed);
-        let result = self.execute_with_cache(sql, user).await;
-        self.active_queries.fetch_sub(1, Ordering::Relaxed);
-        result
+        let (schema, mut stream, collector) = self.execute_query_stream(sql, user).await?;
+
+        // Safety limit: only collect up to 10k rows for the legacy/REST API
+        // This is a temporary measure until the REST API is also fully streaming
+        let mut batches = Vec::new();
+        let mut row_count = 0;
+        let limit = self.query_limits.max_output_rows.unwrap_or(10000);
+
+        while let Some(batch_res) = stream.next().await {
+            let batch = batch_res?;
+            row_count += batch.num_rows();
+            if row_count > limit {
+                anyhow::bail!(
+                    "Query result exceeded safety limit for materialized execution ({} rows). Please use the streaming API.",
+                    limit
+                );
+            }
+            batches.push(batch);
+        }
+
+        Ok((schema, batches, collector.take_all()))
     }
 
-    /// Extracted cache middleware logic to satisfy Single Responsibility Principle.
-    async fn execute_with_cache(
+    pub async fn execute_query_stream(
         &self,
         sql: &str,
         user: Option<strake_common::auth::AuthenticatedUser>,
     ) -> Result<(
         arrow::datatypes::SchemaRef,
-        Vec<arrow::record_batch::RecordBatch>,
-        Vec<String>,
+        SendableRecordBatchStream,
+        strake_common::warnings::WarningCollector,
+    )> {
+        self.active_queries.fetch_add(1, Ordering::Relaxed);
+        match self.execute_with_cache_stream(sql, user).await {
+            Ok((schema, stream, collector)) => {
+                let wrapped_stream = Box::pin(ActiveLimitStream {
+                    input: stream,
+                    counter: Arc::clone(&self.active_queries),
+                });
+                Ok((schema, wrapped_stream, collector))
+            }
+            Err(e) => {
+                self.active_queries.fetch_sub(1, Ordering::Relaxed);
+                Err(e)
+            }
+        }
+    }
+
+    /// Internal execution engine with streaming cache support
+    async fn execute_with_cache_stream(
+        &self,
+        sql: &str,
+        user: Option<strake_common::auth::AuthenticatedUser>,
+    ) -> Result<(
+        arrow::datatypes::SchemaRef,
+        SendableRecordBatchStream,
+        strake_common::warnings::WarningCollector,
     )> {
         let start = Instant::now();
 
@@ -387,70 +449,49 @@ impl FederationEngine {
         let should_cache = self.should_cache_query(&plan);
         let cache_key = crate::query::cache::CacheKey::from_plan(&plan, user.as_ref());
 
-        let mut cached_batches_opt = None;
-        if should_cache {
-            cached_batches_opt = self.cache.get(&cache_key).await;
-        }
-
-        if let Some(cached_batches) = cached_batches_opt {
+        if should_cache && let Some(stream) = self.cache.get_stream(&cache_key).await {
             let duration = start.elapsed();
-            let user_id = user.as_ref().map(|u| u.id.as_str()).unwrap_or("anonymous");
+            let user_id = user.as_ref().map(|u| u.id.as_ref()).unwrap_or("anonymous");
+            let schema = stream.schema();
 
             info!(
                 target: "queries",
                 user_id = %user_id,
                 query = sql,
                 duration_ms = duration.as_millis() as u64,
-                rows_returned = cached_batches.iter().map(|b: &RecordBatch| b.num_rows()).sum::<usize>(),
                 cache_hit = true,
                 success = true
             );
 
-            let schema = cached_batches[0].schema();
-            let warnings = vec!["x-strake-cache: hit".to_string()];
-            return Ok((schema, cached_batches, warnings));
+            collector.add("x-strake-cache: hit".to_string());
+            return Ok((schema, stream, collector));
         }
         // --- Cache Lookup END ---
 
         let timeout_seconds = self.query_limits.query_timeout_seconds.unwrap_or(300);
         let timeout_duration = std::time::Duration::from_secs(timeout_seconds);
 
-        let my_warnings = Arc::new(std::sync::Mutex::new(Vec::new()));
         let result = strake_common::warnings::QUERY_WARNINGS
-            .scope(my_warnings.clone(), async {
+            .scope(collector.inner(), async {
                 tokio::time::timeout(timeout_duration, async {
                     let df = context
                         .execute_logical_plan(plan.clone())
                         .await
                         .context("Failed to execute logical plan")?;
 
-                    let schema: arrow::datatypes::SchemaRef =
-                        Arc::new(df.schema().as_arrow().clone());
+                    let df_stream = df.execute_stream().await?;
+                    let schema = df_stream.schema();
 
-                    let batches = df.collect().await?;
-
-                    let mut local_warnings = collector.take_all();
-                    if let Ok(w) = strake_common::warnings::QUERY_WARNINGS.try_with(|x| x.clone()) {
-                        if let Ok(mut lock) = w.lock() {
-                            local_warnings.append(&mut *lock);
-                        }
-                    }
-
-                    Ok::<
-                        (
-                            arrow::datatypes::SchemaRef,
-                            Vec<arrow::record_batch::RecordBatch>,
-                            Vec<String>,
-                        ),
-                        anyhow::Error,
-                    >((schema, batches, local_warnings))
+                    Ok::<(arrow::datatypes::SchemaRef, SendableRecordBatchStream), anyhow::Error>((
+                        schema, df_stream,
+                    ))
                 })
                 .await
             })
             .await;
 
-        let (schema, batches, mut warnings) = match result {
-            Ok(Ok((s, b, w))) => (s, b, w),
+        let (schema, df_stream) = match result {
+            Ok(Ok((s, b))) => (s, b),
             Ok(Err(e)) => {
                 tracing::error!("Detailed execution error: {:#}", e);
                 return Err(anyhow::anyhow!(e));
@@ -465,28 +506,51 @@ impl FederationEngine {
             }
         };
 
-        // --- Cache Store START ---
-        if should_cache {
-            let _ = self.cache.put(cache_key, &batches).await;
-            warnings.push("x-strake-cache: miss".to_string());
-        }
-        // --- Cache Store END ---
+        // --- Cache Store (Recording) START ---
+        let final_stream: SendableRecordBatchStream = if should_cache {
+            // We use a channel of Result to allow signaling errors (like buffer full)
+            // to the background cache writer.
+            let (tx, rx) = tokio::sync::mpsc::channel(100);
+            let cache = self.cache.clone();
+            let key = cache_key.clone();
+            let schema_clone = schema.clone();
 
-        let duration = start.elapsed();
-        let user_id = user.as_ref().map(|u| u.id.as_str()).unwrap_or("anonymous");
-        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+            // Background task to consume the recorded batches and write to Parquet
+            tokio::spawn(async move {
+                use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+                // The stream now yields Result<RecordBatch, DataFusionError>
+                let recording_stream = RecordBatchStreamAdapter::new(
+                    schema_clone,
+                    futures::stream::unfold(rx, |mut rx| async move {
+                        rx.recv().await.map(|res| (res, rx))
+                    }),
+                );
+                if let Err(e) = cache.put_stream(key, Box::pin(recording_stream)).await {
+                    tracing::warn!("Failed to background cache query result: {}", e);
+                }
+            });
 
+            collector.add("x-strake-cache: miss".to_string());
+            Box::pin(TeeStream {
+                input: df_stream,
+                tx: Some(tx),
+            })
+        } else {
+            df_stream
+        };
+        // --- Cache Store (Recording) END ---
+
+        let user_id = user.as_ref().map(|u| u.id.as_ref()).unwrap_or("anonymous");
         info!(
             target: "queries",
             user_id = %user_id,
             query = sql,
-            duration_ms = duration.as_millis() as u64,
-            rows_returned = rows,
+            duration_ms = start.elapsed().as_millis() as u64,
             cache_hit = false,
             success = true
         );
 
-        Ok((schema, batches, warnings))
+        Ok((schema, final_stream, collector))
     }
 
     pub async fn execute_query_with_trace(&self, sql: &str) -> Result<String> {
@@ -528,6 +592,88 @@ impl FederationEngine {
     }
 }
 
+/// A stream that sends batches to a channel while they are being produced.
+struct TeeStream {
+    input: SendableRecordBatchStream,
+    tx: Option<
+        tokio::sync::mpsc::Sender<
+            Result<arrow::array::RecordBatch, datafusion::error::DataFusionError>,
+        >,
+    >,
+}
+
+impl Stream for TeeStream {
+    type Item = Result<arrow::array::RecordBatch, datafusion::error::DataFusionError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+        match self.input.poll_next_unpin(cx) {
+            Poll::Ready(Some(Ok(batch))) => {
+                if let Some(tx) = self.tx.as_ref() {
+                    // We use try_send here to avoid blocking the main execution stream.
+                    // If the cache writer is too slow, we signal an error to the background task
+                    // so it can abort the cache recording and avoid storing partial data.
+                    if tx.try_send(Ok(batch.clone())).is_err() {
+                        tracing::debug!("Cache recording buffer full, aborting recording");
+                        // Try to send an error to explicitly abort the cache writer
+                        let _ = tx.try_send(Err(datafusion::error::DataFusionError::External(
+                            anyhow::anyhow!("Cache recording buffer full").into(),
+                        )));
+                        self.tx = None;
+                    }
+                }
+                Poll::Ready(Some(Ok(batch)))
+            }
+            Poll::Ready(Some(Err(e))) => {
+                if let Some(tx) = self.tx.as_ref() {
+                    let _ = tx.try_send(Err(datafusion::error::DataFusionError::Execution(
+                        e.to_string(),
+                    )));
+                    self.tx = None;
+                }
+                Poll::Ready(Some(Err(e)))
+            }
+            Poll::Ready(None) => {
+                // End of stream, drop the transmitter to close the background task's receiver
+                self.tx = None;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl RecordBatchStream for TeeStream {
+    fn schema(&self) -> arrow::datatypes::SchemaRef {
+        self.input.schema()
+    }
+}
+
+/// A stream that decrements the active query counter when dropped.
+struct ActiveLimitStream {
+    input: SendableRecordBatchStream,
+    counter: Arc<AtomicUsize>,
+}
+
+impl Stream for ActiveLimitStream {
+    type Item = Result<arrow::array::RecordBatch, datafusion::error::DataFusionError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+        self.input.poll_next_unpin(cx)
+    }
+}
+
+impl RecordBatchStream for ActiveLimitStream {
+    fn schema(&self) -> arrow::datatypes::SchemaRef {
+        self.input.schema()
+    }
+}
+
+impl Drop for ActiveLimitStream {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,10 +682,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_engine_init() -> Result<()> {
-        let config = Config {
-            sources: vec![],
-            cache: Default::default(),
-        };
+        let mut config = Config::default();
+        config.sources = vec![];
         let limits = QueryLimits::default();
         let engine = FederationEngine::new(FederationEngineOptions {
             config,
@@ -561,10 +705,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_engine_execute_simple() -> Result<()> {
-        let config = Config {
-            sources: vec![],
-            cache: Default::default(),
-        };
+        let mut config = Config::default();
+        config.sources = vec![];
         let engine = FederationEngine::new(FederationEngineOptions {
             config,
             catalog_name: "strake".to_string(),
@@ -591,10 +733,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_engine_user_propagation() -> Result<()> {
-        let config = Config {
-            sources: vec![],
-            cache: Default::default(),
-        };
+        let mut config = Config::default();
+        config.sources = vec![];
         let engine = FederationEngine::new(FederationEngineOptions {
             config,
             catalog_name: "strake".to_string(),
@@ -608,11 +748,9 @@ mod tests {
         })
         .await?;
 
-        let user = AuthenticatedUser {
-            id: "test_user".to_string(),
-            permissions: vec!["admin".to_string()].into(),
-            rules: std::collections::HashMap::new(),
-        };
+        let mut user = AuthenticatedUser::default();
+        user.id = "test_user".into();
+        user.permissions = vec!["admin".to_string()].into();
 
         // This just verifies it doesn't crash when user is present
         let sql = "SELECT 1";
@@ -623,10 +761,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_engine_trace() -> Result<()> {
-        let config = Config {
-            sources: vec![],
-            cache: Default::default(),
-        };
+        let mut config = Config::default();
+        config.sources = vec![];
+        config.cache = Default::default();
         let engine = FederationEngine::new(FederationEngineOptions {
             config,
             catalog_name: "strake".to_string(),

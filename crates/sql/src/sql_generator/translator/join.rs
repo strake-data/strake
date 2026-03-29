@@ -9,16 +9,16 @@ use sqlparser::ast::{
 };
 
 pub(crate) fn handle_join(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     join: &datafusion::logical_expr::Join,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
-    let left_query = gen.plan_to_query(&join.left)?;
-    let right_query = gen.plan_to_query(&join.right)?;
+    let left_query = generator.plan_to_query(&join.left)?;
+    let right_query = generator.plan_to_query(&join.right)?;
 
-    let left_relation = gen.extract_relation(left_query)?;
-    let right_relation = gen.extract_relation(right_query)?;
+    let left_relation = generator.extract_relation(left_query)?;
+    let right_relation = generator.extract_relation(right_query)?;
 
-    let mut translator = ExprTranslator::new(&mut gen.context, &gen.dialect);
+    let mut translator = ExprTranslator::new(&mut generator.context, &generator.dialect);
     let mut on_expr: Option<SqlExpr> = None;
 
     for (l, r) in &join.on {
@@ -67,7 +67,7 @@ pub(crate) fn handle_join(
             return Err(SqlGenError::UnsupportedPlan {
                 message: format!("Join type: {:?}", join.join_type),
                 node_type: "Join".to_string(),
-            })
+            });
         }
     };
 
@@ -77,7 +77,7 @@ pub(crate) fn handle_join(
         join_operator: join_op,
     };
 
-    let right_scope = gen
+    let right_scope = generator
         .context
         .current_scope()
         .ok_or_else(|| SqlGenError::UnsupportedPlan {
@@ -85,8 +85,8 @@ pub(crate) fn handle_join(
             node_type: "Join".to_string(),
         })?
         .clone();
-    gen.context.pop_scope();
-    let left_scope = gen
+    generator.context.pop_scope();
+    let left_scope = generator
         .context
         .current_scope()
         .ok_or_else(|| SqlGenError::UnsupportedPlan {
@@ -94,9 +94,9 @@ pub(crate) fn handle_join(
             node_type: "Join".to_string(),
         })?
         .clone();
-    gen.context.pop_scope();
+    generator.context.pop_scope();
 
-    let join_alias = gen.context.next_alias();
+    let join_alias = generator.context.next_alias();
 
     let merged_columns: std::sync::Arc<[crate::sql_generator::context::ColumnEntry]> = left_scope
         .columns
@@ -113,11 +113,12 @@ pub(crate) fn handle_join(
     let mut merged_qualifiers = left_scope.qualifiers.clone();
     merged_qualifiers.extend(right_scope.qualifiers.clone());
 
-    gen.context
+    generator
+        .context
         .enter_scope(join_alias, merged_columns.clone(), merged_qualifiers)
         .commit();
 
-    let mut select = gen.create_skeleton_select();
+    let mut select = generator.create_skeleton_select();
     select.from = vec![TableWithJoins {
         relation: left_relation,
         joins: vec![join_node],
@@ -132,13 +133,13 @@ pub(crate) fn handle_join(
         })
         .collect::<Result<Vec<_>, SqlGenError>>()?;
 
-    let mut query = gen.create_skeleton_query();
+    let mut query = generator.create_skeleton_query();
     query.body = Box::new(SetExpr::Select(Box::new(select)));
     Ok(query)
 }
 
 pub(crate) fn handle_nary_join(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     nary: &crate::optimizer::join_flattener::NaryJoinNode,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     // Process all joins inside a rollback-guarded block.
@@ -146,14 +147,14 @@ pub(crate) fn handle_nary_join(
     // (removing any partially added scopes) before returning the error.
     // On success, we also rollback (to pop all individual scopes) and then enter a single merged scope.
     let (base_relation, sql_joins, merged_columns, merged_qualifiers) = {
-        let checkpoint = gen.context.checkpoint();
+        let checkpoint = generator.context.checkpoint();
 
         // Execute join logic...
         let result = (|| -> Result<_, SqlGenError> {
-            let base_query = gen.plan_to_query(&nary.base)?;
-            let base_relation = gen.extract_relation(base_query)?;
+            let base_query = generator.plan_to_query(&nary.base)?;
+            let base_relation = generator.extract_relation(base_query)?;
 
-            let base_scope = gen
+            let base_scope = generator
                 .context
                 .current_scope()
                 .ok_or_else(|| SqlGenError::UnsupportedPlan {
@@ -167,10 +168,10 @@ pub(crate) fn handle_nary_join(
             let mut merged_qualifiers = base_scope.qualifiers.to_vec();
 
             for branch in &nary.branches {
-                let branch_query = gen.plan_to_query(&branch.input)?;
-                let branch_relation = gen.extract_relation(branch_query)?;
+                let branch_query = generator.plan_to_query(&branch.input)?;
+                let branch_relation = generator.extract_relation(branch_query)?;
 
-                let branch_scope = gen
+                let branch_scope = generator
                     .context
                     .current_scope()
                     .ok_or_else(|| SqlGenError::UnsupportedPlan {
@@ -179,7 +180,8 @@ pub(crate) fn handle_nary_join(
                     })?
                     .clone();
 
-                let mut translator = ExprTranslator::new(&mut gen.context, &gen.dialect);
+                let mut translator =
+                    ExprTranslator::new(&mut generator.context, &generator.dialect);
                 let mut on_expr: Option<SqlExpr> = None;
 
                 for (l, r) in &branch.on {
@@ -228,7 +230,7 @@ pub(crate) fn handle_nary_join(
                         return Err(SqlGenError::UnsupportedPlan {
                             message: format!("Join type: {:?}", branch.join_type),
                             node_type: "NaryJoin".to_string(),
-                        })
+                        });
                     }
                 };
 
@@ -246,11 +248,11 @@ pub(crate) fn handle_nary_join(
 
         // Always rollback - if success, we want to pop the component scopes and merge them.
         // If error, we want to cleanup.
-        gen.context.rollback(checkpoint);
+        generator.context.rollback(checkpoint);
         result?
     };
 
-    let join_alias = gen.context.next_alias();
+    let join_alias = generator.context.next_alias();
     let final_columns: std::sync::Arc<[crate::sql_generator::context::ColumnEntry]> =
         merged_columns
             .into_iter()
@@ -261,11 +263,12 @@ pub(crate) fn handle_nary_join(
             .collect::<Vec<_>>()
             .into();
 
-    gen.context
+    generator
+        .context
         .enter_scope(join_alias, final_columns.clone(), merged_qualifiers)
         .commit();
 
-    let mut select = gen.create_skeleton_select();
+    let mut select = generator.create_skeleton_select();
     select.from = vec![TableWithJoins {
         relation: base_relation,
         joins: sql_joins,
@@ -280,7 +283,7 @@ pub(crate) fn handle_nary_join(
         })
         .collect::<Result<Vec<_>, SqlGenError>>()?;
 
-    let mut query = gen.create_skeleton_query();
+    let mut query = generator.create_skeleton_query();
     query.body = Box::new(SetExpr::Select(Box::new(select)));
     Ok(query)
 }

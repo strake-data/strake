@@ -205,7 +205,7 @@ pub async fn fetch_oauth_token(
 
 /// Generate a self-signed JWT assertion.
 pub fn generate_jwt_assertion(config: &JwtAssertionConfig) -> Result<String> {
-    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 
     let algorithm = match config.algorithm.as_str() {
         "RS256" => Algorithm::RS256,

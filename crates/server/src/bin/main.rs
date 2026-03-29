@@ -23,6 +23,9 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Initialize tracing subscriber to ensure early errors are logged
+    tracing_subscriber::fmt::init();
+
     dotenv::dotenv().ok();
     let args = <Args as clap::Parser>::parse();
 

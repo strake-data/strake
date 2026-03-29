@@ -5,12 +5,12 @@ use crate::sql_generator::expr::ExprTranslator;
 use sqlparser::ast::{GroupByExpr, SelectItem, SetExpr};
 
 pub(crate) fn handle_aggregate(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     agg: &datafusion::logical_expr::Aggregate,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
-    let mut query = gen.plan_to_query(&agg.input)?;
+    let mut query = generator.plan_to_query(&agg.input)?;
 
-    let mut translator = ExprTranslator::new(&mut gen.context, &gen.dialect);
+    let mut translator = ExprTranslator::new(&mut generator.context, &generator.dialect);
 
     // Group BY expressions
     let group_by = GroupByExpr::Expressions(
@@ -40,13 +40,13 @@ pub(crate) fn handle_aggregate(
         });
     }
 
-    let input_qualifiers = gen
+    let input_qualifiers = generator
         .context
         .current_scope()
         .map(|s| s.qualifiers.clone())
         .unwrap_or_default();
-    gen.context.pop_scope();
-    let alias = gen.context.next_alias();
+    generator.context.pop_scope();
+    let alias = generator.context.next_alias();
     let columns = agg
         .schema
         .fields()
@@ -56,11 +56,12 @@ pub(crate) fn handle_aggregate(
             data_type: f.data_type().clone(),
             source_alias: std::sync::Arc::from(alias.as_str()),
             provenance: vec![alias.clone()],
-            unique_id: gen.context.next_column_id(),
+            unique_id: generator.context.next_column_id(),
         })
         .collect::<Vec<_>>()
         .into();
-    gen.context
+    generator
+        .context
         .enter_scope(alias, columns, input_qualifiers)
         .commit();
 
@@ -68,12 +69,12 @@ pub(crate) fn handle_aggregate(
 }
 
 pub(crate) fn handle_window(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     window: &datafusion::logical_expr::Window,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
-    let mut query = gen.plan_to_query(&window.input)?;
+    let mut query = generator.plan_to_query(&window.input)?;
 
-    let mut translator = ExprTranslator::new(&mut gen.context, &gen.dialect);
+    let mut translator = ExprTranslator::new(&mut generator.context, &generator.dialect);
     let mut select_items = Vec::new();
 
     // Keep input columns
@@ -98,14 +99,14 @@ pub(crate) fn handle_window(
         });
     }
 
-    let input_qualifiers = gen
+    let input_qualifiers = generator
         .context
         .current_scope()
         .map(|s| s.qualifiers.clone())
         .unwrap_or_default();
-    gen.context.pop_scope();
-    let alias = gen.context.next_alias();
-    let input_scope = gen.context.current_scope().cloned();
+    generator.context.pop_scope();
+    let alias = generator.context.next_alias();
+    let input_scope = generator.context.current_scope().cloned();
     let columns = window
         .schema
         .fields()
@@ -114,12 +115,11 @@ pub(crate) fn handle_window(
         .map(|(i, f)| {
             let mut provenance = vec![alias.clone()];
             // First N columns are from input
-            if i < window.input.schema().fields().len() {
-                if let Some(scope) = &input_scope {
-                    if let Some(entry) = scope.columns.get(i) {
-                        provenance.extend(entry.provenance.clone());
-                    }
-                }
+            if i < window.input.schema().fields().len()
+                && let Some(scope) = &input_scope
+                && let Some(entry) = scope.columns.get(i)
+            {
+                provenance.extend(entry.provenance.clone());
             }
 
             ColumnEntry {
@@ -127,12 +127,13 @@ pub(crate) fn handle_window(
                 data_type: f.data_type().clone(),
                 source_alias: std::sync::Arc::from(alias.as_str()),
                 provenance,
-                unique_id: gen.context.next_column_id(),
+                unique_id: generator.context.next_column_id(),
             }
         })
         .collect::<Vec<_>>()
         .into();
-    gen.context
+    generator
+        .context
         .enter_scope(alias, columns, input_qualifiers)
         .commit();
 

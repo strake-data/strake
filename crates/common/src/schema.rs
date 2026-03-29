@@ -1,45 +1,99 @@
+//! # Schema and Data Quality
+//!
+//! Types for representing table schemas, column constraints, and data quality rules.
+//!
+//! ## Overview
+//!
+//! This module provides the infrastructure for representing the structure of
+//! external data sources via [`IntrospectedTable`] and [`IntrospectedColumn`].
+//! It also defines the data contract system using [`ColumnConstraint`] and
+//! [`ContractRuleKind`] to ensure data integrity and quality.
+//!
+//! ## Usage
+//!
+//! ```rust
+//! # use strake_common::schema::{IntrospectedTable, IntrospectedColumn};
+//! let mut table = IntrospectedTable::default();
+//! table.name = "users".to_string();
+//! table.source = "postgres".to_string();
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! - **Introspection**: Schema metadata is typically fetched once during source
+//!   registration or periodically via background workers.
+//! - **Validation**: Contract rules are evaluated during query execution with minimal
+//!   overhead by leveraging DataFusion's physical plan.
+//!
+//! ## Safety
+//!
+//! This module contains no unsafe code.
+//!
+//! ## Errors
+//!
+//! Logical validation errors (contract violations) are reported as `DataFusionError`.
+//!
+
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Represents an introspected table structure.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IntrospectedTable {
+    /// Name of the data source containing this table.
     pub source: String,
+    /// Schema name (e.g., "public", "information_schema").
     pub schema: String,
+    /// Table name.
     pub name: String,
-    /// Only populated when `full = true`.
+    /// List of columns in the table (populated when `full = true`).
     pub columns: Vec<IntrospectedColumn>,
-    /// Populated from DB-native table comment if present; None otherwise.
+    /// Database-native table comment, if any.
     pub db_comment: Option<String>,
-    /// Populated by AI enrichment pass; None until --ai-descriptions runs.
+    /// AI-generated description of the table's purpose.
     pub ai_description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Represents an introspected column structure.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IntrospectedColumn {
+    /// Column name.
     pub name: String,
-    /// Full precision type string: "NUMERIC(18,4)", "VARCHAR(64)", etc.
+    /// Native database type string (e.g., "VARCHAR(255)", "BIGINT").
     pub type_str: String,
+    /// Whether the column allows NULL values.
     pub nullable: bool,
+    /// Whether the column is part of the primary key.
     pub is_primary_key: bool,
+    /// Whether the column is a foreign key.
     pub is_foreign_key: bool,
+    /// List of constraints applied to the column.
     pub constraints: Vec<ColumnConstraint>,
-    /// Populated from DB-native column comment if present; None otherwise.
+    /// Database-native column comment, if any.
     pub db_comment: Option<String>,
-    /// Populated by AI enrichment pass; None until --ai-descriptions runs.
+    /// AI-generated description of the column's purpose.
     pub ai_description: Option<String>,
 }
 
+/// Column-level constraint or metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ColumnConstraint {
+    /// Column is NOT NULL.
     NotNull,
+    /// Column is UNIQUE.
     Unique,
+    /// Column is part of the PRIMARY KEY.
     PrimaryKey,
+    /// Column is a FOREIGN KEY.
     ForeignKey {
+        /// Fully qualified name of the referenced table and column.
         references: String,
     },
     /// Lifted from DB CHECK constraint where parseable.
     /// Value is a canonicalised expression, not raw SQL.
     Check {
+        /// Canonicalized SQL expression.
         expression: String,
     },
     /// Directly mappable contract rule — lifted only when the
@@ -47,31 +101,49 @@ pub enum ColumnConstraint {
     ContractRule(ContractRuleKind),
 }
 
+/// Type of contract rule applied to data.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ContractRuleKind {
+    /// Greater than value.
     Gt {
+        /// Value to compare against.
         value: serde_json::Value,
     },
+    /// Greater than or equal to value.
     Gte {
+        /// Value to compare against.
         value: serde_json::Value,
     },
+    /// Less than value.
     Lt {
+        /// Value to compare against.
         value: serde_json::Value,
     },
+    /// Less than or equal to value.
     Lte {
+        /// Value to compare against.
         value: serde_json::Value,
     },
+    /// Value between min and max (inclusive).
     Between {
+        /// Minimum value.
         min: serde_json::Value,
+        /// Maximum value.
         max: serde_json::Value,
     },
+    /// Value is in a list of allowed values.
     In {
+        /// List of allowed values.
         values: Vec<serde_json::Value>,
     },
+    /// Value matches a regular expression.
     Regex {
+        /// Regex patterns.
         pattern: String,
     },
+    /// Value is NOT NULL.
     NotNull,
 }
 
@@ -135,10 +207,10 @@ fn try_parse_op(expr: &str, col_name: &str, op: &str) -> Option<serde_json::Valu
         if let Ok(n) = val_str.parse::<i64>() {
             return Some(serde_json::Value::Number(n.into()));
         }
-        if let Ok(f) = val_str.parse::<f64>() {
-            if let Some(n) = serde_json::Number::from_f64(f) {
-                return Some(serde_json::Value::Number(n));
-            }
+        if let Ok(f) = val_str.parse::<f64>()
+            && let Some(n) = serde_json::Number::from_f64(f)
+        {
+            return Some(serde_json::Value::Number(n));
         }
         // Fallback or more complex parsing needed?
     }

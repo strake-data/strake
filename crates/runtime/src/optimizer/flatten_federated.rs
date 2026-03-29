@@ -25,30 +25,30 @@ impl OptimizerRule for FlattenFederatedNodesRule {
         _config: &dyn OptimizerConfig,
     ) -> Result<Transformed<LogicalPlan>> {
         plan.transform_up(&|node| {
-            if let LogicalPlan::Extension(ref ext) = node {
-                if let Some(fed_node) = ext.node.as_any().downcast_ref::<FederatedPlanNode>() {
-                    let inner = fed_node.plan();
+            if let LogicalPlan::Extension(ref ext) = node
+                && let Some(fed_node) = ext.node.as_any().downcast_ref::<FederatedPlanNode>()
+            {
+                let inner = fed_node.plan();
 
-                    // Check deep nesting
-                    let node_check = inner.exists(|n| {
-                        if let LogicalPlan::Extension(e) = n {
-                            if e.node.name() == "Federated" || e.node.name() == "SchemaAdapter" {
-                                return Ok(true);
-                            }
-                        }
-                        Ok(false)
-                    });
-
-                    match node_check {
-                        Ok(true) => {
-                            // Unwrap and return the inner plan
-                            return Ok(Transformed::yes(inner.clone()));
-                        }
-                        Ok(false) => {
-                            // Keep
-                        }
-                        Err(e) => return Err(e),
+                // Check deep nesting
+                let node_check = inner.exists(|n| {
+                    if let LogicalPlan::Extension(e) = n
+                        && (e.node.name() == "Federated" || e.node.name() == "SchemaAdapter")
+                    {
+                        return Ok(true);
                     }
+                    Ok(false)
+                });
+
+                match node_check {
+                    Ok(true) => {
+                        // Unwrap and return the inner plan
+                        return Ok(Transformed::yes(inner.clone()));
+                    }
+                    Ok(false) => {
+                        // Keep
+                    }
+                    Err(e) => return Err(e),
                 }
             }
             Ok(Transformed::no(node))

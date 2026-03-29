@@ -14,8 +14,8 @@
 //! // let ascii_tree = format_plan_tree(&physical_plan);
 //! ```
 
-use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::displayable;
 use std::fmt::Write;
 use std::sync::Arc;
 
@@ -170,26 +170,26 @@ impl PlanTreeFormatter {
         let display = format!("{}", displayable(plan.as_ref()).one_line());
 
         // For SqlExec nodes, show the SQL query
-        if name.contains("SqlExec") || name.contains("Cooperative") {
-            if let Some(sql_start) = display.find("sql=") {
-                let sql_part = &display[sql_start + 4..];
+        if (name.contains("SqlExec") || name.contains("Cooperative"))
+            && let Some(sql_start) = display.find("sql=")
+        {
+            let sql_part = &display[sql_start + 4..];
 
-                // Wrap lines
-                let chunk_size = 70;
-                let chars: Vec<char> = sql_part.chars().collect();
-                let chunks: Vec<_> = chars
-                    .chunks(chunk_size)
-                    .map(|chunk| chunk.iter().collect::<String>())
-                    .collect();
+            // Wrap lines
+            let chunk_size = 70;
+            let chars: Vec<char> = sql_part.chars().collect();
+            let chunks: Vec<_> = chars
+                .chunks(chunk_size)
+                .map(|chunk| chunk.iter().collect::<String>())
+                .collect();
 
-                if let Some(first) = chunks.first() {
-                    let _ = write!(output, "{}{}   sql: {}", prefix, child_prefix_str, first);
+            if let Some(first) = chunks.first() {
+                let _ = write!(output, "{}{}   sql: {}", prefix, child_prefix_str, first);
+                let _ = writeln!(output);
+                for chunk in &chunks[1..] {
+                    // Align with "sql: " (5 chars)
+                    let _ = write!(output, "{}{}        {}", prefix, child_prefix_str, chunk);
                     let _ = writeln!(output);
-                    for chunk in &chunks[1..] {
-                        // Align with "sql: " (5 chars)
-                        let _ = write!(output, "{}{}        {}", prefix, child_prefix_str, chunk);
-                        let _ = writeln!(output);
-                    }
                 }
             }
         }
@@ -250,34 +250,34 @@ impl PlanTreeFormatter {
         }
 
         // For DataSource or Projection nodes, look for projection
-        if name.contains("Projection") || name.contains("DataSource") || name.contains("Scan") {
-            if let Some(proj_start) = display.find("projection=[") {
-                let proj_part = &display[proj_start + 12..]; // skip "projection=["
-                if let Some(end) = proj_part.find(']') {
-                    let fields_str = &proj_part[..end];
-                    // Only print if reasonable length
-                    if fields_str.len() < 80 {
-                        let _ = write!(
-                            output,
-                            "{}{}   projection: [{}]",
-                            prefix, child_prefix_str, fields_str
-                        );
-                        let _ = writeln!(output);
-                    } else {
-                        // Fallback to schema summary if too long string
-                        let schema = plan.schema();
-                        let field_names: Vec<_> =
-                            schema.fields().iter().map(|f| f.name().as_str()).collect();
-                        let _ = write!(
-                            output,
-                            "{}{}   projection: [{}, ... ({} fields)]",
-                            prefix,
-                            child_prefix_str,
-                            field_names.first().unwrap_or(&""),
-                            field_names.len()
-                        );
-                        let _ = writeln!(output);
-                    }
+        if (name.contains("Projection") || name.contains("DataSource") || name.contains("Scan"))
+            && let Some(proj_start) = display.find("projection=[")
+        {
+            let proj_part = &display[proj_start + 12..]; // skip "projection=["
+            if let Some(end) = proj_part.find(']') {
+                let fields_str = &proj_part[..end];
+                // Only print if reasonable length
+                if fields_str.len() < 80 {
+                    let _ = write!(
+                        output,
+                        "{}{}   projection: [{}]",
+                        prefix, child_prefix_str, fields_str
+                    );
+                    let _ = writeln!(output);
+                } else {
+                    // Fallback to schema summary if too long string
+                    let schema = plan.schema();
+                    let field_names: Vec<_> =
+                        schema.fields().iter().map(|f| f.name().as_str()).collect();
+                    let _ = write!(
+                        output,
+                        "{}{}   projection: [{}, ... ({} fields)]",
+                        prefix,
+                        child_prefix_str,
+                        field_names.first().unwrap_or(&""),
+                        field_names.len()
+                    );
+                    let _ = writeln!(output);
                 }
             }
         }
@@ -314,25 +314,25 @@ impl PlanTreeFormatter {
         }
 
         // For limit nodes or generic fetch
-        if display.contains("fetch=") {
-            if let Some(fetch_start) = display.find("fetch=") {
-                let fetch_val_part = &display[fetch_start + 6..]; // skip "fetch="
-                                                                  // Find end: comma, space, or end of string
-                let end = fetch_val_part
-                    .find(|c: char| !c.is_numeric())
-                    .unwrap_or(fetch_val_part.len());
+        if display.contains("fetch=")
+            && let Some(fetch_start) = display.find("fetch=")
+        {
+            let fetch_val_part = &display[fetch_start + 6..]; // skip "fetch="
+            // Find end: comma, space, or end of string
+            let end = fetch_val_part
+                .find(|c: char| !c.is_numeric())
+                .unwrap_or(fetch_val_part.len());
 
-                // Only print if we look like a Limit/Coalesce node OR if explicitly requested
-                if name.contains("Limit") || name.contains("Coalesce") {
-                    let _ = write!(
-                        output,
-                        "{}{}   limit: {} ✓",
-                        prefix,
-                        child_prefix_str,
-                        &fetch_val_part[..end]
-                    );
-                    let _ = writeln!(output);
-                }
+            // Only print if we look like a Limit/Coalesce node OR if explicitly requested
+            if name.contains("Limit") || name.contains("Coalesce") {
+                let _ = write!(
+                    output,
+                    "{}{}   limit: {} ✓",
+                    prefix,
+                    child_prefix_str,
+                    &fetch_val_part[..end]
+                );
+                let _ = writeln!(output);
             }
         }
     }

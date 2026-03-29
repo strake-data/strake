@@ -1,4 +1,5 @@
 //! # Apply Command
+#![allow(clippy::field_reassign_with_default)]
 //!
 //! The `apply` command creates a new version of the domain configuration in the
 //! metadata store based on the local `sources.yaml`. It is the primary mechanism
@@ -36,7 +37,7 @@ use super::apply_models::{
 use super::diff_logic::{diff_internal, print_diff_human};
 use super::validate::validate;
 use crate::config::CliConfig;
-use crate::models::tables_equal;
+// use crate::models::tables_equal;
 use crate::{
     exit_codes,
     metadata::{MetadataStore, models::ApplyLogEntry},
@@ -46,10 +47,9 @@ use crate::{
 use anyhow::{Context, Result};
 use chrono::Utc;
 use owo_colors::OwoColorize;
-use serde_json::json;
 use std::collections::{BTreeSet, HashMap};
 use std::time::Instant;
-use strake_common::models::{SourceConfig, SourcesConfig, TableConfig};
+use strake_common::models::{DomainName, SourceConfig, SourcesConfig, TableConfig};
 
 pub struct ApplyOptions {
     pub file_path: String,
@@ -87,15 +87,16 @@ pub async fn apply(
     let source_config: crate::models::SourcesConfig =
         serde_yaml::from_str(&expanded_yaml).context("Failed to parse YAML structure")?;
 
-    let domain = source_config.domain.as_deref().unwrap_or("default");
+    let domain = source_config
+        .domain
+        .clone()
+        .unwrap_or_else(|| DomainName::from("default"));
     let actor = resolve_actor();
-    let previous_config = store
-        .get_sources(domain)
-        .await
-        .unwrap_or_else(|_| SourcesConfig {
-            domain: Some(domain.to_string()),
-            sources: Vec::new(),
-        });
+    let previous_config = store.get_sources(&domain).await.unwrap_or_else(|_| {
+        let mut sc = SourcesConfig::default();
+        sc.domain = Some(domain.clone());
+        sc
+    });
 
     if dry_run {
         if !format.is_machine_readable() {
@@ -124,12 +125,12 @@ pub async fn apply(
         let diff_result = diff_internal(store, &options.file_path, ctx).await?;
 
         if options.format.is_machine_readable() {
-            let current_version = store.get_domain_version(domain).await.unwrap_or(0);
+            let current_version = store.get_domain_version(&domain).await.unwrap_or(0);
             let receipt = ApplyReceipt {
                 receipt_version: 1,
                 applied_at: Utc::now(),
                 actor,
-                domain: domain.to_string(),
+                domain: domain.clone(),
                 version: VersionTransition {
                     previous: Some(current_version),
                     current: current_version,
@@ -156,26 +157,26 @@ pub async fn apply(
     // 1. Optimistic Locking
     let current_version_to_update = match expected_version {
         Some(v) => v,
-        None => store.get_domain_version(domain).await?,
+        None => store.get_domain_version(&domain).await?,
     };
 
     // 2. Increment version (Locking)
     let new_version: i32 = match store
-        .increment_domain_version(domain, current_version_to_update)
+        .increment_domain_version(&domain, current_version_to_update)
         .await
     {
         Ok(version) => version,
         Err(err) => {
             if format.is_machine_readable() {
                 let actual_version = store
-                    .get_domain_version(domain)
+                    .get_domain_version(&domain)
                     .await
                     .unwrap_or(current_version_to_update);
                 let receipt = ApplyReceipt {
                     receipt_version: 1,
                     applied_at: Utc::now(),
                     actor,
-                    domain: domain.to_string(),
+                    domain: domain.clone(),
                     version: VersionTransition {
                         previous: Some(current_version_to_update),
                         current: actual_version,
@@ -212,7 +213,7 @@ pub async fn apply(
                     receipt_version: 1,
                     applied_at: Utc::now(),
                     actor,
-                    domain: domain.to_string(),
+                    domain: domain.clone(),
                     version: VersionTransition {
                         previous: Some(current_version_to_update),
                         current: current_version_to_update,
@@ -247,12 +248,12 @@ pub async fn apply(
 
     store
         .log_apply_event(ApplyLogEntry {
-            domain: domain.to_string(),
+            domain: domain.clone(),
             version: new_version,
-            user_id,
-            sources_added: serde_json::to_value(&apply_res.sources_added).unwrap_or(json!([])),
-            sources_deleted: serde_json::to_value(&apply_res.sources_deleted).unwrap_or(json!([])),
-            tables_modified: json!([]), // Not detailed yet
+            user_id: user_id.into(),
+            sources_added: apply_res.sources_added.clone(),
+            sources_deleted: apply_res.sources_deleted.clone(),
+            tables_modified: Vec::new(),
             config_hash,
             config_yaml: raw_yaml,
             timestamp: None,
@@ -263,7 +264,7 @@ pub async fn apply(
         receipt_version: 1,
         applied_at: Utc::now(),
         actor,
-        domain: domain.to_string(),
+        domain: domain.clone(),
         version: VersionTransition {
             previous: Some(current_version_to_update),
             current: new_version,
@@ -313,11 +314,12 @@ pub async fn apply(
     Ok(exit_codes::EXIT_OK)
 }
 
-fn resolve_actor() -> String {
+fn resolve_actor() -> strake_common::models::ActorName {
     std::env::var("STRAKE_ACTOR")
         .ok()
         .or_else(|| std::env::var("STRAKE_PROFILE").ok())
         .unwrap_or_else(|| "unknown".to_string())
+        .into()
 }
 
 #[must_use]
@@ -325,12 +327,12 @@ fn compute_changes(previous: &SourcesConfig, current: &SourcesConfig) -> Resourc
     let previous_sources: HashMap<&str, &SourceConfig> = previous
         .sources
         .iter()
-        .map(|source| (source.name.as_str(), source))
+        .map(|s| (s.name.as_ref(), s))
         .collect();
     let current_sources: HashMap<&str, &SourceConfig> = current
         .sources
         .iter()
-        .map(|source| (source.name.as_str(), source))
+        .map(|s| (s.name.as_ref(), s))
         .collect();
 
     let previous_names: BTreeSet<&str> = previous_sources.keys().copied().collect();
@@ -350,7 +352,7 @@ fn compute_changes(previous: &SourcesConfig, current: &SourcesConfig) -> Resourc
             .filter_map(|name| {
                 let current_source = current_sources.get(name)?;
                 let previous_source = previous_sources.get(name)?;
-                if strake_common::models::sources_equal(current_source, previous_source) {
+                if current_source == previous_source {
                     None
                 } else {
                     Some((*name).to_string())
@@ -378,7 +380,7 @@ fn compute_changes(previous: &SourcesConfig, current: &SourcesConfig) -> Resourc
             .filter_map(|name| {
                 let current_table = current_tables.get(name.as_str())?;
                 let previous_table = previous_tables.get(name.as_str())?;
-                if tables_equal(current_table, previous_table) {
+                if current_table == previous_table {
                     None
                 } else {
                     Some(name.to_string())
@@ -412,51 +414,42 @@ mod tests {
 
     #[test]
     fn compute_changes_captures_added_and_removed_resources() {
-        let previous = SourcesConfig {
-            domain: Some("finance".to_string()),
-            sources: vec![SourceConfig {
-                name: "warehouse".to_string(),
-                source_type: "postgres".to_string(),
-                url: Some("postgres://old".to_string()),
-                username: None,
-                password: None,
-                max_concurrent_queries: None,
-                default_limit: None,
-                cache: None,
-                tables: vec![TableConfig {
-                    name: "orders".to_string(),
-                    schema: "public".to_string(),
-                    partition_column: None,
-                    description: None,
-                    columns: vec![],
-                    ..Default::default()
-                }],
-                config: serde_json::Value::Null,
-                ..Default::default()
-            }],
+        let previous = {
+            let mut sc = SourcesConfig::default();
+            sc.domain = Some("finance".into());
+            sc.sources = vec![{
+                let mut s = SourceConfig::default();
+                s.name = "warehouse".into();
+                s.source_type = strake_common::models::SourceType::Other("postgres".to_string());
+                s.url = Some("postgres://old".to_string());
+                s.tables = vec![{
+                    let mut t = TableConfig::default();
+                    t.name = "orders".to_string();
+                    t.schema = "public".to_string();
+                    t
+                }];
+                s
+            }];
+            sc
         };
-        let current = SourcesConfig {
-            domain: Some("finance".to_string()),
-            sources: vec![SourceConfig {
-                name: "reporting".to_string(),
-                source_type: "postgres".to_string(),
-                url: Some("postgres://new".to_string()),
-                username: None,
-                password: None,
-                max_concurrent_queries: None,
-                default_limit: None,
-                cache: None,
-                tables: vec![TableConfig {
-                    name: "revenue".to_string(),
-                    schema: "public".to_string(),
-                    partition_column: None,
-                    description: None,
-                    columns: vec![],
-                    ..Default::default()
-                }],
-                config: serde_json::Value::Null,
-                ..Default::default()
-            }],
+
+        let current = {
+            let mut sc = SourcesConfig::default();
+            sc.domain = Some("finance".into());
+            sc.sources = vec![{
+                let mut s = SourceConfig::default();
+                s.name = "reporting".into();
+                s.source_type = strake_common::models::SourceType::Other("postgres".to_string());
+                s.url = Some("postgres://new".to_string());
+                s.tables = vec![{
+                    let mut t = TableConfig::default();
+                    t.name = "revenue".to_string();
+                    t.schema = "public".to_string();
+                    t
+                }];
+                s
+            }];
+            sc
         };
 
         let changes = compute_changes(&previous, &current);
@@ -468,69 +461,50 @@ mod tests {
 
     #[test]
     fn compute_changes_marks_modified_tables() {
-        let previous = SourcesConfig {
-            domain: Some("finance".to_string()),
-            sources: vec![SourceConfig {
-                name: "warehouse".to_string(),
-                source_type: "postgres".to_string(),
-                url: Some("postgres://warehouse".to_string()),
-                username: None,
-                password: None,
-                max_concurrent_queries: None,
-                default_limit: None,
-                cache: None,
-                tables: vec![TableConfig {
-                    name: "orders".to_string(),
-                    schema: "public".to_string(),
-                    partition_column: None,
-                    description: None,
-                    columns: vec![ColumnConfig {
-                        name: "amount".to_string(),
-                        data_type: "INT".to_string(),
-                        length: None,
-                        primary_key: false,
-                        unique: false,
-                        not_null: false,
-                        description: None,
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-                config: serde_json::Value::Null,
-                ..Default::default()
-            }],
+        let previous = {
+            let mut sc = SourcesConfig::default();
+            sc.domain = Some("finance".into());
+            sc.sources = vec![{
+                let mut s = SourceConfig::default();
+                s.name = "warehouse".into();
+                s.source_type = strake_common::models::SourceType::Other("postgres".to_string());
+                s.url = Some("postgres://warehouse".to_string());
+                s.tables = vec![{
+                    let mut t = TableConfig::default();
+                    t.name = "orders".to_string();
+                    t.schema = "public".to_string();
+                    let mut col = ColumnConfig::default();
+                    col.name = "amount".to_string();
+                    col.data_type = "INT".to_string();
+                    t.column_definitions = vec![col];
+                    t
+                }];
+                s
+            }];
+            sc
         };
-        let current = SourcesConfig {
-            domain: Some("finance".to_string()),
-            sources: vec![SourceConfig {
-                name: "warehouse".to_string(),
-                source_type: "postgres".to_string(),
-                url: Some("postgres://warehouse".to_string()),
-                username: None,
-                password: None,
-                max_concurrent_queries: None,
-                default_limit: None,
-                cache: None,
-                tables: vec![TableConfig {
-                    name: "orders".to_string(),
-                    schema: "public".to_string(),
-                    partition_column: None,
-                    description: None,
-                    columns: vec![ColumnConfig {
-                        name: "amount".to_string(),
-                        data_type: "NUMERIC".to_string(),
-                        length: None,
-                        primary_key: false,
-                        unique: false,
-                        not_null: false,
-                        description: None,
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-                config: serde_json::Value::Null,
-                ..Default::default()
-            }],
+
+        let current = {
+            let mut sc = SourcesConfig::default();
+            sc.domain = Some("finance".into());
+            sc.sources = vec![{
+                let mut s = SourceConfig::default();
+                s.name = "warehouse".into();
+                s.source_type = strake_common::models::SourceType::Other("postgres".to_string());
+                s.url = Some("postgres://warehouse".to_string());
+                s.tables = vec![{
+                    let mut t = TableConfig::default();
+                    t.name = "orders".to_string();
+                    t.schema = "public".to_string();
+                    let mut col = ColumnConfig::default();
+                    col.name = "amount".to_string();
+                    col.data_type = "NUMERIC".to_string();
+                    t.column_definitions = vec![col];
+                    t
+                }];
+                s
+            }];
+            sc
         };
 
         let changes = compute_changes(&previous, &current);

@@ -1,5 +1,5 @@
 use arrow::datatypes::{DataType, Field, Schema};
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use datafusion::error::Result;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::optimizer::optimizer::{OptimizerContext, OptimizerRule};
@@ -65,7 +65,7 @@ fn benchmark_flatten_joins(c: &mut Criterion) {
         })
     });
 
-    // Benchmark 5-table join (just optimization, no SQL gen)
+    // Benchmark 5-table join (just optimization, no SQL generator)
     let plan_5 = rt.block_on(build_join_tree(5)).unwrap();
     group.bench_function("flatten_joins_5_tables", |b| {
         b.iter(|| {

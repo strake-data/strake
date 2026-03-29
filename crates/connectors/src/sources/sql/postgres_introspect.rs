@@ -5,8 +5,8 @@ use tokio_postgres::NoTls;
 
 use crate::introspect::{IntrospectError, SchemaIntrospector, TableRef};
 use strake_common::schema::{
-    lift_check_expression, normalize_type_str, ColumnConstraint, IntrospectedColumn,
-    IntrospectedTable,
+    ColumnConstraint, IntrospectedColumn, IntrospectedTable, lift_check_expression,
+    normalize_type_str,
 };
 
 pub struct PostgresIntrospector {

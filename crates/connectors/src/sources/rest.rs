@@ -5,6 +5,7 @@
 use crate::sources::SourceProvider;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use dashmap::DashMap;
 use datafusion::catalog::MemorySchemaProvider;
 use datafusion::prelude::SessionContext;
 use serde::Deserialize;
@@ -115,6 +116,7 @@ pub enum PaginationConfig {
 
 pub struct RestSourceProvider {
     pub global_retry: RetrySettings,
+    pub schema_cache: Arc<DashMap<String, arrow::datatypes::SchemaRef>>,
 }
 
 #[async_trait]
@@ -131,15 +133,15 @@ impl SourceProvider for RestSourceProvider {
     ) -> Result<()> {
         // ... existing config parsing ...
         let mut raw_config = config.config.clone();
-        if let Some(url) = &config.url {
-            if let Some(obj) = raw_config.as_object_mut() {
-                if !obj.contains_key("url") && !obj.contains_key("base_url") {
-                    obj.insert(
-                        "base_url".to_string(),
-                        serde_json::Value::String(url.clone()),
-                    );
-                }
-            }
+        if let Some(url) = &config.url
+            && let Some(obj) = raw_config.as_object_mut()
+            && !obj.contains_key("url")
+            && !obj.contains_key("base_url")
+        {
+            obj.insert(
+                "base_url".to_string(),
+                serde_json::Value::String(url.clone()),
+            );
         }
 
         let rest_config: RestSourceConfig = serde_json::from_value(raw_config)
@@ -239,8 +241,17 @@ impl SourceProvider for RestSourceProvider {
 
         if tables.is_empty() {
             // Fallback to single table matching source name
-            let schema = infer_schema(&client, &rest_config).await?;
+            let cache_key = rest_config.base_url.clone();
+            let schema = if let Some(cached) = self.schema_cache.get(&cache_key) {
+                cached.clone()
+            } else {
+                let inferred = infer_schema(&client, &rest_config).await?;
+                self.schema_cache.insert(cache_key, inferred.clone());
+                inferred
+            };
+
             let provider = Arc::new(RestTableProvider::new(client.clone(), rest_config, schema));
+            // ... register table ...
 
             let catalog = context
                 .catalog(catalog_name)
@@ -251,17 +262,24 @@ impl SourceProvider for RestSourceProvider {
             }
 
             context.register_table(
-                datafusion::sql::TableReference::full(catalog_name, "public", config.name.clone()),
+                datafusion::sql::TableReference::full(catalog_name, "public", config.name.as_ref()),
                 provider,
             )?;
         } else {
             for table_cfg in tables {
-                let schema = if !table_cfg.columns.is_empty() {
+                let cache_key = format!("{}:{}", rest_config.base_url, table_cfg.name);
+                let schema = if let Some(cached) = self.schema_cache.get(&cache_key) {
+                    cached.clone()
+                } else if !table_cfg.column_definitions.is_empty() {
                     // TODO: Build schema from config if provided
                     // For now, still infer or use what's there
-                    infer_schema(&client, &rest_config).await?
+                    let inferred = infer_schema(&client, &rest_config).await?;
+                    self.schema_cache.insert(cache_key, inferred.clone());
+                    inferred
                 } else {
-                    infer_schema(&client, &rest_config).await?
+                    let inferred = infer_schema(&client, &rest_config).await?;
+                    self.schema_cache.insert(cache_key, inferred.clone());
+                    inferred
                 };
 
                 let provider = Arc::new(RestTableProvider::new(
@@ -357,8 +375,9 @@ impl TableProvider for RestTableProvider {
 }
 
 use datafusion::physical_expr::EquivalenceProperties;
-use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::Partitioning;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder, MetricsSet};
 use datafusion::physical_plan::{DisplayAs, PlanProperties};
 
 #[derive(Debug)]
@@ -373,6 +392,7 @@ struct RestExec {
     limit: Option<usize>,
     filters: Vec<datafusion::logical_expr::Expr>,
     cache: PlanProperties,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl RestExec {
@@ -410,6 +430,7 @@ impl RestExec {
             limit,
             filters,
             cache,
+            metrics: ExecutionPlanMetricsSet::new(),
         })
     }
 }
@@ -449,7 +470,7 @@ impl ExecutionPlan for RestExec {
 
     fn execute(
         &self,
-        _partition: usize,
+        partition: usize,
         _context: Arc<datafusion::execution::TaskContext>,
     ) -> datafusion::error::Result<SendableRecordBatchStream> {
         // This is where real pagination logic happens
@@ -461,54 +482,85 @@ impl ExecutionPlan for RestExec {
         let base_url = config.base_url.clone();
         let filters = self.filters.clone();
 
+        // Register metrics
+        let output_rows = MetricBuilder::new(&self.metrics).output_rows(partition);
+        let output_bytes = MetricBuilder::new(&self.metrics).counter("output_bytes", partition);
+        let elapsed_compute = MetricBuilder::new(&self.metrics).elapsed_compute(partition);
+
         // Use try_unfold to create an async stream
         let stream = futures::stream::try_unfold(
-            (client, config, schema, Some(base_url), 0, 0, filters),
-            move |(client, config, schema, next_url, current_offset, current_page, filters)| async move {
+            (
+                client,
+                config,
+                schema,
+                Some(base_url),
+                0,
+                0,
+                filters,
+                output_rows,
+                output_bytes,
+                elapsed_compute,
+            ),
+            move |(
+                client,
+                config,
+                schema,
+                next_url,
+                current_offset,
+                current_page,
+                filters,
+                output_rows,
+                output_bytes,
+                elapsed_compute,
+            )| async move {
                 if let Some(mut url_str) = next_url {
+                    let start = std::time::Instant::now();
                     // FIRST PAGE OVERRIDE: Apply pushdowns if not already present
-                    if current_page == 0 {
-                        if let Some(pushdowns) = &config.pushdown {
-                            if let Ok(mut url_obj) = url::Url::parse(&url_str) {
-                                for filter in &filters {
-                                    if let datafusion::logical_expr::Expr::BinaryExpr(
-                                        datafusion::logical_expr::BinaryExpr { left, op, right },
-                                    ) = filter
-                                    {
-                                        if let (
-                                            datafusion::logical_expr::Expr::Column(col),
-                                            datafusion::logical_expr::Expr::Literal(val, _),
-                                        ) = (left.as_ref(), right.as_ref())
-                                        {
-                                            let op_str = match op {
-                                                datafusion::logical_expr::Operator::Eq => "=",
-                                                datafusion::logical_expr::Operator::Gt => ">",
-                                                datafusion::logical_expr::Operator::Lt => "<",
-                                                datafusion::logical_expr::Operator::GtEq => ">=",
-                                                datafusion::logical_expr::Operator::LtEq => "<=",
-                                                _ => continue,
-                                            };
+                    if current_page == 0
+                        && let Some(pushdowns) = &config.pushdown
+                        && let Ok(mut url_obj) = url::Url::parse(&url_str)
+                    {
+                        for filter in &filters {
+                            if let datafusion::logical_expr::Expr::BinaryExpr(
+                                datafusion::logical_expr::BinaryExpr { left, op, right },
+                            ) = filter
+                                && let (
+                                    datafusion::logical_expr::Expr::Column(col),
+                                    datafusion::logical_expr::Expr::Literal(val, _),
+                                ) = (left.as_ref(), right.as_ref())
+                            {
+                                let op_str = match op {
+                                    datafusion::logical_expr::Operator::Eq => "=",
+                                    datafusion::logical_expr::Operator::Gt => ">",
+                                    datafusion::logical_expr::Operator::Lt => "<",
+                                    datafusion::logical_expr::Operator::GtEq => ">=",
+                                    datafusion::logical_expr::Operator::LtEq => "<=",
+                                    _ => continue,
+                                };
 
-                                            for p in pushdowns {
-                                                if p.column == col.name && p.operator == op_str {
-                                                    let val_str = match val {
-                                                         datafusion::scalar::ScalarValue::Utf8(Some(s)) => s.clone(),
-                                                         datafusion::scalar::ScalarValue::Int64(Some(i)) => i.to_string(),
-                                                         datafusion::scalar::ScalarValue::Float64(Some(f)) => f.to_string(),
-                                                         datafusion::scalar::ScalarValue::Boolean(Some(b)) => b.to_string(),
-                                                         _ => val.to_string(), // Fallback
-                                                     };
-                                                    url_obj
-                                                        .query_pairs_mut()
-                                                        .append_pair(&p.param, &val_str);
-                                                }
+                                for p in pushdowns {
+                                    if p.column == col.name && p.operator == op_str {
+                                        let val_str = match val {
+                                            datafusion::scalar::ScalarValue::Utf8(Some(s)) => {
+                                                s.clone()
                                             }
-                                        }
+                                            datafusion::scalar::ScalarValue::Int64(Some(i)) => {
+                                                i.to_string()
+                                            }
+                                            datafusion::scalar::ScalarValue::Float64(Some(f)) => {
+                                                f.to_string()
+                                            }
+                                            datafusion::scalar::ScalarValue::Boolean(Some(b)) => {
+                                                b.to_string()
+                                            }
+                                            _ => val.to_string(),
+                                        };
+                                        url_obj.query_pairs_mut().append_pair(&p.param, &val_str);
                                     }
                                 }
-                                url_str = url_obj.to_string();
                             }
                         }
+                        url_str = url_obj.to_string();
                     }
 
                     if current_page >= 50 {
@@ -528,6 +580,10 @@ impl ExecutionPlan for RestExec {
                     .await
                     .map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))?;
 
+                    output_rows.add(batch.num_rows());
+                    output_bytes.add(batch.get_array_memory_size());
+                    elapsed_compute.add_duration(start.elapsed());
+
                     Ok(Some((
                         batch,
                         (
@@ -538,6 +594,9 @@ impl ExecutionPlan for RestExec {
                             new_offset,
                             current_page + 1,
                             filters,
+                            output_rows,
+                            output_bytes,
+                            elapsed_compute,
                         ),
                     )))
                 } else {
@@ -558,6 +617,10 @@ impl ExecutionPlan for RestExec {
         Ok(datafusion::physical_plan::Statistics::new_unknown(
             &self.schema,
         ))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 }
 
@@ -670,22 +733,21 @@ async fn fetch_page(
     let resp = req.send().await.context("Failed to fetch API")?;
 
     // Header Pagination
-    if let Some(PaginationConfig::Header { header_name }) = &config.pagination {
-        if let Some(val) = resp.headers().get(header_name) {
-            if let Ok(val_str) = val.to_str() {
-                // Handle standard Link header format: <url>; rel="next"
-                let next_url_candidate = if val_str.starts_with('<') {
-                    val_str.split('>').next().map(|s| s.trim_start_matches('<'))
-                } else {
-                    Some(val_str)
-                };
+    if let Some(PaginationConfig::Header { header_name }) = &config.pagination
+        && let Some(val) = resp.headers().get(header_name)
+        && let Ok(val_str) = val.to_str()
+    {
+        // Handle standard Link header format: <url>; rel="next"
+        let next_url_candidate = if val_str.starts_with('<') {
+            val_str.split('>').next().map(|s| s.trim_start_matches('<'))
+        } else {
+            Some(val_str)
+        };
 
-                if let Some(candidate) = next_url_candidate {
-                    if candidate.starts_with("http") {
-                        next_url = Some(candidate.to_string());
-                    }
-                }
-            }
+        if let Some(candidate) = next_url_candidate
+            && candidate.starts_with("http")
+        {
+            next_url = Some(candidate.to_string());
         }
     }
 
@@ -711,12 +773,11 @@ async fn fetch_page(
     );
 
     // Body Pagination
-    if let Some(PaginationConfig::BodyUrl { path }) = &config.pagination {
-        if let serde_json::Value::Object(map) = &json {
-            if let Some(serde_json::Value::String(next)) = map.get(path) {
-                next_url = Some(next.clone());
-            }
-        }
+    if let Some(PaginationConfig::BodyUrl { path }) = &config.pagination
+        && let serde_json::Value::Object(map) = &json
+        && let Some(serde_json::Value::String(next)) = map.get(path)
+    {
+        next_url = Some(next.clone());
     }
 
     // Serialize to NDJSON (each record on new line) for Arrow JSON Reader

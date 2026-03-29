@@ -5,9 +5,9 @@ use datafusion::logical_expr::LogicalPlan;
 use sqlparser::ast::{Query, Select, SetExpr, TableFactor};
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use strake_error::StrakeError;
 
 pub(crate) mod aggregate;
@@ -78,7 +78,7 @@ impl<'a> SqlGenerator<'a> {
 
         tracing::trace!(target: "sql_generator", node = %plan.display(), depth = self.recursion_level.load(Ordering::SeqCst), "Translating plan node");
 
-        let result = match plan {
+        match plan {
             LogicalPlan::TableScan(scan) => scan::handle_table_scan(self, scan),
             LogicalPlan::Projection(proj) => projection::handle_projection(self, proj),
             LogicalPlan::SubqueryAlias(alias) => projection::handle_subquery_alias(self, alias),
@@ -139,16 +139,15 @@ impl<'a> SqlGenerator<'a> {
                 }
                 .to_string(),
             }),
-        };
-
-        result
+        }
     }
 
     pub fn extract_relation(&self, query: Query) -> Result<TableFactor, SqlGenError> {
-        if let SetExpr::Select(select) = *query.body {
-            if select.from.len() == 1 && select.from[0].joins.is_empty() {
-                return Ok(select.from[0].relation.clone());
-            }
+        if let SetExpr::Select(select) = *query.body
+            && select.from.len() == 1
+            && select.from[0].joins.is_empty()
+        {
+            return Ok(select.from[0].relation.clone());
         }
 
         Err(SqlGenError::UnsupportedPlan {

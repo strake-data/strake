@@ -74,20 +74,20 @@ impl<'a> ScopeGuard<'a> {
 impl<'a> Drop for ScopeGuard<'a> {
     fn drop(&mut self) {
         if !self.committed {
-            if let Some(top) = self.context.current_scope() {
-                if top.alias != self.expected_alias {
-                    tracing::error!(
-                        target: "sql_generator",
-                        expected = %self.expected_alias,
-                        actual = %top.alias,
-                        "Scope stack corruption detected"
-                    );
-                    #[cfg(debug_assertions)]
-                    panic!(
-                        "Scope stack corruption: expected {}, got {}",
-                        self.expected_alias, top.alias
-                    );
-                }
+            if let Some(top) = self.context.current_scope()
+                && top.alias != self.expected_alias
+            {
+                tracing::error!(
+                    target: "sql_generator",
+                    expected = %self.expected_alias,
+                    actual = %top.alias,
+                    "Scope stack corruption detected"
+                );
+                #[cfg(debug_assertions)]
+                panic!(
+                    "Scope stack corruption: expected {}, got {}",
+                    self.expected_alias, top.alias
+                );
             }
             self.context.pop_scope();
         }

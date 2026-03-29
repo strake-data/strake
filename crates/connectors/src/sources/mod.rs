@@ -148,7 +148,10 @@ pub fn default_registry(global_retry: strake_common::config::RetrySettings) -> S
     registry.register_provider(Box::new(file::FileSourceProvider {
         predicate_cache: cache.clone(),
     }));
-    registry.register_provider(Box::new(rest::RestSourceProvider { global_retry }));
+    registry.register_provider(Box::new(rest::RestSourceProvider {
+        global_retry,
+        schema_cache: Arc::new(dashmap::DashMap::new()),
+    }));
     registry.register_provider(Box::new(grpc::GrpcSourceProvider { global_retry }));
     registry.register_provider(Box::new(iceberg::IcebergSourceProvider {
         global_retry,

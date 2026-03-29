@@ -3,19 +3,24 @@ use std::time::{Duration, Instant};
 use strake_common::{auth::AuthenticatedUser, config::*};
 use strake_runtime::federation::FederationEngine;
 
+fn make_user(id: &str) -> AuthenticatedUser {
+    let mut user = AuthenticatedUser::default();
+    user.id = id.into();
+    user.permissions = vec!["read".to_string()].into();
+    user
+}
+
 #[tokio::test]
 async fn test_cache_speeds_up_repeated_query() -> anyhow::Result<()> {
     // Setup: Create engine with cache enabled
     let cache_dir = tempfile::tempdir()?;
-    let config = Config {
-        sources: vec![],
-        cache: QueryCacheConfig {
-            enabled: true,
-            directory: cache_dir.path().to_string_lossy().to_string(),
-            max_size_mb: 100,
-            ttl_seconds: 3600,
-        },
-    };
+    let mut config = Config::default();
+    let mut cache = QueryCacheConfig::default();
+    cache.enabled = true;
+    cache.directory = cache_dir.path().to_string_lossy().to_string();
+    cache.max_size_mb = 100;
+    cache.ttl_seconds = 3600;
+    config.cache = cache;
 
     let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
         config,
@@ -31,11 +36,7 @@ async fn test_cache_speeds_up_repeated_query() -> anyhow::Result<()> {
     .await?;
 
     // Create authenticated user for cache key generation
-    let user = AuthenticatedUser {
-        id: "test_user".to_string(),
-        permissions: vec!["read".to_string()].into(),
-        rules: HashMap::new(),
-    };
+    let user = make_user("test_user");
 
     // Run query (simple values to ensure it works)
     let sql = "SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c')) AS t1(id, name)";
@@ -53,20 +54,37 @@ async fn test_cache_speeds_up_repeated_query() -> anyhow::Result<()> {
     );
     assert_eq!(batches1.iter().map(|b| b.num_rows()).sum::<usize>(), 3);
 
-    // Verify cache file was created
-    println!("Cache directory: {:?}", cache_dir.path());
-    let cache_files: Vec<_> = std::fs::read_dir(cache_dir.path())?
-        .filter_map(|e| e.ok())
-        .collect();
-    println!("Cache files found: {} total files", cache_files.len());
-    for file in &cache_files {
-        println!("  - {:?}", file.path());
+    // Wait for cache file to be created (background task)
+    let mut parquet_files: Vec<std::path::PathBuf> = Vec::new();
+    let start_wait = Instant::now();
+    while start_wait.elapsed() < Duration::from_secs(5) {
+        let cache_files: Vec<_> = std::fs::read_dir(cache_dir.path())?
+            .filter_map(|e| e.ok())
+            .collect();
+        parquet_files = cache_files
+            .iter()
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|s: &std::ffi::OsStr| s.to_str())
+                    == Some("parquet")
+            })
+            .map(|e| e.path())
+            .collect();
+        if !parquet_files.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    let parquet_files: Vec<_> = cache_files
-        .iter()
-        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("parquet"))
-        .collect();
+    println!(
+        "Cache files found after wait: {} total files",
+        parquet_files.len()
+    );
+    for file in &parquet_files {
+        println!("  - {:?}", file);
+    }
+
     assert_eq!(
         parquet_files.len(),
         1,
@@ -105,15 +123,13 @@ async fn test_cache_speeds_up_repeated_query() -> anyhow::Result<()> {
 async fn test_cache_isolation_by_user() -> anyhow::Result<()> {
     // Test that different users get different cache entries
     let cache_dir = tempfile::tempdir()?;
-    let config = Config {
-        sources: vec![],
-        cache: QueryCacheConfig {
-            enabled: true,
-            directory: cache_dir.path().to_string_lossy().to_string(),
-            max_size_mb: 100,
-            ttl_seconds: 3600,
-        },
-    };
+    let mut config = Config::default();
+    let mut cache = QueryCacheConfig::default();
+    cache.enabled = true;
+    cache.directory = cache_dir.path().to_string_lossy().to_string();
+    cache.max_size_mb = 100;
+    cache.ttl_seconds = 3600;
+    config.cache = cache;
 
     let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
         config,
@@ -128,17 +144,9 @@ async fn test_cache_isolation_by_user() -> anyhow::Result<()> {
     })
     .await?;
 
-    let user1 = AuthenticatedUser {
-        id: "user1".to_string(),
-        permissions: vec!["read".to_string()].into(),
-        rules: HashMap::new(),
-    };
+    let user1 = make_user("user1");
 
-    let user2 = AuthenticatedUser {
-        id: "user2".to_string(),
-        permissions: vec!["read".to_string()].into(),
-        rules: HashMap::new(),
-    };
+    let user2 = make_user("user2");
 
     let sql = "SELECT * FROM (VALUES (1), (2)) AS t(x)";
 
@@ -150,11 +158,26 @@ async fn test_cache_isolation_by_user() -> anyhow::Result<()> {
     let (_schema, _batches, warnings2) = engine.execute_query(sql, Some(user2)).await?;
     assert!(warnings2.contains(&"x-strake-cache: miss".to_string()));
 
-    // Verify two cache files were created
-    let cache_files: Vec<_> = std::fs::read_dir(cache_dir.path())?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("parquet"))
-        .collect();
+    // Wait for cache files to be created (background task)
+    let mut cache_files: Vec<std::path::PathBuf> = Vec::new();
+    let start_wait = Instant::now();
+    while start_wait.elapsed() < Duration::from_secs(5) {
+        cache_files = std::fs::read_dir(cache_dir.path())?
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|s: &std::ffi::OsStr| s.to_str())
+                    == Some("parquet")
+            })
+            .map(|e| e.path())
+            .collect();
+        if cache_files.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
     assert_eq!(
         cache_files.len(),
         2,
@@ -163,7 +186,11 @@ async fn test_cache_isolation_by_user() -> anyhow::Result<()> {
 
     // User 1 executes again (should hit their cache)
     let (_schema, _batches, warnings3) = engine.execute_query(sql, Some(user1)).await?;
-    assert!(warnings3.contains(&"x-strake-cache: hit".to_string()));
+    assert!(
+        warnings3.contains(&"x-strake-cache: hit".to_string()),
+        "Expected cache hit for user1, got: {:?}",
+        warnings3
+    );
 
     Ok(())
 }
@@ -172,15 +199,15 @@ async fn test_cache_isolation_by_user() -> anyhow::Result<()> {
 async fn test_cache_disabled() -> anyhow::Result<()> {
     // Test that cache can be disabled
     let cache_dir = tempfile::tempdir()?;
-    let config = Config {
-        sources: vec![],
-        cache: QueryCacheConfig {
-            enabled: false, // Cache disabled
-            directory: cache_dir.path().to_string_lossy().to_string(),
-            max_size_mb: 100,
-            ttl_seconds: 3600,
-        },
-    };
+    let mut config = Config::default();
+    {
+        let mut cache = QueryCacheConfig::default();
+        cache.enabled = false;
+        cache.directory = cache_dir.path().to_string_lossy().to_string();
+        cache.max_size_mb = 100;
+        cache.ttl_seconds = 3600;
+        config.cache = cache;
+    }
 
     let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
         config,
@@ -195,11 +222,7 @@ async fn test_cache_disabled() -> anyhow::Result<()> {
     })
     .await?;
 
-    let user = AuthenticatedUser {
-        id: "test_user".to_string(),
-        permissions: vec!["read".to_string()].into(),
-        rules: HashMap::new(),
-    };
+    let user = make_user("test_user");
 
     let sql = "SELECT * FROM (VALUES (1), (2)) AS t(x)";
 
@@ -228,15 +251,13 @@ async fn test_cache_disabled() -> anyhow::Result<()> {
 async fn test_cache_performance_improvement() -> anyhow::Result<()> {
     // Performance test: Verify cache provides significant speedup
     let cache_dir = tempfile::tempdir()?;
-    let config = Config {
-        sources: vec![],
-        cache: QueryCacheConfig {
-            enabled: true,
-            directory: cache_dir.path().to_string_lossy().to_string(),
-            max_size_mb: 100,
-            ttl_seconds: 3600,
-        },
-    };
+    let mut config = Config::default();
+    let mut cache = QueryCacheConfig::default();
+    cache.enabled = true;
+    cache.directory = cache_dir.path().to_string_lossy().to_string();
+    cache.max_size_mb = 100;
+    cache.ttl_seconds = 3600;
+    config.cache = cache;
 
     let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
         config,
@@ -251,11 +272,7 @@ async fn test_cache_performance_improvement() -> anyhow::Result<()> {
     })
     .await?;
 
-    let user = AuthenticatedUser {
-        id: "perf_test_user".to_string(),
-        permissions: vec!["read".to_string()].into(),
-        rules: HashMap::new(),
-    };
+    let user = make_user("perf_test_user");
 
     // Test with a larger dataset
     let sql = "SELECT * FROM (VALUES 
@@ -327,15 +344,13 @@ async fn test_cache_large_dataset() -> anyhow::Result<()> {
     // Large-scale test: ~10GB raw data (1M rows × 100 columns × ~100 bytes)
     // This test verifies cache handles large results efficiently
     let cache_dir = tempfile::tempdir()?;
-    let config = Config {
-        sources: vec![],
-        cache: QueryCacheConfig {
-            enabled: true,
-            directory: cache_dir.path().to_string_lossy().to_string(),
-            max_size_mb: 20480, // 20GB to accommodate large cache files
-            ttl_seconds: 3600,
-        },
-    };
+    let mut config = Config::default();
+    let mut cache = QueryCacheConfig::default();
+    cache.enabled = true;
+    cache.directory = cache_dir.path().to_string_lossy().to_string();
+    cache.max_size_mb = 20480;
+    cache.ttl_seconds = 3600;
+    config.cache = cache;
 
     let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
         config,
@@ -350,11 +365,7 @@ async fn test_cache_large_dataset() -> anyhow::Result<()> {
     })
     .await?;
 
-    let user = AuthenticatedUser {
-        id: "large_dataset_user".to_string(),
-        permissions: vec!["read".to_string()].into(),
-        rules: HashMap::new(),
-    };
+    let user = make_user("large_dataset_user");
 
     // Generate a large dataset query
     // Each row: ~100 bytes (id + 9 strings of ~10 chars each)
@@ -409,14 +420,29 @@ async fn test_cache_large_dataset() -> anyhow::Result<()> {
         total_bytes as f64 / 1024.0 / 1024.0
     );
 
-    // Check cache file
-    let cache_files: Vec<_> = std::fs::read_dir(cache_dir.path())?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("parquet"))
-        .collect();
+    // Wait for cache file to be created (background task)
+    let mut cache_files: Vec<std::path::PathBuf> = Vec::new();
+    let start_wait = Instant::now();
+    while start_wait.elapsed() < Duration::from_secs(10) {
+        cache_files = std::fs::read_dir(cache_dir.path())?
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|s: &std::ffi::OsStr| s.to_str())
+                    == Some("parquet")
+            })
+            .map(|e| e.path())
+            .collect();
+        if !cache_files.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
     assert_eq!(cache_files.len(), 1, "Expected 1 cache file");
 
-    let cache_file_size = cache_files[0].metadata()?.len();
+    let cache_file_size = std::fs::metadata(&cache_files[0])?.len();
     let compression_ratio = total_bytes as f64 / cache_file_size as f64;
 
     println!(
@@ -489,15 +515,13 @@ async fn test_metadata_persistence() -> anyhow::Result<()> {
     let cache_dir = tempfile::tempdir()?;
     let cache_path = cache_dir.path().to_string_lossy().to_string();
 
-    let config = Config {
-        sources: vec![],
-        cache: QueryCacheConfig {
-            enabled: true,
-            directory: cache_path.clone(),
-            max_size_mb: 100,
-            ttl_seconds: 3600,
-        },
-    };
+    let mut config = Config::default();
+    let mut cache = QueryCacheConfig::default();
+    cache.enabled = true;
+    cache.directory = cache_path.clone();
+    cache.max_size_mb = 100;
+    cache.ttl_seconds = 3600;
+    config.cache = cache;
 
     // 1. Start Engine 1
     let engine1 = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
@@ -513,11 +537,7 @@ async fn test_metadata_persistence() -> anyhow::Result<()> {
     })
     .await?;
 
-    let user = AuthenticatedUser {
-        id: "persist_user".to_string(),
-        permissions: vec!["read".to_string()].into(),
-        rules: HashMap::new(),
-    };
+    let user = make_user("persist_user");
 
     let sql = "SELECT * FROM (VALUES (1, 'persist')) AS t(id, name)";
 
@@ -525,9 +545,18 @@ async fn test_metadata_persistence() -> anyhow::Result<()> {
     let (_, _, warnings1) = engine1.execute_query(sql, Some(user.clone())).await?;
     assert!(warnings1.contains(&"x-strake-cache: miss".to_string()));
 
-    // Verify file exists on disk
-    let files_count = std::fs::read_dir(&cache_path)?.count();
-    assert!(files_count > 0, "Cache file should exist");
+    // Wait for cache file to exist
+    let start_wait = Instant::now();
+    while start_wait.elapsed() < Duration::from_secs(5) {
+        if std::fs::read_dir(&cache_path)?.count() > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        std::fs::read_dir(&cache_path)?.count() > 0,
+        "Cache file should exist"
+    );
 
     // Drop engine1 explicitly (though not strictly needed, clarifies intent)
     drop(engine1);
@@ -587,7 +616,7 @@ impl SourceProvider for MockProvider {
         let batch =
             RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![1]))])?;
         let table = MemTable::try_new(schema, vec![vec![batch]])?;
-        ctx.register_table(config.name.as_str(), Arc::new(table))?;
+        ctx.register_table(config.name.name.as_str(), Arc::new(table))?;
         Ok(())
     }
 }
@@ -598,53 +627,40 @@ async fn test_per_datasource_cache_config() -> anyhow::Result<()> {
     let cache_dir = tempfile::tempdir()?;
 
     // Define sources
-    let source_enabled = SourceConfig {
-        name: "cached_source".to_string(),
-        source_type: "mock".to_string(),
-        url: None,
-        default_limit: None,
-        config: serde_json::Value::Null,
-        cache: Some(QueryCacheConfig {
-            enabled: true,
-            directory: "/tmp".to_string(),
-            max_size_mb: 100,
-            ttl_seconds: 3600,
-        }),
-        username: None,
-        password: None,
-        max_concurrent_queries: None,
-        tables: vec![],
-        ..Default::default()
-    };
+    let mut source_enabled = SourceConfig::default();
+    source_enabled.name = "cached_source".into();
+    source_enabled.source_type = strake_common::models::SourceType::Other("mock".to_string());
+    {
+        let mut cache = QueryCacheConfig::default();
+        cache.enabled = true;
+        cache.directory = "/tmp".to_string();
+        cache.max_size_mb = 100;
+        cache.ttl_seconds = 3600;
+        source_enabled.cache = Some(cache);
+    }
 
-    let source_disabled = SourceConfig {
-        name: "uncached_source".to_string(),
-        source_type: "mock".to_string(),
-        url: None,
-        default_limit: None,
-        config: serde_json::Value::Null,
-        cache: Some(QueryCacheConfig {
-            enabled: false, // EXPLICITLY DISABLED
-            directory: "/tmp".to_string(),
-            max_size_mb: 100,
-            ttl_seconds: 3600,
-        }),
-        username: None,
-        password: None,
-        max_concurrent_queries: None,
-        tables: vec![],
-        ..Default::default()
-    };
+    let mut source_disabled = SourceConfig::default();
+    source_disabled.name = "uncached_source".into();
+    source_disabled.source_type = strake_common::models::SourceType::Other("mock".to_string());
+    {
+        let mut cache = QueryCacheConfig::default();
+        cache.enabled = false;
+        cache.directory = "/tmp".to_string();
+        cache.max_size_mb = 100;
+        cache.ttl_seconds = 3600;
+        source_disabled.cache = Some(cache);
+    }
 
-    let config = Config {
-        sources: vec![source_enabled, source_disabled],
-        cache: QueryCacheConfig {
-            enabled: true, // Globally Enabled
-            directory: cache_dir.path().to_string_lossy().to_string(),
-            max_size_mb: 100,
-            ttl_seconds: 3600,
-        },
-    };
+    let mut config = Config::default();
+    config.sources = vec![source_enabled, source_disabled];
+    {
+        let mut cache = QueryCacheConfig::default();
+        cache.enabled = true;
+        cache.directory = cache_dir.path().to_string_lossy().to_string();
+        cache.max_size_mb = 100;
+        cache.ttl_seconds = 3600;
+        config.cache = cache;
+    }
 
     // Create engine
     let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
@@ -660,17 +676,37 @@ async fn test_per_datasource_cache_config() -> anyhow::Result<()> {
     })
     .await?;
 
-    let user = AuthenticatedUser {
-        id: "config_user".to_string(),
-        permissions: vec!["read".to_string()].into(),
-        rules: HashMap::new(),
-    };
+    let user = make_user("config_user");
 
     // 1. Query Cached Source
     let sql_cached = "SELECT * FROM cached_source";
     let (_, _, warnings1) = engine.execute_query(sql_cached, Some(user.clone())).await?;
     // First run miss
     assert!(warnings1.contains(&"x-strake-cache: miss".to_string()));
+
+    // Wait for cache file to be created (background task)
+    let start_wait = std::time::Instant::now();
+    let mut cache_found = false;
+    while start_wait.elapsed() < std::time::Duration::from_secs(5) {
+        let cache_files = std::fs::read_dir(cache_dir.path())?
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|s: &std::ffi::OsStr| s.to_str())
+                    == Some("parquet")
+            })
+            .count();
+        if cache_files > 0 {
+            cache_found = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        cache_found,
+        "Expected cache file to be created for cached_source"
+    );
 
     // Second run HIT
     let (_, _, warnings1_hit) = engine.execute_query(sql_cached, Some(user.clone())).await?;

@@ -54,7 +54,7 @@ async fn test_iceberg_lazy_loading_and_concurrency() -> Result<()> {
         max_concurrent_queries: None,
     };
 
-    let ctx = SessionContext::new();
+    let ctx = Arc::new(SessionContext::new());
     ctx.register_catalog(
         "strake",
         Arc::new(datafusion::catalog::MemoryCatalogProvider::new()),
@@ -128,23 +128,20 @@ async fn test_iceberg_lazy_loading_and_concurrency() -> Result<()> {
 
     metadata_mock.mount(&mock_server).await;
 
-    let tables = vec![TableConfig {
-        name: "test_table".to_string(),
-        schema: "".to_string(),
-        partition_column: None,
-        description: None,
-        columns: vec![],
-        ..Default::default()
-    }];
+    let mut t = TableConfig::default();
+    t.name = "test_table".to_string();
+    t.schema = "".to_string();
+    let tables = Arc::new(vec![t]);
+    let cfg = Arc::new(cfg);
 
     // 1. Register tables
     // This should NOT trigger the metadata mock (lazy)
     register_iceberg_rest(
-        &ctx,
-        "strake",
-        "iceberg_source",
-        &cfg,
-        &tables,
+        Arc::clone(&ctx),
+        "strake".to_string(),
+        "iceberg_source".to_string(),
+        Arc::clone(&cfg),
+        Arc::clone(&tables),
         RetrySettings::default(),
         Arc::new(strake_common::predicate_cache::PredicateCache::new()),
         true,
@@ -165,7 +162,7 @@ async fn test_iceberg_lazy_loading_and_concurrency() -> Result<()> {
     // Others should wait.
     // Since we disabled catalog cache, if they don't wait, they will hit the API multiple times.
 
-    let ctx_arc = Arc::new(ctx);
+    let ctx_arc = Arc::clone(&ctx);
     let mut tasks = Vec::new();
 
     for _i in 0..10 {

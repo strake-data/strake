@@ -25,22 +25,28 @@ impl SqlMetadataFetcher for PostgresMetadataFetcher {
     }
 }
 
-pub async fn register_postgres(params: SqlSourceParams<'_>) -> Result<()> {
+pub async fn register_postgres(params: SqlSourceParams) -> Result<()> {
     let context = params.context;
     let catalog_name = params.catalog_name;
     let name = params.name;
     let connection_string = params.connection_string;
     let pool_size = params.pool_size;
-    let cb = params.cb.clone();
+    let cb = params.cb;
     let explicit_tables = params.explicit_tables;
     let retry_settings = params.retry;
     let max_concurrent_queries = params.max_concurrent_queries;
 
     retry_async(
-        &format!("register_postgres({})", name),
+        format!("register_mysql({})", name),
         retry_settings,
         move || {
             let cb = cb.clone();
+            let context = context.clone();
+            let catalog_name = catalog_name.clone();
+            let name = name.clone();
+            let connection_string = connection_string.clone();
+            let explicit_tables = explicit_tables.clone();
+
             async move {
                 try_register_postgres(
                     context,
@@ -61,20 +67,20 @@ pub async fn register_postgres(params: SqlSourceParams<'_>) -> Result<()> {
 
 #[allow(clippy::too_many_arguments)]
 async fn try_register_postgres(
-    context: &SessionContext,
-    catalog_name: &str,
-    name: &str,
-    connection_string: &str,
+    context: Arc<SessionContext>,
+    catalog_name: String,
+    name: String,
+    connection_string: String,
     pool_size: usize,
     cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
-    explicit_tables: &Option<Vec<TableConfig>>,
+    explicit_tables: Arc<Option<Vec<TableConfig>>>,
     max_concurrent_queries: usize,
 ) -> Result<()> {
-    let pool = create_pg_pool(connection_string, pool_size).await?;
+    let pool = create_pg_pool(&connection_string, pool_size).await?;
     let inner_factory = PostgresTableFactory::new(pool);
 
     // Create federation provider
-    let executor = super::postgres_federation::PostgresExecutor::new(connection_string.to_string());
+    let executor = super::postgres_federation::PostgresExecutor::new(connection_string.clone());
     let federation_provider = executor.create_federation_provider();
 
     let factory = FederatedPostgresTableFactory {
@@ -82,35 +88,36 @@ async fn try_register_postgres(
         federation_provider,
     };
 
-    let tables_to_register: Vec<(String, String)> = if let Some(config_tables) = explicit_tables {
-        config_tables
-            .iter()
-            .map(|t| {
-                // FIX: Transform schema - use source name if empty or "public"
-                let target_schema = if t.schema.is_empty() || t.schema == "public" {
-                    name.to_string()
-                } else {
-                    t.schema.clone()
-                };
-                (t.name.clone(), target_schema)
-            })
-            .collect()
-    } else {
-        introspect_pg_tables(connection_string)
-            .await?
-            .into_iter()
-            .map(|t| (t, name.to_string()))
-            .collect()
-    };
+    let tables_to_register: Vec<(String, String)> =
+        if let Some(config_tables) = explicit_tables.as_ref() {
+            config_tables
+                .iter()
+                .map(|t| {
+                    // FIX: Transform schema - use source name if empty or "public"
+                    let target_schema = if t.schema.is_empty() || t.schema == "public" {
+                        name.to_string()
+                    } else {
+                        t.schema.clone()
+                    };
+                    (t.name.clone(), target_schema)
+                })
+                .collect()
+        } else {
+            introspect_pg_tables(&connection_string)
+                .await?
+                .into_iter()
+                .map(|t| (t, name.to_string()))
+                .collect()
+        };
 
     let fetcher: Option<Box<dyn SqlMetadataFetcher>> = Some(Box::new(PostgresMetadataFetcher {
-        connection_string: connection_string.to_string(),
+        connection_string: connection_string.clone(),
     }));
 
     register_tables(
-        context,
-        catalog_name,
-        name,
+        &context,
+        &catalog_name,
+        &name,
         fetcher,
         &factory,
         cb,

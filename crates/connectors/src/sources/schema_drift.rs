@@ -46,7 +46,7 @@ use datafusion::physical_plan::{
 };
 use futures::StreamExt;
 
-use strake_common::warnings::{add_warning, WarningCollector};
+use strake_common::warnings::{WarningCollector, add_warning};
 
 #[derive(Debug, Clone)]
 pub enum DriftWarning {
@@ -405,8 +405,8 @@ mod tests {
     use super::*;
     use datafusion::arrow::array::{Int64Array, StringArray};
     use datafusion::arrow::datatypes::{Field, Schema};
-    use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::Partitioning;
+    use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use std::sync::OnceLock;
 
     #[test]

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use tonic::body::Body;
 use tonic::codegen::http::{Request, Response};
-use tonic::{metadata::MetadataMap, Status};
+use tonic::{Status, metadata::MetadataMap};
 use tower::{Layer, Service, ServiceExt};
 
 use axum::{
@@ -62,11 +62,9 @@ impl Authenticator for ApiKeyAuthenticator {
         let (user_id, _key_id, permissions) =
             verify_api_key_credentials(&self.pool, token_str).await?;
 
-        let user = AuthenticatedUser {
-            id: user_id,
-            permissions: PermissionSet::from(permissions),
-            ..Default::default()
-        };
+        let mut user = AuthenticatedUser::default();
+        user.id = user_id.into();
+        user.permissions = PermissionSet::from(permissions);
 
         // 3. Populate Cache
         self.cache.insert(token_str.to_string(), user.clone()).await;

@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use strake_common::models::{ActorName, DomainName};
 
 /// Represents the structured outcome of an `apply` operation.
 ///
@@ -12,9 +13,9 @@ pub struct ApplyReceipt {
     /// When the apply operation was completed.
     pub applied_at: DateTime<Utc>,
     /// The user or system account that initiated the apply.
-    pub actor: String,
+    pub actor: ActorName,
     /// The domain (e.g., "finance") that was targeted.
-    pub domain: String,
+    pub domain: DomainName,
     /// The version transition resulting from this apply.
     pub version: VersionTransition,
     /// Total duration of the apply operation in milliseconds.

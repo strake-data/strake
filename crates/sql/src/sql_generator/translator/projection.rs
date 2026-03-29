@@ -9,12 +9,12 @@ use sqlparser::ast::{
 };
 
 pub(crate) fn handle_projection(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     proj: &datafusion::logical_expr::Projection,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
-    let mut query = gen.plan_to_query(&proj.input)?;
+    let mut query = generator.plan_to_query(&proj.input)?;
 
-    let mut translator = ExprTranslator::new(&mut gen.context, &gen.dialect);
+    let mut translator = ExprTranslator::new(&mut generator.context, &generator.dialect);
     let select_items = proj
         .expr
         .iter()
@@ -26,7 +26,7 @@ pub(crate) fn handle_projection(
 
     if !matches!(*query.body, SetExpr::Select(_)) {
         // Wrap non-select body (e.g. Values, SetOperation) in a subquery
-        let sub_alias = gen.context.next_alias();
+        let sub_alias = generator.context.next_alias();
         let derived = TableFactor::Derived {
             lateral: false,
             subquery: Box::new(query),
@@ -35,13 +35,13 @@ pub(crate) fn handle_projection(
                 columns: vec![],
             }),
         };
-        let mut select = gen.create_skeleton_select();
+        let mut select = generator.create_skeleton_select();
         select.from = vec![TableWithJoins {
             relation: derived,
             joins: vec![],
         }];
 
-        let mut new_query = gen.create_skeleton_query();
+        let mut new_query = generator.create_skeleton_query();
         new_query.body = Box::new(SetExpr::Select(Box::new(select)));
         query = new_query;
     }
@@ -52,15 +52,15 @@ pub(crate) fn handle_projection(
         unreachable!("Just ensured it's a Select");
     }
 
-    let input_qualifiers = gen
+    let input_qualifiers = generator
         .context
         .current_scope()
         .map(|s| s.qualifiers.clone())
         .unwrap_or_default();
-    gen.context.pop_scope();
+    generator.context.pop_scope();
 
-    let proj_alias = gen.context.next_alias();
-    let input_scope = gen.context.current_scope().cloned();
+    let proj_alias = generator.context.next_alias();
+    let input_scope = generator.context.current_scope().cloned();
     let new_columns = proj
         .schema
         .fields()
@@ -68,35 +68,35 @@ pub(crate) fn handle_projection(
         .enumerate()
         .map(|(i, f)| {
             let mut provenance = vec![proj_alias.clone()];
-            if let Some(Expr::Column(col)) = proj.expr.get(i) {
-                if let Some(scope) = &input_scope {
-                    // Match on (qualifier, name) to disambiguate columns that share a
-                    // name across different relations (e.g. after a self-join).
-                    let entry = col
-                        .relation
-                        .as_ref()
-                        .and_then(|rel| {
-                            scope.columns.iter().find(|e| {
-                                e.name.as_ref() == col.name
-                                    && e.provenance.iter().any(|p| p == rel.table())
-                            })
+            if let Some(Expr::Column(col)) = proj.expr.get(i)
+                && let Some(scope) = &input_scope
+            {
+                // Match on (qualifier, name) to disambiguate columns that share a
+                // name across different relations (e.g. after a self-join).
+                let entry = col
+                    .relation
+                    .as_ref()
+                    .and_then(|rel| {
+                        scope.columns.iter().find(|e| {
+                            e.name.as_ref() == col.name
+                                && e.provenance.iter().any(|p| p == rel.table())
                         })
-                        .or_else(|| {
-                            // Fallback: unique name match (safe when no ambiguity)
-                            let matches: Vec<_> = scope
-                                .columns
-                                .iter()
-                                .filter(|e| e.name.as_ref() == col.name)
-                                .collect();
-                            if matches.len() == 1 {
-                                Some(matches[0])
-                            } else {
-                                None
-                            }
-                        });
-                    if let Some(entry) = entry {
-                        provenance.extend(entry.provenance.clone());
-                    }
+                    })
+                    .or_else(|| {
+                        // Fallback: unique name match (safe when no ambiguity)
+                        let matches: Vec<_> = scope
+                            .columns
+                            .iter()
+                            .filter(|e| e.name.as_ref() == col.name)
+                            .collect();
+                        if matches.len() == 1 {
+                            Some(matches[0])
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(entry) = entry {
+                    provenance.extend(entry.provenance.clone());
                 }
             }
 
@@ -105,13 +105,14 @@ pub(crate) fn handle_projection(
                 data_type: f.data_type().clone(),
                 source_alias: std::sync::Arc::from(proj_alias.as_str()),
                 provenance,
-                unique_id: gen.context.next_column_id(),
+                unique_id: generator.context.next_column_id(),
             }
         })
         .collect::<Vec<_>>()
         .into();
 
-    gen.context
+    generator
+        .context
         .enter_scope(proj_alias, new_columns, input_qualifiers)
         .commit();
 
@@ -119,19 +120,19 @@ pub(crate) fn handle_projection(
 }
 
 pub(crate) fn handle_filter(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     filter: &datafusion::logical_expr::Filter,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
-    let mut query = gen.plan_to_query(&filter.input)?;
-    let mut translator = ExprTranslator::new(&mut gen.context, &gen.dialect);
+    let mut query = generator.plan_to_query(&filter.input)?;
+    let mut translator = ExprTranslator::new(&mut generator.context, &generator.dialect);
     let sql_expr = translator.expr_to_sql(&filter.predicate)?;
 
     if !matches!(*query.body, SetExpr::Select(_)) {
         // Wrap non-select body in a subquery to allow filtering.
         // We project columns explicitly (not SELECT *) for portability and to
         // preserve provenance tracking through the scope system.
-        let sub_alias = gen.context.next_alias();
-        let explicit_projection = if let Some(scope) = gen.context.current_scope() {
+        let sub_alias = generator.context.next_alias();
+        let explicit_projection = if let Some(scope) = generator.context.current_scope() {
             scope
                 .columns
                 .iter()
@@ -155,14 +156,14 @@ pub(crate) fn handle_filter(
                 columns: vec![],
             }),
         };
-        let mut select = gen.create_skeleton_select();
+        let mut select = generator.create_skeleton_select();
         select.from = vec![TableWithJoins {
             relation: derived,
             joins: vec![],
         }];
         select.projection = explicit_projection;
 
-        let mut new_query = gen.create_skeleton_query();
+        let mut new_query = generator.create_skeleton_query();
         new_query.body = Box::new(SetExpr::Select(Box::new(select)));
         query = new_query;
     }
@@ -185,14 +186,14 @@ pub(crate) fn handle_filter(
 }
 
 pub(crate) fn handle_subquery_alias(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     alias: &datafusion::logical_expr::SubqueryAlias,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
-    let inner_query = gen.plan_to_query(&alias.input)?;
-    gen.context.pop_scope();
+    let inner_query = generator.plan_to_query(&alias.input)?;
+    generator.context.pop_scope();
 
-    let subquery_alias = gen.context.next_alias();
-    let input_scope = gen.context.current_scope().cloned();
+    let subquery_alias = generator.context.next_alias();
+    let input_scope = generator.context.current_scope().cloned();
     let columns: std::sync::Arc<[ColumnEntry]> = alias
         .schema
         .fields()
@@ -218,13 +219,14 @@ pub(crate) fn handle_subquery_alias(
                 data_type: f.data_type().clone(),
                 source_alias: std::sync::Arc::from(subquery_alias.as_str()),
                 provenance,
-                unique_id: gen.context.next_column_id(),
+                unique_id: generator.context.next_column_id(),
             }
         })
         .collect::<Vec<_>>()
         .into();
     let qualifiers = vec![alias.alias.to_string()];
-    gen.context
+    generator
+        .context
         .enter_scope(subquery_alias.clone(), columns.clone(), qualifiers)
         .commit();
 
@@ -237,7 +239,7 @@ pub(crate) fn handle_subquery_alias(
         }),
     };
 
-    let mut select = gen.create_skeleton_select();
+    let mut select = generator.create_skeleton_select();
     select.from = vec![TableWithJoins {
         relation: derived,
         joins: vec![],
@@ -252,7 +254,7 @@ pub(crate) fn handle_subquery_alias(
         })
         .collect::<Result<Vec<_>, SqlGenError>>()?;
 
-    let mut query = gen.create_skeleton_query();
+    let mut query = generator.create_skeleton_query();
     query.body = Box::new(SetExpr::Select(Box::new(select)));
     Ok(query)
 }

@@ -227,7 +227,7 @@ async fn validate_postgres_source(source: &models::SourceConfig, url: &str) -> R
         }
 
         // Check columns
-        for col in &table.columns {
+        for col in &table.column_definitions {
             let col_exists: bool = client
                 .query_one(
                     "SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 AND column_name = $3)",
@@ -297,12 +297,13 @@ pub(crate) async fn validate_contracts(
     let client = get_client(config)?;
     let api_url = &config.api_url;
 
+    let mut req = strake_common::models::ValidationRequest::default();
+    req.sources_yaml = sources_yaml.to_string();
+    req.contracts_yaml = contracts_yaml;
+
     let response = client
         .post(format!("{}/validate-contracts", api_url))
-        .json(&strake_common::models::ValidationRequest {
-            sources_yaml: sources_yaml.to_string(),
-            contracts_yaml,
-        })
+        .json(&req)
         .send()
         .await
         .context("Failed to connect to Strake Validation API. Ensure the server is running.")?;

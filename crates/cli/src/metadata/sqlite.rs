@@ -1,6 +1,7 @@
 //! # SQLite Metadata Store
 //!
 //! SQLite implementation of the `MetadataStore` trait.
+#![allow(clippy::field_reassign_with_default)]
 //!
 //! ## Overview
 //!
@@ -37,13 +38,17 @@ use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
 use secrecy::ExposeSecret;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use strake_common::models::{ColumnConfig, SourceConfig, SourcesConfig, TableConfig};
+use strake_common::models::{
+    ColumnConfig, DomainName, SourceConfig, SourceName, SourcesConfig, TableConfig,
+};
 
+/// SQLite implementation of the `MetadataStore`.
 pub struct SqliteStore {
     conn: Arc<Mutex<Connection>>,
 }
 
 impl SqliteStore {
+    /// Creates a new `SqliteStore` with the given file path.
     pub fn new(path: PathBuf) -> Result<Self> {
         // Ensure directory exists
         if let Some(parent) = path.parent() {
@@ -89,16 +94,16 @@ impl MetadataStore for SqliteStore {
         })
     }
 
-    fn get_domain_version<'a>(&'a self, domain: &'a str) -> BoxFuture<'a, Result<i32>> {
+    fn get_domain_version<'a>(&'a self, domain: &'a DomainName) -> BoxFuture<'a, Result<i32>> {
         let conn = self.conn.clone();
-        let domain = domain.to_string();
+        let domain_str = domain.to_string();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 let conn = conn
                     .lock()
                     .map_err(|e| anyhow::anyhow!("SQLite lock poisoned: {}", e))?;
                 let mut stmt = conn.prepare("SELECT version FROM domains WHERE name = ?")?;
-                let mut rows = stmt.query(params![domain])?;
+                let mut rows = stmt.query(params![domain_str])?;
 
                 if let Some(row) = rows.next()? {
                     let ver: i32 = row.get(0)?;
@@ -106,7 +111,7 @@ impl MetadataStore for SqliteStore {
                 } else {
                     conn.execute(
                         "INSERT OR IGNORE INTO domains (name, version) VALUES (?, 1)",
-                        params![domain],
+                        params![domain_str],
                     )?;
                     Ok(1)
                 }
@@ -117,24 +122,29 @@ impl MetadataStore for SqliteStore {
 
     fn increment_domain_version<'a>(
         &'a self,
-        domain: &'a str,
+        domain: &'a DomainName,
         expected_version: i32,
     ) -> BoxFuture<'a, Result<i32>> {
         let conn = self.conn.clone();
-        let domain = domain.to_string();
+        let domain_str = domain.to_string();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 let conn = conn.lock().map_err(|e| anyhow::anyhow!("SQLite lock poisoned: {}", e))?;
+                let current: i32 = conn.query_row(
+                    "SELECT version FROM domains WHERE name = ?", params![domain_str], |r| r.get(0)
+                ).optional()?.unwrap_or(0);
+
                 let rows = conn.execute(
                     "UPDATE domains SET version = version + 1 WHERE name = ? AND version = ?",
-                    params![domain, expected_version],
+                    params![domain_str, expected_version],
                 )?;
 
                 if rows == 0 {
                     return Err(anyhow!(
-                        "Optimistic locking failure: Domain '{}' version has changed (expected v{})",
-                        domain,
-                        expected_version
+                        "Optimistic locking failure: Domain '{}' version has changed (expected v{}, current v{})",
+                        domain_str,
+                        expected_version,
+                        current
                     ));
                 }
                 Ok(expected_version + 1)
@@ -154,7 +164,7 @@ impl MetadataStore for SqliteStore {
                 let mut conn = conn.lock().map_err(|e| anyhow::anyhow!("SQLite lock poisoned: {}", e))?;
                 let tx = conn.transaction()?;
 
-                let domain = config.domain.as_deref().unwrap_or(DEFAULT_DOMAIN);
+                let domain = config.domain.as_ref().map(|d| d.as_ref()).unwrap_or(DEFAULT_DOMAIN);
 
                 tx.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", params![domain])?;
 
@@ -165,7 +175,7 @@ impl MetadataStore for SqliteStore {
 
                     let exists: bool = tx.query_row(
                         "SELECT 1 FROM sources WHERE domain_name = ? AND name = ?",
-                        params![domain, source.name],
+                        params![domain, source.name.to_string()],
                         |_| Ok(true)
                     ).optional().context("Failed to query sources")?.is_some();
 
@@ -175,8 +185,8 @@ impl MetadataStore for SqliteStore {
                          ON CONFLICT (domain_name, name) DO UPDATE SET type=excluded.type, url=excluded.url, username=excluded.username, password=excluded.password
                          RETURNING id",
                         params![
-                            source.name,
-                            source.source_type,
+                            source.name.to_string(),
+                            source.source_type.to_string(),
                             source.url,
                             source.username,
                             source.password.as_ref().map(|s| s.expose_secret()),
@@ -208,7 +218,7 @@ impl MetadataStore for SqliteStore {
 
                         let mut active_column_names: Vec<String> = Vec::new();
 
-                        for (idx, col) in table.columns.iter().enumerate() {
+                        for (idx, col) in table.column_definitions.iter().enumerate() {
                             tx.execute(
                                 "INSERT INTO columns (table_id, name, data_type, length, is_primary_key, is_unique, is_not_null, position)
                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -322,7 +332,7 @@ impl MetadataStore for SqliteStore {
                                 to_delete, domain
                             ));
                         }
-                        sources_deleted = to_delete;
+                        sources_deleted = to_delete.into_iter().map(SourceName::from).collect();
                         let sql_del = format!("DELETE FROM sources WHERE domain_name = ? AND id NOT IN ({})", placeholders);
                         tx.execute(&sql_del, rusqlite::params_from_iter(params_vec))?;
                      }
@@ -344,14 +354,14 @@ impl MetadataStore for SqliteStore {
                                 to_delete, domain
                             ));
                         }
-                        sources_deleted = to_delete;
+                        sources_deleted = to_delete.into_iter().map(SourceName::from).collect();
                         tx.execute("DELETE FROM sources WHERE domain_name = ?", params![domain])?;
                     }
                 }
                 tx.commit()?;
                 Ok(ApplyResult {
-                    sources_added,
-                    sources_deleted
+                   sources_added,
+                   sources_deleted
                 })
             }).await?
         })
@@ -366,12 +376,12 @@ impl MetadataStore for SqliteStore {
                     "INSERT INTO apply_history (domain_name, version, user_id, sources_added, sources_deleted, tables_modified, config_hash, config_yaml)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     params![
-                        entry.domain,
+                        entry.domain.to_string(),
                         entry.version,
-                        entry.user_id,
-                        entry.sources_added.to_string(),
-                        entry.sources_deleted.to_string(),
-                        entry.tables_modified.to_string(),
+                        entry.user_id.to_string(),
+                        serde_json::to_string(&entry.sources_added)?,
+                        serde_json::to_string(&entry.sources_deleted)?,
+                        serde_json::to_string(&entry.tables_modified)?,
                         entry.config_hash,
                         entry.config_yaml
                     ],
@@ -383,11 +393,11 @@ impl MetadataStore for SqliteStore {
 
     fn get_history<'a>(
         &'a self,
-        domain: &'a str,
+        domain: &'a DomainName,
         limit: i64,
     ) -> BoxFuture<'a, Result<Vec<ApplyLogEntry>>> {
         let conn = self.conn.clone();
-        let domain = domain.to_string();
+        let domain_str = domain.to_string();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 let conn = conn.lock().map_err(|e| anyhow::anyhow!("SQLite lock poisoned: {}", e))?;
@@ -396,15 +406,15 @@ impl MetadataStore for SqliteStore {
                      FROM apply_history WHERE domain_name = ? ORDER BY version DESC LIMIT ?"
                 )?;
 
-                let rows = stmt.query_map(params![domain, limit], |row: &Row| {
+                let rows = stmt.query_map(params![domain_str, limit], |row: &Row| {
                      let added_str: String = row.get("sources_added")?;
                      let deleted_str: String = row.get("sources_deleted")?;
                      let modified_str: String = row.get("tables_modified")?;
 
                      Ok(ApplyLogEntry {
-                        domain: row.get("domain_name")?,
+                        domain: row.get::<_, String>("domain_name")?.into(),
                         version: row.get("version")?,
-                        user_id: row.get("user_id")?,
+                        user_id: row.get::<_, String>("user_id")?.into(),
                         sources_added: serde_json::from_str(&added_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?,
                         sources_deleted: serde_json::from_str(&deleted_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e)))?,
                         tables_modified: serde_json::from_str(&modified_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e)))?,
@@ -424,9 +434,9 @@ impl MetadataStore for SqliteStore {
         })
     }
 
-    fn get_sources<'a>(&'a self, domain: &'a str) -> BoxFuture<'a, Result<SourcesConfig>> {
+    fn get_sources<'a>(&'a self, domain: &'a DomainName) -> BoxFuture<'a, Result<SourcesConfig>> {
         let conn = self.conn.clone();
-        let domain = domain.to_string();
+        let domain_str = domain.to_string();
 
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
@@ -434,7 +444,7 @@ impl MetadataStore for SqliteStore {
                 let mut sources = Vec::new();
 
                 let mut s_stmt = conn.prepare("SELECT id, name, type, url FROM sources WHERE domain_name = ?")?;
-                let s_rows = s_stmt.query_map(params![domain], |row: &Row| {
+                let s_rows = s_stmt.query_map(params![domain_str], |row: &Row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?))
                 })?;
 
@@ -453,62 +463,61 @@ impl MetadataStore for SqliteStore {
                          let mut columns = Vec::new();
                          let mut c_stmt = conn.prepare("SELECT name, data_type, length, is_primary_key, is_unique, is_not_null FROM columns WHERE table_id = ? ORDER BY position")?;
                          let c_rows = c_stmt.query_map(params![table_id], |row: &Row| {
-                             Ok(ColumnConfig {
-                                name: row.get("name")?,
-                                data_type: row.get("data_type")?,
-                                length: row.get("length")?,
-                                primary_key: row.get("is_primary_key")?,
-                                unique: row.get("is_unique")?,
-                                not_null: row.get("is_not_null")?,
-                                description: None,
-                                ..Default::default()
-                             })
+                             let mut col = ColumnConfig::default();
+                             col.name = row.get("name")?;
+                             col.data_type = row.get("data_type")?;
+                             col.length = row.get("length")?;
+                             col.primary_key = row.get("is_primary_key")?;
+                             col.unique = row.get("is_unique")?;
+                             col.not_null = row.get("is_not_null")?;
+                             col.description = None;
+                             Ok(col)
                          })?;
 
                          for col in c_rows {
                              columns.push(col?);
                          }
 
-                          tables.push(TableConfig {
-                            name: table_name,
-                            schema,
-                            partition_column,
-                            description: None,
-                            columns,
-                            ..Default::default()
-                          });
+                          let mut t_cfg = TableConfig::default();
+                          t_cfg.name = table_name;
+                          t_cfg.schema = schema;
+                          t_cfg.partition_column = partition_column;
+                          t_cfg.description = None;
+                          t_cfg.column_definitions = columns;
+                          tables.push(t_cfg);
                     }
 
-                    sources.push(SourceConfig {
-                         name,
-                         source_type,
-                         url,
-                         username: None,
-                         password: None,
-                         default_limit: None,
-                         cache: None,
-                         max_concurrent_queries: None,
-                         tables,
-                         config: serde_json::Value::Null,
-                         ..Default::default()
-                    });
+                    let mut s = SourceConfig::default();
+                    s.name = name.into();
+                    s.source_type = source_type
+                        .parse()
+                        .unwrap_or(strake_common::models::SourceType::Other(source_type));
+                    s.url = url;
+                    s.username = None;
+                    s.password = None;
+                    s.default_limit = None;
+                    s.cache = None;
+                    s.max_concurrent_queries = None;
+                    s.tables = tables;
+                    s.config = serde_json::Value::Null;
+                    sources.push(s);
                 }
 
-                Ok(SourcesConfig {
-                    domain: Some(domain),
-                    sources
-                })
+                let mut sc = SourcesConfig::default();
+                sc.domain = Some(domain_str.into());
+                sc.sources = sources;
+                Ok(sc)
             }).await?
         })
     }
 
     fn get_history_config<'a>(
         &'a self,
-        domain: &'a str,
+        domain: &'a DomainName,
         version: i32,
     ) -> BoxFuture<'a, Result<String>> {
         let conn = self.conn.clone();
-        let domain = domain.to_string();
+        let domain_str = domain.to_string();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 let conn = conn
@@ -517,14 +526,14 @@ impl MetadataStore for SqliteStore {
                 let mut stmt = conn.prepare(
                     "SELECT config_yaml FROM apply_history WHERE domain_name = ? AND version = ?",
                 )?;
-                let mut rows = stmt.query(params![domain, version])?;
+                let mut rows = stmt.query(params![domain_str, version])?;
                 if let Some(row) = rows.next()? {
                     Ok(row.get(0)?)
                 } else {
                     Err(anyhow::anyhow!(
                         "Version {} not found for domain '{}'",
                         version,
-                        domain
+                        domain_str
                     ))
                 }
             })
@@ -568,7 +577,7 @@ impl MetadataStore for SqliteStore {
                     };
 
                     Ok(super::models::DomainStatus {
-                        name: row.get(0)?,
+                        name: row.get::<_, String>(0)?.into(),
                         version: row.get(1)?,
                         created_at,
                     })

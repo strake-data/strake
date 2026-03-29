@@ -9,10 +9,10 @@ use sqlparser::ast::{
 };
 
 pub(crate) fn handle_table_scan(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     scan: &datafusion::logical_expr::TableScan,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
-    let alias = gen.context.next_alias();
+    let alias = generator.context.next_alias();
 
     let table_name = scan.table_name.table().to_string();
     let columns = scan
@@ -24,12 +24,13 @@ pub(crate) fn handle_table_scan(
             data_type: f.data_type().clone(),
             source_alias: std::sync::Arc::from(alias.as_str()),
             provenance: vec![table_name.clone(), alias.clone()],
-            unique_id: gen.context.next_column_id(),
+            unique_id: generator.context.next_column_id(),
         })
         .collect::<Vec<_>>()
         .into();
 
-    gen.context
+    generator
+        .context
         .enter_scope(alias.clone(), columns, vec![table_name.clone()])
         .commit();
 
@@ -61,7 +62,7 @@ pub(crate) fn handle_table_scan(
         })
         .collect::<Result<Vec<_>, SqlGenError>>()?;
 
-    let mut select = gen.create_skeleton_select();
+    let mut select = generator.create_skeleton_select();
     select.from = vec![TableWithJoins {
         relation,
         joins: vec![],
@@ -70,7 +71,7 @@ pub(crate) fn handle_table_scan(
 
     // Handle pushed-down filters
     if !scan.filters.is_empty() {
-        let mut translator = ExprTranslator::new(&mut gen.context, &gen.dialect);
+        let mut translator = ExprTranslator::new(&mut generator.context, &generator.dialect);
         let mut selection: Option<SqlExpr> = None;
 
         for f in &scan.filters {
@@ -87,7 +88,7 @@ pub(crate) fn handle_table_scan(
         select.selection = selection;
     }
 
-    let mut query = gen.create_skeleton_query();
+    let mut query = generator.create_skeleton_query();
     query.body = Box::new(sqlparser::ast::SetExpr::Select(Box::new(select)));
 
     // Handle pushed-down fetch (limit)

@@ -12,8 +12,8 @@
 use arrow::array::{Array, StringBuilder};
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
-use arrow_flight::sql::client::FlightSqlServiceClient;
 use arrow_flight::sql::CommandGetTables;
+use arrow_flight::sql::client::FlightSqlServiceClient;
 use async_trait::async_trait;
 use futures::StreamExt;
 use std::sync::Arc;

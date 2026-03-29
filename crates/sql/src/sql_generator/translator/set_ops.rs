@@ -10,7 +10,7 @@ use sqlparser::ast::{
 };
 
 pub(crate) fn handle_union(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     union: &datafusion::logical_expr::Union,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     if union.inputs.is_empty() {
@@ -23,18 +23,18 @@ pub(crate) fn handle_union(
     let mut queries = Vec::with_capacity(union.inputs.len());
 
     for input in &union.inputs {
-        let checkpoint = gen.context.checkpoint();
-        let query = match gen.plan_to_query(input) {
+        let checkpoint = generator.context.checkpoint();
+        let query = match generator.plan_to_query(input) {
             Ok(q) => q,
             Err(e) => {
-                gen.context.rollback(checkpoint);
+                generator.context.rollback(checkpoint);
                 return Err(e);
             }
         };
         queries.push(query);
         // Inputs are subqueries, their internal scopes are not needed by the union itself
         // but we need to ensure we don't leak them.
-        gen.context.rollback(checkpoint);
+        generator.context.rollback(checkpoint);
     }
 
     let mut combined_query = queries.remove(0);
@@ -51,7 +51,7 @@ pub(crate) fn handle_union(
         });
     }
 
-    let union_alias = gen.context.next_alias();
+    let union_alias = generator.context.next_alias();
     let columns = union
         .schema
         .fields()
@@ -61,11 +61,12 @@ pub(crate) fn handle_union(
             data_type: f.data_type().clone(),
             source_alias: std::sync::Arc::from(union_alias.as_str()),
             provenance: vec![union_alias.clone()],
-            unique_id: gen.context.next_column_id(),
+            unique_id: generator.context.next_column_id(),
         })
         .collect::<Vec<_>>()
         .into();
-    gen.context
+    generator
+        .context
         .enter_scope(union_alias, columns, vec![])
         .commit();
 
@@ -73,22 +74,23 @@ pub(crate) fn handle_union(
 }
 
 pub(crate) fn handle_distinct(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     distinct: &datafusion::logical_expr::Distinct,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     let input = match distinct {
         Distinct::All(input) => input,
         Distinct::On(on) => &on.input,
     };
-    let mut query = gen.plan_to_query(input)?;
+    let mut query = generator.plan_to_query(input)?;
     if let SetExpr::Select(ref mut select) = *query.body {
         match distinct {
             Distinct::All(_) => {
                 select.distinct = Some(sqlparser::ast::Distinct::Distinct);
             }
             Distinct::On(on) => {
-                if gen.dialect.capabilities.supports_distinct_on() {
-                    let mut translator = ExprTranslator::new(&mut gen.context, &gen.dialect);
+                if generator.dialect.capabilities.supports_distinct_on() {
+                    let mut translator =
+                        ExprTranslator::new(&mut generator.context, &generator.dialect);
                     let on_exprs = on
                         .on_expr
                         .iter()
@@ -96,7 +98,7 @@ pub(crate) fn handle_distinct(
                         .collect::<Result<Vec<_>, SqlGenError>>()?;
                     select.distinct = Some(sqlparser::ast::Distinct::On(on_exprs));
                 } else {
-                    return rewrite_distinct_on_to_row_number(gen, on);
+                    return rewrite_distinct_on_to_row_number(generator, on);
                 }
             }
         }
@@ -110,11 +112,11 @@ pub(crate) fn handle_distinct(
 }
 
 pub(crate) fn handle_limit(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     limit: &datafusion::logical_expr::Limit,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
-    let mut query = gen.plan_to_query(&limit.input)?;
-    let mut translator = ExprTranslator::new(&mut gen.context, &gen.dialect);
+    let mut query = generator.plan_to_query(&limit.input)?;
+    let mut translator = ExprTranslator::new(&mut generator.context, &generator.dialect);
 
     let limit_expr = if let Some(fetch) = &limit.fetch {
         validate_limit_offset_expr(fetch)?;
@@ -145,10 +147,10 @@ pub(crate) fn handle_limit(
 }
 
 pub(crate) fn handle_empty_relation(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     empty: &datafusion::logical_expr::EmptyRelation,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
-    let mut select = gen.create_skeleton_select();
+    let mut select = generator.create_skeleton_select();
 
     // Test expects SELECT NULL for each column
     let mut projection = empty
@@ -168,7 +170,7 @@ pub(crate) fn handle_empty_relation(
     select.from = vec![]; // No FROM clause by default
 
     // Dialect-specific: Oracle needs FROM DUAL
-    if gen.dialect.capabilities.requires_from_dual() {
+    if generator.dialect.capabilities.requires_from_dual() {
         select.from = vec![TableWithJoins {
             relation: TableFactor::Table {
                 name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("DUAL"))]),
@@ -192,12 +194,12 @@ pub(crate) fn handle_empty_relation(
         right: Box::new(SqlExpr::Value(Value::Number("0".to_string(), false).into())),
     });
 
-    let mut query = gen.create_skeleton_query();
+    let mut query = generator.create_skeleton_query();
     query.body = Box::new(SetExpr::Select(Box::new(select)));
 
     // Generating a dummy alias for consistency with how scopes work in other nodes,
     // though it's less critical for an empty relation.
-    let alias = gen.context.next_alias();
+    let alias = generator.context.next_alias();
     let columns = empty
         .schema
         .fields()
@@ -207,17 +209,20 @@ pub(crate) fn handle_empty_relation(
             data_type: f.data_type().clone(),
             source_alias: std::sync::Arc::from(alias.as_str()),
             provenance: vec![alias.clone()],
-            unique_id: gen.context.next_column_id(),
+            unique_id: generator.context.next_column_id(),
         })
         .collect::<Vec<_>>()
         .into();
-    gen.context.enter_scope(alias, columns, vec![]).commit();
+    generator
+        .context
+        .enter_scope(alias, columns, vec![])
+        .commit();
 
     Ok(query)
 }
 
 pub(crate) fn handle_values(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     values: &datafusion::logical_expr::Values,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     if values.values.is_empty() {
@@ -227,7 +232,7 @@ pub(crate) fn handle_values(
         });
     }
 
-    let mut translator = ExprTranslator::new(&mut gen.context, &gen.dialect);
+    let mut translator = ExprTranslator::new(&mut generator.context, &generator.dialect);
     let mut sql_rows = Vec::new();
     for row in &values.values {
         let mut sql_row = Vec::new();
@@ -238,8 +243,8 @@ pub(crate) fn handle_values(
     }
 
     let combined_query;
-    if gen.dialect.capabilities.supports_values_clause() {
-        let mut query = gen.create_skeleton_query();
+    if generator.dialect.capabilities.supports_values_clause() {
+        let mut query = generator.create_skeleton_query();
         query.body = Box::new(SetExpr::Values(sqlparser::ast::Values {
             explicit_row: false,
             rows: sql_rows,
@@ -249,7 +254,7 @@ pub(crate) fn handle_values(
         // Fallback to UNION ALL
         let mut selects = Vec::new();
         for row in sql_rows {
-            let mut select = gen.create_skeleton_select();
+            let mut select = generator.create_skeleton_select();
             select.projection = row
                 .into_iter()
                 .enumerate()
@@ -263,7 +268,7 @@ pub(crate) fn handle_values(
                 .collect();
             select.from = vec![];
 
-            if gen.dialect.capabilities.requires_from_dual() {
+            if generator.dialect.capabilities.requires_from_dual() {
                 select.from = vec![TableWithJoins {
                     relation: TableFactor::Table {
                         name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("DUAL"))]),
@@ -294,12 +299,12 @@ pub(crate) fn handle_values(
             };
         }
 
-        let mut query = gen.create_skeleton_query();
+        let mut query = generator.create_skeleton_query();
         query.body = Box::new(body);
         combined_query = query;
     }
 
-    let alias = gen.context.next_alias();
+    let alias = generator.context.next_alias();
     let columns = values
         .schema
         .fields()
@@ -309,33 +314,37 @@ pub(crate) fn handle_values(
             data_type: f.data_type().clone(),
             source_alias: std::sync::Arc::from(alias.as_str()),
             provenance: vec![alias.clone()],
-            unique_id: gen.context.next_column_id(),
+            unique_id: generator.context.next_column_id(),
         })
         .collect::<Vec<_>>()
         .into();
-    gen.context.enter_scope(alias, columns, vec![]).commit();
+    generator
+        .context
+        .enter_scope(alias, columns, vec![])
+        .commit();
 
     Ok(combined_query)
 }
 
 fn rewrite_distinct_on_to_row_number(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     on: &datafusion::logical_expr::DistinctOn,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     // 1. Get input query
-    let input_query = gen.plan_to_query(&on.input)?;
-    let input_relation = gen.extract_relation(input_query)?;
+    let input_query = generator.plan_to_query(&on.input)?;
+    let input_relation = generator.extract_relation(input_query)?;
     let input_scope =
-        gen.context
+        generator
+            .context
             .current_scope()
             .cloned()
             .ok_or_else(|| SqlGenError::UnsupportedPlan {
                 message: "Missing scope for DistinctOn input".to_string(),
                 node_type: "DistinctOn".to_string(),
             })?;
-    gen.context.pop_scope();
+    generator.context.pop_scope();
 
-    let mut translator = ExprTranslator::new(&mut gen.context, &gen.dialect);
+    let mut translator = ExprTranslator::new(&mut generator.context, &generator.dialect);
 
     // 2. Build Window Function: ROW_NUMBER() OVER (PARTITION BY [on_exprs] ORDER BY [sort_exprs])
     let partition_by = on
@@ -397,7 +406,7 @@ fn rewrite_distinct_on_to_row_number(
     });
 
     // 3. Create inner SELECT with ROW_NUMBER()
-    let mut inner_select = gen.create_skeleton_select();
+    let mut inner_select = generator.create_skeleton_select();
     inner_select.from = vec![TableWithJoins {
         relation: input_relation,
         joins: vec![],
@@ -425,8 +434,8 @@ fn rewrite_distinct_on_to_row_number(
     inner_select.projection = projection;
 
     // 4. Wrap in Outer SELECT with WHERE row_num = 1
-    let inner_alias = gen.context.next_alias();
-    let mut outer_select = gen.create_skeleton_select();
+    let inner_alias = generator.context.next_alias();
+    let mut outer_select = generator.create_skeleton_select();
     outer_select.from = vec![TableWithJoins {
         relation: TableFactor::Derived {
             lateral: false,
@@ -472,7 +481,7 @@ fn rewrite_distinct_on_to_row_number(
     });
 
     // 5. Setup final scope
-    let final_alias = gen.context.next_alias();
+    let final_alias = generator.context.next_alias();
     let final_columns = input_scope
         .columns
         .iter()
@@ -485,21 +494,22 @@ fn rewrite_distinct_on_to_row_number(
         .collect::<Vec<_>>()
         .into();
 
-    gen.context
+    generator
+        .context
         .enter_scope(final_alias, final_columns, input_scope.qualifiers.clone())
         .commit();
 
-    let mut query = gen.create_skeleton_query();
+    let mut query = generator.create_skeleton_query();
     query.body = Box::new(SetExpr::Select(Box::new(outer_select)));
     Ok(query)
 }
 
 pub(crate) fn handle_recursive_query(
-    gen: &mut SqlGenerator,
+    generator: &mut SqlGenerator,
     recursive: &datafusion::logical_expr::RecursiveQuery,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
-    let static_query = gen.plan_to_query(&recursive.static_term)?;
-    let recursive_term_query = gen.plan_to_query(&recursive.recursive_term)?;
+    let static_query = generator.plan_to_query(&recursive.static_term)?;
+    let recursive_term_query = generator.plan_to_query(&recursive.recursive_term)?;
 
     let cte_name = recursive.name.clone();
     let cte = sqlparser::ast::Cte {
@@ -533,7 +543,7 @@ pub(crate) fn handle_recursive_query(
         closing_paren_token: sqlparser::ast::helpers::attached_token::AttachedToken::empty(),
     };
 
-    let mut query = gen.create_skeleton_query();
+    let mut query = generator.create_skeleton_query();
     query.with = Some(sqlparser::ast::With {
         with_token: sqlparser::ast::helpers::attached_token::AttachedToken::empty(),
         recursive: true,
@@ -561,7 +571,7 @@ pub(crate) fn handle_recursive_query(
         select.projection = vec![SelectItem::Wildcard(WildcardAdditionalOptions::default())];
     }
 
-    let alias = gen.context.next_alias();
+    let alias = generator.context.next_alias();
     let columns = recursive
         .static_term
         .schema()
@@ -573,12 +583,15 @@ pub(crate) fn handle_recursive_query(
                 data_type: f.data_type().clone(),
                 source_alias: std::sync::Arc::from(alias.as_str()),
                 provenance: vec![alias.clone()],
-                unique_id: gen.context.next_column_id(),
+                unique_id: generator.context.next_column_id(),
             },
         )
         .collect::<Vec<_>>()
         .into();
-    gen.context.enter_scope(alias, columns, vec![]).commit();
+    generator
+        .context
+        .enter_scope(alias, columns, vec![])
+        .commit();
 
     Ok(query)
 }

@@ -8,7 +8,7 @@ use datafusion::common::tree_node::TreeNode;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 
-use crate::dialect_router::{route_dialect, DialectPath};
+use crate::dialect_router::{DialectPath, route_dialect};
 
 /// Generates Substrait plan bytes for the given LogicalPlan.
 ///
@@ -29,7 +29,7 @@ pub fn get_sql_for_plan(plan: &LogicalPlan, source_type: &str) -> Result<Option<
             return Err(anyhow::anyhow!(
                 "Source '{}' uses Substrait, use get_substrait_for_plan instead",
                 source_type
-            ))
+            ));
         }
         DialectPath::LocalExecution => {
             tracing::debug!(
@@ -45,16 +45,15 @@ pub fn get_sql_for_plan(plan: &LogicalPlan, source_type: &str) -> Result<Option<
     let plan = plan
         .clone()
         .transform(|node| {
-            if let LogicalPlan::Extension(ext) = &node {
-                if let Some(adapter) = ext
+            if let LogicalPlan::Extension(ext) = &node
+                && let Some(adapter) = ext
                     .node
                     .as_any()
                     .downcast_ref::<crate::schema_adapter::SchemaAdapter>()
-                {
-                    return Ok(datafusion::common::tree_node::Transformed::yes(
-                        adapter.to_projection()?,
-                    ));
-                }
+            {
+                return Ok(datafusion::common::tree_node::Transformed::yes(
+                    adapter.to_projection()?,
+                ));
             }
             Ok(datafusion::common::tree_node::Transformed::no(node))
         })

@@ -4,8 +4,8 @@ use secrecy::SecretString;
 use serde_json::json;
 use std::sync::Arc;
 use strake_common::config::{RetrySettings, TableConfig};
-use strake_connectors::sources::iceberg::provider::register_iceberg_rest;
 use strake_connectors::sources::iceberg::IcebergRestConfig;
+use strake_connectors::sources::iceberg::provider::register_iceberg_rest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -136,29 +136,26 @@ async fn test_iceberg_rest_registration_mock() -> Result<()> {
         max_concurrent_queries: None,
     };
 
-    let ctx = SessionContext::new();
+    let ctx = Arc::new(SessionContext::new());
     // Register the target catalog first, as register_iceberg_rest expects it to exist
     ctx.register_catalog(
         "strake",
         Arc::new(datafusion::catalog::MemoryCatalogProvider::new()),
     );
 
-    let tables = vec![TableConfig {
-        name: "test_table".to_string(),
-        schema: "".to_string(),
-        partition_column: None,
-        description: None,
-        columns: vec![],
-        ..Default::default()
-    }];
+    let mut t = TableConfig::default();
+    t.name = "test_table".to_string();
+    t.schema = "".to_string();
+    let tables = Arc::new(vec![t]);
+    let cfg = Arc::new(cfg);
 
     // Verify that the registration flow succeeds.
     register_iceberg_rest(
-        &ctx,
-        "strake",
-        "iceberg_source",
-        &cfg,
-        &tables,
+        Arc::clone(&ctx),
+        "strake".to_string(),
+        "iceberg_source".to_string(),
+        Arc::clone(&cfg),
+        Arc::clone(&tables),
         RetrySettings::default(),
         Arc::new(strake_common::predicate_cache::PredicateCache::new()),
         true,
@@ -174,8 +171,8 @@ async fn test_iceberg_rest_registration_mock() -> Result<()> {
 #[tokio::test]
 async fn test_iceberg_invalid_warehouse_uri() -> Result<()> {
     use strake_common::config::SourceConfig;
-    use strake_connectors::sources::iceberg::IcebergSourceProvider;
     use strake_connectors::sources::SourceProvider;
+    use strake_connectors::sources::iceberg::IcebergSourceProvider;
 
     let provider = IcebergSourceProvider {
         global_retry: RetrySettings::default(),
@@ -188,19 +185,10 @@ async fn test_iceberg_invalid_warehouse_uri() -> Result<()> {
         "region": "us-east-1"
     });
 
-    let config = SourceConfig {
-        name: "invalid_iceberg".to_string(),
-        source_type: "iceberg_rest".to_string(),
-        url: None,
-        username: None,
-        password: None,
-        tables: vec![],
-        config: cfg_json,
-        default_limit: None,
-        cache: None,
-        max_concurrent_queries: None,
-        ..Default::default()
-    };
+    let mut config = SourceConfig::default();
+    config.name = strake_common::models::SourceName::from("invalid_iceberg");
+    config.source_type = strake_common::models::SourceType::Other("iceberg_rest".to_string());
+    config.config = cfg_json;
 
     let ctx = SessionContext::new();
     let result = provider.register(&ctx, "strake", &config).await;

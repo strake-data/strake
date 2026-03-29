@@ -22,7 +22,9 @@ pub enum SqlGenError {
     #[error("Unsupported expression: {0}")]
     UnsupportedExpr(String),
 
-    #[error("Scope violation: Column '{col}' not found. Node: {node_type}, Available: {available:?}, Stack: {scope_stack:?}")]
+    #[error(
+        "Scope violation: Column '{col}' not found. Node: {node_type}, Available: {available:?}, Stack: {scope_stack:?}"
+    )]
     ScopeViolation {
         col: String,
         node_type: &'static str,

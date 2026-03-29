@@ -79,7 +79,7 @@ impl SQLExecutor for SqliteExecutor {
                         dt => {
                             return Err(datafusion::error::DataFusionError::NotImplemented(
                                 format!("SQLite federation: Unsupported data type: {:?}", dt),
-                            ))
+                            ));
                         }
                     }
                 }
@@ -106,7 +106,7 @@ impl SQLExecutor for SqliteExecutor {
                                 _ => {
                                     return Err(datafusion::error::DataFusionError::Execution(
                                         format!("Expected Int64 at col {}", i),
-                                    ))
+                                    ));
                                 }
                             },
                             None => match builder.as_any_mut().downcast_mut::<Float64Builder>() {
@@ -117,7 +117,7 @@ impl SQLExecutor for SqliteExecutor {
                                     _ => {
                                         return Err(datafusion::error::DataFusionError::Execution(
                                             format!("Expected Float64 at col {}", i),
-                                        ))
+                                        ));
                                     }
                                 },
                                 None => {
@@ -151,7 +151,7 @@ impl SQLExecutor for SqliteExecutor {
                                                 datafusion::error::DataFusionError::Internal(
                                                     "Builder type mismatch".to_string(),
                                                 ),
-                                            )
+                                            );
                                         }
                                     }
                                 }

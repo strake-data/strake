@@ -43,7 +43,7 @@ impl SqlProviderFactory for ClickHouseTableFactory {
     }
 }
 
-pub async fn register_clickhouse(params: SqlSourceParams<'_>) -> Result<()> {
+pub async fn register_clickhouse(params: SqlSourceParams) -> Result<()> {
     let context = params.context;
     let catalog_name = params.catalog_name;
     let name = params.name;
@@ -54,10 +54,16 @@ pub async fn register_clickhouse(params: SqlSourceParams<'_>) -> Result<()> {
     let max_concurrent_queries = params.max_concurrent_queries;
 
     retry_async(
-        &format!("register_clickhouse({})", name),
+        format!("register_clickhouse({})", name),
         retry_settings,
         move || {
             let cb = cb.clone();
+            let context = context.clone();
+            let catalog_name = catalog_name.clone();
+            let name = name.clone();
+            let connection_string = connection_string.clone();
+            let explicit_tables = explicit_tables.clone();
+
             async move {
                 try_register_clickhouse(
                     context,
@@ -77,44 +83,45 @@ pub async fn register_clickhouse(params: SqlSourceParams<'_>) -> Result<()> {
 
 #[allow(clippy::too_many_arguments)]
 async fn try_register_clickhouse(
-    context: &SessionContext,
-    catalog_name: &str,
-    name: &str,
-    connection_string: &str,
+    context: Arc<SessionContext>,
+    catalog_name: String,
+    name: String,
+    connection_string: String,
     cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
-    explicit_tables: &Option<Vec<TableConfig>>,
+    explicit_tables: Arc<Option<Vec<TableConfig>>>,
     max_concurrent_queries: usize,
 ) -> Result<()> {
-    let pool = create_clickhouse_pool(connection_string).await?;
+    let pool = create_clickhouse_pool(&connection_string).await?;
     let factory = ClickHouseTableFactory::new(pool);
 
-    let tables_to_register: Vec<(String, String)> = if let Some(config_tables) = explicit_tables {
-        config_tables
-            .iter()
-            .map(|t| {
-                // FIX: Transform schema - use source name if empty or "public"
-                let target_schema = if t.schema.is_empty() || t.schema == "public" {
-                    name.to_string()
-                } else {
-                    t.schema.clone()
-                };
-                (t.name.clone(), target_schema)
-            })
-            .collect()
-    } else {
-        introspect_clickhouse_tables(connection_string)
-            .await?
-            .into_iter()
-            .map(|t| (t, name.to_string()))
-            .collect()
-    };
+    let tables_to_register: Vec<(String, String)> =
+        if let Some(config_tables) = explicit_tables.as_ref() {
+            config_tables
+                .iter()
+                .map(|t| {
+                    // FIX: Transform schema - use source name if empty or "public"
+                    let target_schema = if t.schema.is_empty() || t.schema == "public" {
+                        name.to_string()
+                    } else {
+                        t.schema.clone()
+                    };
+                    (t.name.clone(), target_schema)
+                })
+                .collect()
+        } else {
+            introspect_clickhouse_tables(&connection_string)
+                .await?
+                .into_iter()
+                .map(|t| (t, name.to_string()))
+                .collect()
+        };
 
     let fetcher: Option<Box<dyn SqlMetadataFetcher>> = Some(Box::new(ClickHouseMetadataFetcher {}));
 
     register_tables(
-        context,
-        catalog_name,
-        name,
+        &context,
+        &catalog_name,
+        &name,
         fetcher,
         &factory,
         cb,

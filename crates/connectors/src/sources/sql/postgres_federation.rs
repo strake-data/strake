@@ -125,7 +125,7 @@ impl SQLExecutor for PostgresExecutor {
                         return Err(datafusion::error::DataFusionError::NotImplemented(format!(
                             "PostgreSQL federation: Unsupported data type: {:?}",
                             dt
-                        )))
+                        )));
                     }
                 }
             }
