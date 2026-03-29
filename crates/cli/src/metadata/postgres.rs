@@ -124,15 +124,10 @@ impl MetadataStore for PostgresStore {
 
             match row {
                 Some(r) => Ok(r.get(0)),
-                None => {
-                    client
-                        .execute(
-                            "INSERT INTO domains (name, version) VALUES ($1, 1) ON CONFLICT DO NOTHING",
-                            &[&domain_str],
-                        )
-                        .await?;
-                    Ok(1)
-                }
+                None => Err(anyhow::anyhow!(
+                    "Domain '{}' not found in metadata store",
+                    domain_str
+                )),
             }
         })
     }
@@ -146,23 +141,32 @@ impl MetadataStore for PostgresStore {
         let domain_str = domain.to_string();
         Box::pin(async move {
             let client = client_ptr.lock().await;
-            let rows = client
-                .execute(
-                    "UPDATE domains SET version = version + 1 WHERE name = $1 AND version = $2",
+
+            // Use an UPSERT to handle both initial creation and existing increments
+            let row = client
+                .query_one(
+                    "INSERT INTO domains (name, version) 
+                     VALUES ($1, 1) 
+                     ON CONFLICT (name) DO UPDATE 
+                     SET version = domains.version + 1 
+                     WHERE domains.version = $2 
+                     RETURNING version",
                     &[&domain_str, &expected_version],
                 )
                 .await
-                .context("Failed to increment domain version")?;
+                .map_err(|e| {
+                    if e.to_string().contains("optimistic locking failure") || e.to_string().contains("where clause") {
+                        anyhow!(
+                            "Optimistic locking failure: Domain '{}' version has changed (expected v{})",
+                            domain_str,
+                            expected_version
+                        )
+                    } else {
+                        anyhow!(e).context("Failed to increment domain version")
+                    }
+                })?;
 
-            if rows == 0 {
-                return Err(anyhow!(
-                    "Optimistic locking failure: Domain '{}' version has changed (expected v{})",
-                    domain_str,
-                    expected_version
-                ));
-            }
-
-            Ok(expected_version + 1)
+            Ok(row.get(0))
         })
     }
 
@@ -384,11 +388,16 @@ impl MetadataStore for PostgresStore {
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
+
+            let tables_modified = serde_json::to_value(&entry.tables_modified).unwrap_or_default();
+            let added_json = serde_json::to_value(&added).unwrap_or_default();
+            let deleted_json = serde_json::to_value(&deleted).unwrap_or_default();
+
             client.execute(
                 "INSERT INTO apply_history (domain_name, version, user_id, sources_added, sources_deleted, tables_modified, config_hash, config_yaml)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                &[&entry.domain.to_string(), &entry.version, &entry.user_id.to_string(), &added, &deleted, &entry.tables_modified, &entry.config_hash, &entry.config_yaml],
-            ).await.context("Failed to log apply history")?;
+                &[&entry.domain.to_string(), &entry.version, &entry.user_id.to_string(), &added_json, &deleted_json, &tables_modified, &entry.config_hash, &entry.config_yaml],
+            ).await.map_err(|e| anyhow!(e).context("Failed to log apply history"))?;
             Ok(())
         })
     }
@@ -487,10 +496,15 @@ impl MetadataStore for PostgresStore {
                         let mut col = ColumnConfig::default();
                         col.name = col_row.get("name");
                         col.data_type = col_row.get("data_type");
-                        col.length = col_row.get("length");
-                        col.primary_key = col_row.get("is_primary_key");
-                        col.unique = col_row.get("is_unique");
-                        col.not_null = col_row.get("is_not_null");
+                        // Postgres INTEGER is i32, tokio-postgres requires exact match for Row::get
+                        col.length = col_row.get::<_, Option<i32>>("length").map(|l| l as u32);
+                        col.primary_key = col_row
+                            .get::<_, Option<bool>>("is_primary_key")
+                            .unwrap_or(false);
+                        col.unique = col_row.get::<_, Option<bool>>("is_unique").unwrap_or(false);
+                        col.not_null = col_row
+                            .get::<_, Option<bool>>("is_not_null")
+                            .unwrap_or(false);
                         col.description = None;
                         columns.push(col);
                     }

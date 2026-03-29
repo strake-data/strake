@@ -157,7 +157,7 @@ pub async fn apply(
     // 1. Optimistic Locking
     let current_version_to_update = match expected_version {
         Some(v) => v,
-        None => store.get_domain_version(&domain).await?,
+        None => store.get_domain_version(&domain).await.unwrap_or(0),
     };
 
     // 2. Increment version (Locking)

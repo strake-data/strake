@@ -109,11 +109,10 @@ impl MetadataStore for SqliteStore {
                     let ver: i32 = row.get(0)?;
                     Ok(ver)
                 } else {
-                    conn.execute(
-                        "INSERT OR IGNORE INTO domains (name, version) VALUES (?, 1)",
-                        params![domain_str],
-                    )?;
-                    Ok(1)
+                    Err(anyhow::anyhow!(
+                        "Domain '{}' not found in metadata store",
+                        domain_str
+                    ))
                 }
             })
             .await?
@@ -129,26 +128,29 @@ impl MetadataStore for SqliteStore {
         let domain_str = domain.to_string();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let conn = conn.lock().map_err(|e| anyhow::anyhow!("SQLite lock poisoned: {}", e))?;
-                let current: i32 = conn.query_row(
-                    "SELECT version FROM domains WHERE name = ?", params![domain_str], |r| r.get(0)
-                ).optional()?.unwrap_or(0);
+                let conn = conn
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("SQLite lock poisoned: {}", e))?;
 
+                // Use an UPSERT approach.
                 let rows = conn.execute(
-                    "UPDATE domains SET version = version + 1 WHERE name = ? AND version = ?",
+                    "INSERT INTO domains (name, version) VALUES (?1, 1)
+                     ON CONFLICT(name) DO UPDATE SET version = version + 1
+                     WHERE version = ?2",
                     params![domain_str, expected_version],
                 )?;
 
                 if rows == 0 {
                     return Err(anyhow!(
-                        "Optimistic locking failure: Domain '{}' version has changed (expected v{}, current v{})",
+                        "Optimistic locking failure or missing domain: Domain '{}' (expected v{})",
                         domain_str,
-                        expected_version,
-                        current
+                        expected_version
                     ));
                 }
+
                 Ok(expected_version + 1)
-            }).await?
+            })
+            .await?
         })
     }
 

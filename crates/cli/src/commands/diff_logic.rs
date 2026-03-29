@@ -141,7 +141,7 @@ pub(crate) async fn diff_internal(
         .domain
         .clone()
         .unwrap_or_else(|| strake_common::models::DomainName::from("default"));
-    let db_config = store.get_sources(&domain_name).await?;
+    let db_config = store.get_sources(&domain_name).await.unwrap_or_default();
 
     let mut changes = Vec::new();
 
