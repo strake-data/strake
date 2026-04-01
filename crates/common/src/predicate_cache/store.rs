@@ -36,6 +36,12 @@ use dashmap::DashMap;
 use std::sync::Arc;
 
 /// Thread-safe in-memory cache for row-group predicate matches.
+///
+/// # Examples
+/// ```
+/// # use strake_common::predicate_cache::store::PredicateCache;
+/// let cache = PredicateCache::new();
+/// ```
 #[derive(Debug)]
 pub struct PredicateCache {
     blocks: DashMap<BlockKey, bool>,
@@ -45,6 +51,12 @@ pub struct PredicateCache {
 
 impl PredicateCache {
     /// Creates a new, empty `PredicateCache`.
+    ///
+    /// # Examples
+    /// ```
+    /// # use strake_common::predicate_cache::store::PredicateCache;
+    /// let cache = PredicateCache::new();
+    /// ```
     pub fn new() -> Self {
         Self {
             blocks: DashMap::new(),

@@ -129,7 +129,10 @@ pub struct TelemetryConfig {
 }
 
 impl TelemetryConfig {
-    /// Returns the parsed telemetry endpoint URL, or an error if invalid.
+    /// Returns the parsed telemetry endpoint URL.
+    ///
+    /// # Errors
+    /// Returns a `url::ParseError` if the configured endpoint is not a valid URL.
     pub fn parsed_endpoint_url(&self) -> Result<url::Url, url::ParseError> {
         url::Url::parse(&self.endpoint)
     }

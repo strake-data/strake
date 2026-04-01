@@ -12,23 +12,23 @@
 //! > sanitization of all PII, especially in complex SQL dialects or concatenated strings.
 //! > For high-compliance environments, consider disabling literal logging entirely.
 
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
-static EMAIL_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}").unwrap());
+static EMAIL_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}").unwrap());
 
-static SSN_REGEX: Lazy<Regex> = Lazy::new(|| {
+static SSN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     // Basic US SSN pattern: XXX-XX-XXXX
     Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap()
 });
 
-static CREDIT_CARD_REGEX: Lazy<Regex> = Lazy::new(|| {
+static CREDIT_CARD_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     // Basic 13-16 digit pattern, often grouped by hyphens or spaces
     Regex::new(r"\b(?:\d[ -]*?){13,16}\b").unwrap()
 });
 
-static PHONE_REGEX: Lazy<Regex> = Lazy::new(|| {
+static PHONE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     // Matches common phone formats like (XXX) XXX-XXXX or XXX-XXX-XXXX
     // Removed leading/trailing \b to handle (XXX) better, using grouping instead.
     Regex::new(r"(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}").unwrap()
@@ -37,6 +37,13 @@ static PHONE_REGEX: Lazy<Regex> = Lazy::new(|| {
 /// Scubs Personally Identifiable Information (PII) from the input string.
 ///
 /// This includes emails, SSNs, credit card numbers, and phone numbers.
+///
+/// # Examples
+/// ```
+/// # use strake_common::scrubber::scrub;
+/// let text = "Contact me at hello@example.com.";
+/// assert_eq!(scrub(text), "Contact me at [EMAIL].");
+/// ```
 pub fn scrub(input: &str) -> String {
     let mut scrubbed = input.to_string();
 

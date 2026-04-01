@@ -49,6 +49,13 @@ pub struct BlockKey {
 
 impl BlockKey {
     /// Creates a new `BlockKey`.
+    ///
+    /// # Examples
+    /// ```
+    /// # use strake_common::predicate_cache::key::BlockKey;
+    /// # use std::sync::Arc;
+    /// let key = BlockKey::new(12345, Arc::from("data.parquet"), 0);
+    /// ```
     pub fn new(snapshot_id: i64, file_path: Arc<str>, row_group_index: usize) -> Self {
         Self {
             snapshot_id,
@@ -72,6 +79,14 @@ pub struct PredicateKey {
 
 impl PredicateKey {
     /// Creates a new `PredicateKey` from a table name and DataFusion expression.
+    ///
+    /// # Examples
+    /// ```
+    /// # use strake_common::predicate_cache::key::PredicateKey;
+    /// # use datafusion::logical_expr::{col, lit};
+    /// let expr = col("id").eq(lit(1));
+    /// let key = PredicateKey::new("users", &expr, 0);
+    /// ```
     pub fn new(table_name: &str, expr: &Expr, partition: usize) -> Self {
         Self {
             table_name: table_name.to_string(),

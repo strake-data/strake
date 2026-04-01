@@ -57,16 +57,27 @@ use tracing_subscriber::layer::Layer;
 use tracing_subscriber::registry::LookupSpan;
 
 #[cfg(feature = "telemetry")]
-static TRACER_PROVIDER: once_cell::sync::Lazy<std::sync::Mutex<Option<SdkTracerProvider>>> =
-    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(None));
+static TRACER_PROVIDER: std::sync::LazyLock<std::sync::Mutex<Option<SdkTracerProvider>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 #[cfg(feature = "telemetry")]
-static METER_PROVIDER: once_cell::sync::Lazy<std::sync::Mutex<Option<SdkMeterProvider>>> =
-    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(None));
+static METER_PROVIDER: std::sync::LazyLock<std::sync::Mutex<Option<SdkMeterProvider>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 /// Initializes the global telemetry layer for tracing and metrics.
 ///
 /// Returns a `tracing_subscriber::Layer` that can be added to a registry.
+///
+/// # Errors
+/// Returns an error if the OTLP exporter fails to initialize.
+///
+/// # Examples
+/// ```no_run
+/// # use strake_common::telemetry::init_telemetry;
+/// # use tracing_subscriber::Registry;
+/// # use tracing_subscriber::layer::SubscriberExt;
+/// let layer = init_telemetry::<Registry>("my-service", "http://localhost:4317").unwrap();
+/// ```
 pub fn init_telemetry<S>(
     service_name: &str,
     endpoint: &str,
@@ -98,7 +109,11 @@ where
 
         // Set the global tracer provider and store it for shutdown
         opentelemetry::global::set_tracer_provider(provider.clone());
-        *TRACER_PROVIDER.lock().unwrap() = Some(provider);
+        if let Ok(mut guard) = TRACER_PROVIDER.lock() {
+            *guard = Some(provider);
+        } else {
+            tracing::warn!("TRACER_PROVIDER lock poisoned");
+        }
 
         // 2. Initialize Metrics
         init_metrics(service_name, endpoint)?;
@@ -137,7 +152,11 @@ fn init_metrics(service_name: &str, endpoint: &str) -> Result<()> {
         .build();
 
     opentelemetry::global::set_meter_provider(provider.clone());
-    *METER_PROVIDER.lock().unwrap() = Some(provider);
+    if let Ok(mut guard) = METER_PROVIDER.lock() {
+        *guard = Some(provider);
+    } else {
+        tracing::warn!("METER_PROVIDER lock poisoned");
+    }
     Ok(())
 }
 
@@ -145,10 +164,10 @@ fn init_metrics(service_name: &str, endpoint: &str) -> Result<()> {
 pub fn shutdown_telemetry() {
     #[cfg(feature = "telemetry")]
     {
-        if let Some(provider) = TRACER_PROVIDER.lock().unwrap().take() {
+        if let Ok(Some(provider)) = TRACER_PROVIDER.lock().map(|mut g| g.take()) {
             let _ = provider.shutdown();
         }
-        if let Some(provider) = METER_PROVIDER.lock().unwrap().take() {
+        if let Ok(Some(provider)) = METER_PROVIDER.lock().map(|mut g| g.take()) {
             let _ = provider.shutdown();
         }
     }

@@ -97,8 +97,8 @@ impl<'de> Deserialize<'de> for PermissionSet {
 
 impl From<Vec<String>> for PermissionSet {
     fn from(perms: Vec<String>) -> Self {
-        let mut exact = HashSet::new();
-        let mut prefixes = Vec::new();
+        let mut exact = HashSet::with_capacity(perms.len());
+        let mut prefixes = Vec::with_capacity(perms.len());
         let mut is_admin = false;
         let mut global_wildcard = false;
 
@@ -170,6 +170,15 @@ impl AuthenticatedUser {
     /// # Security
     /// Admin permissions (`admin` or `system:admin`) bypass all checks.
     /// This bypass is logged for audit purposes.
+    ///
+    /// # Examples
+    /// ```
+    /// # use strake_common::auth::{AuthenticatedUser, PermissionSet};
+    /// let mut user = AuthenticatedUser::default();
+    /// user.permissions = PermissionSet::from(vec!["sales:*".to_string()]);
+    /// assert!(user.has_permission("sales:deals:read"));
+    /// assert!(!user.has_permission("hr:salary"));
+    /// ```
     pub fn has_permission(&self, permission: &str) -> bool {
         // Optimized check
         if self.permissions.is_admin {

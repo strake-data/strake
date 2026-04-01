@@ -32,10 +32,11 @@
 use std::any::Any;
 use std::collections::VecDeque;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, RwLock};
 
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
@@ -56,6 +57,7 @@ use opentelemetry::{KeyValue, global, metrics::Counter};
 
 /// State of the circuit breaker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CircuitState {
     /// Normal operation: requests are allowed.
     Closed,
@@ -156,14 +158,13 @@ impl AdaptiveCircuitBreaker {
     }
 
     /// Returns the current state of the circuit breaker.
-    pub fn state(&self) -> CircuitState {
+    pub async fn state(&self) -> CircuitState {
         // Double-checked locking pattern
-        let (current_state, last_update): (CircuitState, Instant) =
-            *self.state.read().unwrap_or_else(|e| e.into_inner());
+        let (current_state, last_update): (CircuitState, Instant) = *self.state.read().await;
 
         if current_state == CircuitState::Open && last_update.elapsed() > self.config.reset_timeout
         {
-            let mut state_guard = self.state.write().unwrap_or_else(|e| e.into_inner());
+            let mut state_guard = self.state.write().await;
             // Verify condition again under write lock
             if state_guard.0 == CircuitState::Open
                 && state_guard.1.elapsed() > self.config.reset_timeout
@@ -183,8 +184,8 @@ impl AdaptiveCircuitBreaker {
     }
 
     /// Records a successful request.
-    pub fn record_success(&self) {
-        self.record_attempt(true);
+    pub async fn record_success(&self) {
+        self.record_attempt(true).await;
 
         #[cfg(feature = "telemetry")]
         self.request_counter.add(
@@ -195,27 +196,24 @@ impl AdaptiveCircuitBreaker {
             ],
         );
 
-        let state_val = { self.state.read().unwrap_or_else(|e| e.into_inner()).0 };
+        let state_val = { self.state.read().await.0 };
         if state_val == CircuitState::HalfOpen {
             let count = self.success_count.fetch_add(1, Ordering::SeqCst) + 1;
 
             if count >= self.config.success_threshold {
-                let mut state_guard = self.state.write().unwrap_or_else(|e| e.into_inner());
+                let mut state_guard = self.state.write().await;
                 if state_guard.0 == CircuitState::HalfOpen {
                     self.transition_to(&mut state_guard.0, CircuitState::Closed);
                     state_guard.1 = Instant::now();
-                    self.attempts
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .clear();
+                    self.attempts.lock().await.clear();
                 }
             }
         }
     }
 
     /// Records a failed request.
-    pub fn record_failure(&self) {
-        self.record_attempt(false);
+    pub async fn record_failure(&self) {
+        self.record_attempt(false).await;
 
         #[cfg(feature = "telemetry")]
         self.request_counter.add(
@@ -226,8 +224,8 @@ impl AdaptiveCircuitBreaker {
             ],
         );
 
-        if self.should_trip() {
-            let mut state_guard = self.state.write().unwrap_or_else(|e| e.into_inner());
+        if self.should_trip().await {
+            let mut state_guard = self.state.write().await;
             if state_guard.0 != CircuitState::Open {
                 self.transition_to(&mut state_guard.0, CircuitState::Open);
                 state_guard.1 = Instant::now();
@@ -235,8 +233,8 @@ impl AdaptiveCircuitBreaker {
         }
     }
 
-    fn record_attempt(&self, success: bool) {
-        let mut attempts = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
+    async fn record_attempt(&self, success: bool) {
+        let mut attempts = self.attempts.lock().await;
         attempts.push_back(Attempt {
             timestamp: Instant::now(),
             success,
@@ -266,8 +264,8 @@ impl AdaptiveCircuitBreaker {
         }
     }
 
-    fn should_trip(&self) -> bool {
-        let attempts = self.attempts.lock().unwrap();
+    async fn should_trip(&self) -> bool {
+        let attempts = self.attempts.lock().await;
         if attempts.len() < self.config.failure_threshold {
             return false;
         }
@@ -330,7 +328,7 @@ impl TableProvider for CircuitBreakerTableProvider {
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         // Check circuit state
-        let current_state = self.cb.state();
+        let current_state = self.cb.state().await;
         if current_state == CircuitState::Open {
             return Err(datafusion::error::DataFusionError::External(
                 anyhow::anyhow!(
@@ -351,7 +349,10 @@ impl TableProvider for CircuitBreakerTableProvider {
                 )))
             }
             Err(e) => {
-                self.cb.record_failure();
+                let cb_clone = Arc::clone(&self.cb);
+                tokio::spawn(async move {
+                    cb_clone.record_failure().await;
+                });
                 Err(e)
             }
         }
@@ -434,7 +435,7 @@ impl ExecutionPlan for CircuitBreakerExec {
         let stream = self.inner.execute(partition, context)?;
 
         let output_rows = MetricBuilder::new(&self.metrics).output_rows(partition);
-        let output_bytes = MetricBuilder::new(&self.metrics).counter("output_bytes", partition);
+        let output_bytes = MetricBuilder::new(&self.metrics).output_bytes(partition);
         let elapsed_compute = MetricBuilder::new(&self.metrics).elapsed_compute(partition);
 
         Ok(Box::pin(CircuitBreakerStream {
@@ -484,14 +485,20 @@ impl futures::Stream for CircuitBreakerStream {
                 // For simplicity, any non-empty batch counts as a success.
                 // In a real system, we might want to hook into errors from the inner stream.
                 if rows > 0 {
-                    self.cb.record_success();
+                    let cb_clone = Arc::clone(&self.cb);
+                    tokio::spawn(async move {
+                        cb_clone.record_success().await;
+                    });
                 }
 
                 Poll::Ready(Some(Ok(batch)))
             }
             Poll::Ready(Some(Err(err))) => {
                 self.elapsed_compute.add_duration(started.elapsed());
-                self.cb.record_failure();
+                let cb_clone = Arc::clone(&self.cb);
+                tokio::spawn(async move {
+                    cb_clone.record_failure().await;
+                });
                 Poll::Ready(Some(Err(err)))
             }
             Poll::Ready(None) => {
@@ -516,15 +523,15 @@ mod tests {
         };
         let cb = AdaptiveCircuitBreaker::new(config);
 
-        assert_eq!(cb.state(), CircuitState::Closed);
+        assert_eq!(cb.state().await, CircuitState::Closed);
 
         // First failure: not enough total attempts
-        cb.record_failure();
-        assert_eq!(cb.state(), CircuitState::Closed);
+        cb.record_failure().await;
+        assert_eq!(cb.state().await, CircuitState::Closed);
 
-        cb.record_failure();
-        cb.record_failure(); // 3 failures, > 50% error rate
-        assert_eq!(cb.state(), CircuitState::Open);
+        cb.record_failure().await;
+        cb.record_failure().await; // 3 failures, > 50% error rate
+        assert_eq!(cb.state().await, CircuitState::Open);
     }
 
     #[tokio::test]
@@ -538,19 +545,19 @@ mod tests {
         };
         let cb = AdaptiveCircuitBreaker::new(config);
 
-        cb.record_failure();
-        assert_eq!(cb.state(), CircuitState::Open);
+        cb.record_failure().await;
+        assert_eq!(cb.state().await, CircuitState::Open);
 
         // Wait for timeout
         tokio::time::sleep(Duration::from_millis(60)).await;
-        assert_eq!(cb.state(), CircuitState::HalfOpen);
+        assert_eq!(cb.state().await, CircuitState::HalfOpen);
 
         // Record successes
-        cb.record_success();
-        assert_eq!(cb.state(), CircuitState::HalfOpen);
+        cb.record_success().await;
+        assert_eq!(cb.state().await, CircuitState::HalfOpen);
 
-        cb.record_success();
-        assert_eq!(cb.state(), CircuitState::Closed);
+        cb.record_success().await;
+        assert_eq!(cb.state().await, CircuitState::Closed);
     }
 
     #[tokio::test]
@@ -562,18 +569,18 @@ mod tests {
         };
         let cb = AdaptiveCircuitBreaker::new(config);
 
-        cb.record_success();
+        cb.record_success().await;
         {
-            let attempts = cb.attempts.lock().unwrap();
+            let attempts = cb.attempts.lock().await;
             assert_eq!(attempts.len(), 1);
         }
 
         tokio::time::sleep(Duration::from_millis(150)).await;
         // Trigger a cleanup via another record
-        cb.record_success();
+        cb.record_success().await;
 
         {
-            let attempts = cb.attempts.lock().unwrap();
+            let attempts = cb.attempts.lock().await;
             // The old one should be gone
             assert_eq!(attempts.len(), 1);
         }

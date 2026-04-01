@@ -148,6 +148,13 @@ pub enum ContractRuleKind {
 }
 
 /// Normalizes the type string based on common dialect conventions.
+///
+/// # Examples
+/// ```
+/// # use strake_common::schema::normalize_type_str;
+/// assert_eq!(normalize_type_str("varchar(255)"), "VARCHAR(255)");
+/// assert_eq!(normalize_type_str("integer"), "INTEGER");
+/// ```
 pub fn normalize_type_str(raw: &str) -> String {
     let raw = raw.to_lowercase();
     let raw = raw.trim();
@@ -170,6 +177,13 @@ pub fn normalize_type_str(raw: &str) -> String {
 }
 
 /// Best-effort lifting of a CHECK expression to a ContractRuleKind.
+///
+/// # Examples
+/// ```
+/// # use strake_common::schema::{lift_check_expression, ContractRuleKind};
+/// let rule = lift_check_expression("age", "age > 18");
+/// assert_eq!(rule, Some(ContractRuleKind::Gt { value: 18.into() }));
+/// ```
 pub fn lift_check_expression(col_name: &str, expression: &str) -> Option<ContractRuleKind> {
     let expr = expression.to_lowercase();
     let col_name_lower = col_name.to_lowercase();

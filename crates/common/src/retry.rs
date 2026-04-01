@@ -31,11 +31,26 @@ use std::time::Duration;
 use tracing::{error, warn};
 
 /// Calculate the delay for the next retry attempt with exponential backoff and jitter.
+///
+/// # Examples
+/// ```
+/// # use strake_common::retry::next_retry_delay;
+/// let delay = next_retry_delay(1, 100, 1000);
+/// assert!(delay.as_millis() >= 100);
+/// ```
 pub fn next_retry_delay(attempt: usize, base_ms: u64, max_ms: u64) -> Duration {
     next_retry_delay_with_rng(&mut rand::rng(), attempt, base_ms, max_ms)
 }
 
 /// Calculate the delay for the next retry attempt using a provided RNG.
+///
+/// # Examples
+/// ```
+/// # use strake_common::retry::next_retry_delay_with_rng;
+/// # use rand::SeedableRng;
+/// let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+/// let delay = next_retry_delay_with_rng(&mut rng, 2, 100, 1000);
+/// ```
 pub fn next_retry_delay_with_rng(
     rng: &mut impl rand::Rng,
     attempt: usize,
@@ -53,6 +68,16 @@ pub fn next_retry_delay_with_rng(
 }
 
 /// Execute an async operation with retries using exponential backoff and jitter.
+///
+/// # Examples
+/// ```
+/// # use strake_common::retry::{retry_async, RetrySettings};
+/// # async fn test() {
+/// let settings = RetrySettings::default();
+/// let result = retry_async("op", settings, || async { Ok::<_, &str>("success") }).await;
+/// assert_eq!(result, Ok("success"));
+/// # }
+/// ```
 pub async fn retry_async<T, E, F, Fut, S>(
     operation_name: S,
     settings: RetrySettings,
