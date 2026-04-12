@@ -372,7 +372,7 @@ pub struct CircuitBreakerExec {
     inner: Arc<dyn ExecutionPlan>,
     cb: Arc<AdaptiveCircuitBreaker>,
     metrics: ExecutionPlanMetricsSet,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
 }
 
 impl CircuitBreakerExec {
@@ -406,7 +406,7 @@ impl ExecutionPlan for CircuitBreakerExec {
         self.inner.schema()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 
@@ -449,6 +449,13 @@ impl ExecutionPlan for CircuitBreakerExec {
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
+    }
+
+    fn partition_statistics(
+        &self,
+        partition: Option<usize>,
+    ) -> DataFusionResult<datafusion::physical_plan::Statistics> {
+        self.inner.partition_statistics(partition)
     }
 }
 

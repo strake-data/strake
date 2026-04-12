@@ -117,6 +117,7 @@ impl<'a> ExprTranslator<'a> {
                     data_type: sql_type,
                     format: None,
                     kind: sqlparser::ast::CastKind::Cast,
+                    array: false,
                 })
             }
 

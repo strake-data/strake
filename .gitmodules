@@ -1,3 +1,7 @@
 [submodule "strake-enterprise"]
 	path = strake-enterprise
 	url = https://github.com/strake-data/strake-enterprise
+[submodule "datafusion-table-providers"]
+	path = submodules/datafusion-table-providers
+	url = https://github.com/strake-data/datafusion-table-providers.git
+	branch = community-df-53

@@ -40,6 +40,7 @@ pub mod flight;
 #[allow(missing_docs)]
 pub mod grpc;
 #[allow(missing_docs)]
+#[cfg(feature = "iceberg")]
 pub mod iceberg;
 pub mod predicate_caching;
 #[allow(missing_docs)]
@@ -126,7 +127,14 @@ impl SourceRegistry {
     ) -> Result<()> {
         let type_name = match config.source_type.as_str() {
             "parquet" | "csv" | "json" => "file",
+            #[cfg(feature = "iceberg")]
             "iceberg" => "iceberg_rest",
+            #[cfg(not(feature = "iceberg"))]
+            "iceberg" => {
+                anyhow::bail!(
+                    "Iceberg support is disabled in this build. Enable 'iceberg' feature to use it."
+                )
+            }
             other => other,
         };
 
@@ -153,6 +161,7 @@ pub fn default_registry(global_retry: strake_common::config::RetrySettings) -> S
         schema_cache: Arc::new(dashmap::DashMap::new()),
     }));
     registry.register_provider(Box::new(grpc::GrpcSourceProvider { global_retry }));
+    #[cfg(feature = "iceberg")]
     registry.register_provider(Box::new(iceberg::IcebergSourceProvider {
         global_retry,
         predicate_cache: cache,

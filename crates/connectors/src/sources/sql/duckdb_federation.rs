@@ -62,6 +62,7 @@ impl SQLExecutor for DuckDBExecutor {
         &self,
         query: &str,
         _schema: SchemaRef,
+        _params: &[Arc<dyn datafusion::physical_plan::PhysicalExpr>],
     ) -> datafusion::error::Result<SendableRecordBatchStream> {
         let db_path = self.db_path.clone();
         let query_owned = query.to_string();

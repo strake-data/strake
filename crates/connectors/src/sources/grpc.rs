@@ -221,7 +221,7 @@ struct GrpcExec {
     projection: Option<Vec<usize>>,
     #[allow(dead_code)] // TODO: Implement limit pushdown
     limit: Option<usize>,
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
 }
 
@@ -244,12 +244,12 @@ impl GrpcExec {
             schema.clone()
         };
 
-        let cache = PlanProperties::new(
+        let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(projected_schema.clone()),
             Partitioning::UnknownPartitioning(1),
             EmissionType::Incremental,
             Boundedness::Bounded,
-        );
+        ));
 
         Ok(Self {
             config,
@@ -287,7 +287,7 @@ impl ExecutionPlan for GrpcExec {
     fn schema(&self) -> arrow::datatypes::SchemaRef {
         self.schema.clone()
     }
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -476,7 +476,10 @@ impl ExecutionPlan for GrpcExec {
         ))
     }
 
-    fn statistics(&self) -> datafusion::error::Result<datafusion::physical_plan::Statistics> {
+    fn partition_statistics(
+        &self,
+        _partition: Option<usize>,
+    ) -> datafusion::error::Result<datafusion::physical_plan::Statistics> {
         Ok(datafusion::physical_plan::Statistics::new_unknown(
             &self.schema,
         ))

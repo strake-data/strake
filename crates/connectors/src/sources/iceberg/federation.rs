@@ -8,7 +8,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::prelude::SessionContext;
 
-use datafusion::datasource::TableProvider;
+use datafusion_catalog::table::TableProvider;
 
 use datafusion_federation::sql::{SQLExecutor, SQLFederationProvider};
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use super::catalog::CachedRestCatalog;
 use iceberg::Catalog;
 
 use iceberg::TableIdent;
-use iceberg_datafusion::IcebergStaticTableProvider;
+use iceberg_datafusion::table::IcebergStaticTableProvider;
 
 /// Iceberg Executor for federation
 ///

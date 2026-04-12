@@ -1,24 +1,35 @@
 [workspace]
 members = ["crates/*", "python", "strake-enterprise"]
+exclude = ["submodules/datafusion-table-providers"]
 resolver = "2"
 [workspace.package]
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 license = "Apache-2.0"
 license-file = "LICENSE"
 repository = "https://github.com/strake-data/strake"
+description = "High-performance data federation and query acceleration."
+
+[workspace.metadata.strake]
+# Reserved for strake specific metadata
 
 [workspace.dependencies]
 # Pin exact versions to avoid dependency hell
 openssl = { version = "0.10", features = ["vendored"] }
-arrow = "57"
-datafusion = "51"
-datafusion-python = "50"
-datafusion-federation = { version = "0.4", features = ["sql"] }
-datafusion-table-providers = { version = "0.9", features = ["postgres", "mysql", "sqlite", "flight", "clickhouse"] }
-arrow-flight = { version = "57", features = ["flight-sql-experimental"] }
-arrow-json = "57"
-axum = "0.8.8"
+arrow = "58.0.0"
+datafusion = "53.0.0"
+datafusion-python = "53.0.0"
+datafusion-federation = { version = "0.5.3", features = ["sql"] }
+datafusion-table-providers = { path = "submodules/datafusion-table-providers/core", features = ["postgres", "mysql", "sqlite", "flight", "clickhouse"] }
+arrow-flight = { version = "58.0.0", features = ["flight-sql-experimental"] }
+arrow-json = "58.0.0"
+parquet = "58.0.0"
+datafusion-datasource-parquet = "53.0.0"
+datafusion-datasource = "53.0.0"
+object_store = "0.13.0"
+sqlparser = "0.61.0"
+datafusion-substrait = "53.0.0"
+axum = "0.8.1"
 reqwest = { version = "0.12", features = ["json"] }
 oauth2 = "5.0"
 jsonwebtoken = "10.3"
@@ -29,15 +40,15 @@ mcp-core = { version = "0.1" }
 clap = { version = "4.5", features = ["derive", "env"] }
 dashmap = "6.1.0"
 roaring = "0.10"
+uuid = "1.11.0"
 
 tokio = { version = "1.40", features = ["full"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1"] }
 postgres-types = { version = "0.2" }
 rust_decimal = { version = "1.33", features = ["db-tokio-postgres"] }
-pyo3 = "0.26"
-pyo3-asyncio = "0.20"
-prost = "0.14.1"
-prost-types = "0.14.1"
+pyo3 = "0.28"
+prost = "0.14.3"
+prost-types = "0.14.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1.0", features = ["derive"] }

@@ -39,6 +39,7 @@ pub(crate) fn handle_table_scan(
         alias: Some(TableAlias {
             name: safe_ident(&alias)?,
             columns: vec![],
+            explicit: true,
         }),
         args: None,
         with_hints: vec![],

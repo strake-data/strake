@@ -32,7 +32,7 @@ rand = "0.8"
 # Query result caching
 sha2 = { workspace = true }
 nix = { workspace = true, features = ["signal", "process"] }
-parquet = "57.1.0"  # For cache serialization
+parquet = { workspace = true }  # For cache serialization
 moka = { version = "0.12", features = ["future"] }  # Concurrent LRU cache
 reqwest = { workspace = true }
 
@@ -40,7 +40,7 @@ reqwest = { workspace = true }
 tokio-test = "0.4"
 proptest = "1.0"
 wiremock = "0.6.5"
-parquet = "57.1.0"
+parquet = { workspace = true }
 tempfile = "3.24.0"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serial_test = { workspace = true }

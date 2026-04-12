@@ -50,6 +50,7 @@ impl SQLExecutor for SqliteExecutor {
         &self,
         query: &str,
         schema: SchemaRef,
+        _params: &[Arc<dyn datafusion::physical_plan::PhysicalExpr>],
     ) -> datafusion::error::Result<SendableRecordBatchStream> {
         let connection_string = self.connection_string.clone();
         let query = query.to_string();

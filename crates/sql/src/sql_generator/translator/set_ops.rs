@@ -248,6 +248,7 @@ pub(crate) fn handle_values(
         query.body = Box::new(SetExpr::Values(sqlparser::ast::Values {
             explicit_row: false,
             rows: sql_rows,
+            value_keyword: true,
         }));
         combined_query = query;
     } else {
@@ -454,7 +455,9 @@ fn rewrite_distinct_on_to_row_number(
             alias: Some(TableAlias {
                 name: Ident::new(inner_alias.clone()),
                 columns: vec![],
+                explicit: true,
             }),
+            sample: None,
         },
         joins: vec![],
     }];
@@ -516,6 +519,7 @@ pub(crate) fn handle_recursive_query(
         alias: TableAlias {
             name: Ident::new(cte_name.clone()),
             columns: vec![],
+            explicit: true,
         },
         query: Box::new(sqlparser::ast::Query {
             with: None,

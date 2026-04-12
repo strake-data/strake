@@ -1,3 +1,4 @@
+#![cfg(feature = "iceberg")]
 use anyhow::Result;
 use secrecy::SecretString;
 use strake_connectors::sources::iceberg::{IcebergRestConfig, TableVersionSpec};

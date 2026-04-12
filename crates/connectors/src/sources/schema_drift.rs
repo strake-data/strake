@@ -203,19 +203,19 @@ pub fn reconcile_batch(
 pub struct SchemaDriftExec {
     inner: Arc<dyn ExecutionPlan>,
     expected_schema: SchemaRef,
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
 }
 
 impl SchemaDriftExec {
     pub fn new(inner: Arc<dyn ExecutionPlan>, expected_schema: SchemaRef) -> Self {
-        let cache = PlanProperties::new(
+        let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(expected_schema.clone()),
             inner.properties().partitioning.clone(),
             inner.properties().emission_type,
             inner.properties().boundedness,
-        );
+        ));
         Self {
             inner,
             expected_schema,
@@ -256,7 +256,7 @@ impl ExecutionPlan for SchemaDriftExec {
         self.expected_schema.clone()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
 
@@ -338,9 +338,11 @@ impl ExecutionPlan for SchemaDriftExec {
         Some(self.metrics.clone_inner())
     }
 
-    #[allow(deprecated)]
-    fn statistics(&self) -> DataFusionResult<datafusion::physical_plan::Statistics> {
-        self.inner.statistics()
+    fn partition_statistics(
+        &self,
+        partition: Option<usize>,
+    ) -> DataFusionResult<datafusion::physical_plan::Statistics> {
+        self.inner.partition_statistics(partition)
     }
 }
 
@@ -533,15 +535,15 @@ mod tests {
         fn schema(&self) -> SchemaRef {
             self.schema.clone()
         }
-        fn properties(&self) -> &PlanProperties {
-            static PROPERTIES: OnceLock<PlanProperties> = OnceLock::new();
+        fn properties(&self) -> &Arc<PlanProperties> {
+            static PROPERTIES: OnceLock<Arc<PlanProperties>> = OnceLock::new();
             PROPERTIES.get_or_init(|| {
-                PlanProperties::new(
+                Arc::new(PlanProperties::new(
                     EquivalenceProperties::new(Arc::new(Schema::empty())),
                     Partitioning::UnknownPartitioning(1),
                     EmissionType::Incremental,
                     Boundedness::Bounded,
-                )
+                ))
             })
         }
         fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

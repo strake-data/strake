@@ -33,7 +33,9 @@ pub(crate) fn handle_projection(
             alias: Some(TableAlias {
                 name: safe_ident(&sub_alias)?,
                 columns: vec![],
+                explicit: true,
             }),
+            sample: None,
         };
         let mut select = generator.create_skeleton_select();
         select.from = vec![TableWithJoins {
@@ -154,7 +156,9 @@ pub(crate) fn handle_filter(
             alias: Some(TableAlias {
                 name: safe_ident(&sub_alias)?,
                 columns: vec![],
+                explicit: true,
             }),
+            sample: None,
         };
         let mut select = generator.create_skeleton_select();
         select.from = vec![TableWithJoins {
@@ -236,7 +240,9 @@ pub(crate) fn handle_subquery_alias(
         alias: Some(TableAlias {
             name: safe_ident(&subquery_alias)?,
             columns: vec![],
+            explicit: true,
         }),
+        sample: None,
     };
 
     let mut select = generator.create_skeleton_select();

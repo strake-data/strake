@@ -112,8 +112,7 @@ impl ExecutionPlanVisitor for CostVisitor {
 
     fn pre_visit(&mut self, plan: &dyn ExecutionPlan) -> Result<bool> {
         // Access statistics from the physical plan node
-        #[allow(deprecated)]
-        if let Ok(stats) = plan.statistics() {
+        if let Ok(stats) = plan.partition_statistics(None) {
             // Treat as max encountered in the pipeline rather than sum to avoid double counting
             if let Some(rows) = stats.num_rows.get_value() {
                 self.max_rows = self.max_rows.max(*rows);
@@ -145,17 +144,17 @@ mod tests {
     struct MockExec {
         schema: Arc<Schema>,
         stats: Statistics,
-        cache: PlanProperties,
+        cache: Arc<PlanProperties>,
     }
 
     impl MockExec {
         fn new(schema: Arc<Schema>, stats: Statistics) -> Self {
-            let cache = PlanProperties::new(
+            let cache = Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(schema.clone()),
                 Partitioning::UnknownPartitioning(1),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
-            );
+            ));
             Self {
                 schema,
                 stats,
@@ -184,7 +183,7 @@ mod tests {
         fn schema(&self) -> Arc<Schema> {
             self.schema.clone()
         }
-        fn properties(&self) -> &PlanProperties {
+        fn properties(&self) -> &Arc<PlanProperties> {
             &self.cache
         }
         // children returns references in recent DF
@@ -208,7 +207,7 @@ mod tests {
         ) -> Result<datafusion::physical_plan::SendableRecordBatchStream> {
             unimplemented!()
         }
-        fn statistics(&self) -> Result<Statistics> {
+        fn partition_statistics(&self, _partition: Option<usize>) -> Result<Statistics> {
             Ok(self.stats.clone())
         }
     }

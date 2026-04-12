@@ -9,9 +9,9 @@ strake-common = { path = "../common" }
 strake-error = { path = "../error" }
 serde_json = { workspace = true }
 datafusion = { workspace = true }
-datafusion-substrait = "51.0.0"
+datafusion-substrait = { workspace = true }
 datafusion-federation = { workspace = true }
-sqlparser = { version = "0.59", features = ["visitor"] }
+sqlparser = { workspace = true, features = ["visitor"] }
 thiserror = "1.0"
 tracing = { workspace = true }
 prost = { workspace = true }

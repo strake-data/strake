@@ -276,7 +276,7 @@ impl ExecutionPlan for ConcurrencyLimitedExec {
     fn schema(&self) -> SchemaRef {
         self.inner.schema()
     }
-    fn properties(&self) -> &datafusion::physical_plan::PlanProperties {
+    fn properties(&self) -> &Arc<datafusion::physical_plan::PlanProperties> {
         self.inner.properties()
     }
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -291,6 +291,13 @@ impl ExecutionPlan for ConcurrencyLimitedExec {
             semaphore: self.semaphore.clone(),
         }))
     }
+    fn partition_statistics(
+        &self,
+        partition: Option<usize>,
+    ) -> datafusion::common::Result<datafusion::physical_plan::Statistics> {
+        self.inner.partition_statistics(partition)
+    }
+
     fn execute(
         &self,
         partition: usize,

@@ -42,7 +42,10 @@ use datafusion_datasource::file_scan_config::FileScanConfigBuilder;
 use datafusion_datasource::source::DataSourceExec;
 use datafusion_datasource_parquet::source::ParquetSource;
 use datafusion_datasource_parquet::{DefaultParquetFileReaderFactory, ParquetFileReaderFactory};
+#[cfg(feature = "iceberg")]
 use iceberg::metadata_columns::RESERVED_COL_NAME_FILE;
+#[cfg(not(feature = "iceberg"))]
+const RESERVED_COL_NAME_FILE: &str = "_file_path";
 use strake_common::predicate_cache::{BlockKey, PredicateCache};
 
 /// Cache mode for predicate caching.
@@ -246,7 +249,7 @@ pub struct RecordingExec {
     partition_row_offsets: Arc<DashMap<(String, usize), usize>>,
     cache: Arc<PredicateCache>,
     snapshot_id: i64,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
 }
 
@@ -298,7 +301,7 @@ impl ExecutionPlan for RecordingExec {
         self.inner.schema()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 
@@ -354,6 +357,13 @@ impl ExecutionPlan for RecordingExec {
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
+    }
+
+    fn partition_statistics(
+        &self,
+        partition: Option<usize>,
+    ) -> DataFusionResult<datafusion::physical_plan::Statistics> {
+        self.inner.partition_statistics(partition)
     }
 }
 
@@ -717,16 +727,12 @@ pub fn inject_factory_into_plan(
         return Ok(plan);
     }
 
-    let children = plan
-        .children()
-        .into_iter()
-        .map(Arc::clone)
-        .collect::<Vec<_>>();
+    let children = plan.children();
     let new_children = children
         .into_iter()
         .map(|child| {
             inject_factory_into_plan(
-                child,
+                child.clone(),
                 Arc::clone(&runtime_env),
                 Arc::clone(&cache),
                 snapshot_id,

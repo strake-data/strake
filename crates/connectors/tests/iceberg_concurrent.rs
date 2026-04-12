@@ -1,3 +1,4 @@
+#![cfg(feature = "iceberg")]
 use anyhow::Result;
 use datafusion::prelude::SessionContext;
 use secrecy::SecretString;

@@ -4,6 +4,9 @@ version.workspace = true
 license.workspace = true
 edition = "2024"
 
+[features]
+iceberg = ["dep:iceberg", "dep:iceberg-catalog-rest", "dep:iceberg-datafusion"]
+
 [dependencies]
 strake-common = { path = "../common" }
 strake-error = { path = "../error" }
@@ -20,10 +23,11 @@ secrecy = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 globset = "0.4"
-parquet = "57.1.0"
-datafusion-datasource = "51.0.0"
-datafusion-datasource-parquet = "51.0.0"
+parquet = { workspace = true }
+datafusion-datasource = { workspace = true }
+datafusion-datasource-parquet = { workspace = true }
 bytes = "1.6"
+object_store = { workspace = true, features = ["aws"] }
 
 # Connectors
 duckdb = { version = "1.1", features = ["bundled"], default-features = false }
@@ -32,9 +36,9 @@ postgres-types = { workspace = true }
 rust_decimal = { workspace = true }
 mysql_async = "0.36.1"
 rusqlite = { version = "0.37", features = ["bundled"] }
-object_store = { version = "0.12.4", features = ["aws"] }
-opendal = { version = "0.55.0", features = ["services-s3", "services-azblob", "services-gcs", "services-http", "services-ftp"] }
-object_store_opendal = "0.55.0"
+# object_store = "0.12.4" moved to workspace above
+opendal = { git = "https://github.com/apache/opendal", branch = "main", features = ["services-s3", "services-azblob", "services-gcs", "services-http", "services-ftp"] }
+object_store_opendal = { git = "https://github.com/apache/opendal", branch = "main" }
 jsonwebtoken = { workspace = true }
 base64 = "0.22"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
@@ -52,9 +56,9 @@ prost-reflect = { version = "0.16", features = ["serde"] }
 moka = { version = "0.12", features = ["future"] }
 chrono = "0.4"
 # Apache Iceberg integration
-iceberg = "0.8"
-iceberg-catalog-rest = "0.8"
-iceberg-datafusion = "0.8"
+iceberg = { version = "0.8", optional = true }
+iceberg-catalog-rest = { version = "0.8", optional = true }
+iceberg-datafusion = { version = "0.9", optional = true }
 aws-config = "1.8.14"
 aws-credential-types = "1.2.12"
 dashmap = "6.1.0"

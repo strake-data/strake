@@ -391,7 +391,7 @@ struct RestExec {
     #[allow(dead_code)]
     limit: Option<usize>,
     filters: Vec<datafusion::logical_expr::Expr>,
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
 }
 
@@ -415,12 +415,12 @@ impl RestExec {
             schema.clone()
         };
 
-        let cache = PlanProperties::new(
+        let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(projected_schema.clone()),
             Partitioning::UnknownPartitioning(1),
             EmissionType::Incremental,
             Boundedness::Bounded,
-        );
+        ));
 
         Ok(Self {
             client,
@@ -455,7 +455,7 @@ impl ExecutionPlan for RestExec {
     fn schema(&self) -> arrow::datatypes::SchemaRef {
         self.schema.clone()
     }
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -613,7 +613,10 @@ impl ExecutionPlan for RestExec {
         ))
     }
 
-    fn statistics(&self) -> datafusion::error::Result<datafusion::physical_plan::Statistics> {
+    fn partition_statistics(
+        &self,
+        _partition: Option<usize>,
+    ) -> datafusion::error::Result<datafusion::physical_plan::Statistics> {
         Ok(datafusion::physical_plan::Statistics::new_unknown(
             &self.schema,
         ))

@@ -1,3 +1,4 @@
+#![cfg(feature = "iceberg")]
 use anyhow::{Context, Result};
 use datafusion::prelude::SessionContext;
 use futures::future::join_all;

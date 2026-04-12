@@ -1,3 +1,4 @@
+#![cfg(feature = "iceberg")]
 use anyhow::Result;
 use datafusion::logical_expr::{col, lit};
 use datafusion::prelude::SessionContext;
