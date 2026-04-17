@@ -1,3 +1,4 @@
+//! Tests for it
 mod common;
 #[macro_use]
 mod fixtures;
@@ -84,7 +85,7 @@ async fn test_snowflake_dialect() {
 
 #[tokio::test]
 async fn test_substrait_source() {
-    assert!(is_substrait_source("duckdb"));
+    assert!(!is_substrait_source("duckdb"));
     assert!(is_substrait_source("datafusion"));
     assert!(!is_substrait_source("postgres"));
 }

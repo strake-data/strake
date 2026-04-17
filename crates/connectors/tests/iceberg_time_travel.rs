@@ -1,3 +1,4 @@
+#![allow(unexpected_cfgs)]
 #![cfg(feature = "iceberg")]
 use anyhow::Result;
 use secrecy::SecretString;

@@ -1,6 +1,7 @@
 use super::error::SqlGenError;
 use sqlparser::ast::Ident;
 
+/// Validates that an identifier (table or column name) is safe for SQL use.
 pub fn validate_identifier(name: &str) -> Result<(), SqlGenError> {
     if name.is_empty() {
         return Err(SqlGenError::InvalidIdentifier("empty".to_string()));
@@ -25,11 +26,13 @@ pub fn validate_identifier(name: &str) -> Result<(), SqlGenError> {
     Ok(())
 }
 
+/// Sanitize and quote a SQL identifier.
 pub fn safe_ident(name: &str) -> Result<Ident, SqlGenError> {
     validate_identifier(name)?;
     Ok(Ident::with_quote('"', name))
 }
 
+/// Sanitize a SQL identifier but return it unquoted.
 pub fn safe_ident_unquoted(name: &str) -> Result<Ident, SqlGenError> {
     validate_identifier(name)?;
     Ok(Ident::new(name))

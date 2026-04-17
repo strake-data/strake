@@ -15,11 +15,14 @@ use datafusion::physical_planner::{ExtensionPlanner, PhysicalPlanner};
 /// A logical node that adapts the schema of its input to a target schema.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SchemaAdapter {
+    /// The input logical plan to be adapted.
     pub input: LogicalPlan,
+    /// The target schema to project to.
     pub schema: DFSchemaRef,
 }
 
 impl SchemaAdapter {
+    /// Creates a new [`SchemaAdapter`].
     pub fn new(input: LogicalPlan, schema: DFSchemaRef) -> Self {
         Self { input, schema }
     }
@@ -141,7 +144,7 @@ impl UserDefinedLogicalNode for SchemaAdapter {
     }
 }
 
-/// Physical planner for SchemaAdapter that wraps the input in a projection
+/// Physical planner for [`SchemaAdapter`] that wraps the input in a projection
 /// to rename columns from physical names to logical names.
 pub struct SchemaAdapterPlanner;
 

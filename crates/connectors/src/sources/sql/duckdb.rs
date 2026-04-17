@@ -1,149 +1,521 @@
+//! # DuckDB Table Provider and Execution Plan
+//!
+//! This module provides the `DuckDBTableProvider` for integrating DuckDB tables into
+//! DataFusion, and the `DuckDBScanExec` for physical execution of pushed-down queries.
+//!
+//! ## Usage
+//!
+//! ```rust
+//! use strake_connectors::sources::sql::duckdb::DuckDBTableProvider;
+//! use std::sync::Arc;
+//!
+//! // Initialization requires a DuckDB connection pool
+//! // let provider = DuckDBTableProvider::new(pool, "my_table".to_string()).await?;
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! - **Pushdown**: SQL fragments are generated using the `strake-sql` generator.
+//! - **Execution**: Results are streamed via DuckDB's native Arrow interface.
+//! - **Safety**: `DuckDBScanExec` employs memoized column reordering to ensure data
+//!   integrity with minimal per-batch overhead.
+
 use anyhow::{Context, Result};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::catalog::TableProvider;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
-use std::sync::Arc;
+use duckdb::DuckdbConnectionManager;
+use r2d2::Pool;
+use std::sync::{Arc, OnceLock};
 
 use super::common::{FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams};
 use super::wrappers::register_tables;
 use strake_common::config::TableConfig;
 use strake_common::retry::retry_async;
 
-/// DuckDB Metadata Fetcher
+/// Newtype for a DuckDB database path.
+///
+/// # Note
+/// This type canonicalizes the path on creation to ensure consistent source identity.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DuckDBPath(String);
+
+impl DuckDBPath {
+    /// Creates a new `DuckDBPath` from a string, canonicalizing the path for identity consistency.
+    ///
+    /// # Note
+    /// This function uses `std::fs::canonicalize` which is a blocking operation. It should
+    /// primarily be called during synchronous initialization or within `spawn_blocking`.
+    pub fn new(path: impl Into<String>) -> Self {
+        let path_str = path.into();
+        if path_str.is_empty() || path_str == ":memory:" {
+            return Self(path_str);
+        }
+
+        // Canonicalize the path if possible to ensure "./db" and "db" are treated as the same source.
+        let p = std::path::Path::new(&path_str);
+        if let Ok(canonical) = std::fs::canonicalize(p)
+            && let Some(s) = canonical.to_str()
+        {
+            return Self(s.to_string());
+        }
+        Self(path_str)
+    }
+
+    /// Returns the path as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Returns true if this is an in-memory database.
+    pub fn is_memory(&self) -> bool {
+        self.0.is_empty() || self.0 == ":memory:"
+    }
+}
+
+impl From<String> for DuckDBPath {
+    fn from(s: String) -> Self {
+        Self::new(s)
+    }
+}
+
+impl AsRef<std::path::Path> for DuckDBPath {
+    fn as_ref(&self) -> &std::path::Path {
+        std::path::Path::new(&self.0)
+    }
+}
+
+impl AsRef<str> for DuckDBPath {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for DuckDBPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Fetches metadata and statistics for DuckDB tables.
 pub struct DuckDBMetadataFetcher {
-    #[allow(dead_code)]
-    pub db_path: String,
+    /// Path to the DuckDB database file.
+    pub db_path: DuckDBPath,
 }
 
 #[async_trait]
 impl SqlMetadataFetcher for DuckDBMetadataFetcher {
+    /// Fetches metadata for a specific table, including row count estimates.
+    ///
+    /// # Errors
+    /// Returns an error if the database cannot be accessed or the table does not exist.
     async fn fetch_metadata(&self, _schema: &str, _table: &str) -> Result<FetchedMetadata> {
-        // DuckDB metadata fetching implementation
+        // TODO: Implement statistics fetching once FetchedMetadata supports it.
+        // We could use the pool here too if it were shared.
         Ok(FetchedMetadata::default())
     }
 }
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use datafusion::catalog::Session;
-use datafusion::common::ScalarValue;
-use datafusion::datasource::MemTable;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
+use datafusion::physical_plan::stream::RecordBatchReceiverStream;
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+};
 use std::any::Any;
 
-/// DuckDB Table Provider
-#[derive(Debug)]
+use crate::sources::predicate_caching::DynamicFilterSource;
+
+/// DuckDB connection pool type.
+///
+/// Wraps `r2d2::Pool` with `DuckdbConnectionManager`.
+pub type DuckDBPool = Pool<DuckdbConnectionManager>;
+
+/// Execution plan for scanning a DuckDB table.
+///
+/// This plan is responsible for executing a SQL query against DuckDB and streaming
+/// the results back to DataFusion as Arrow record batches.
+///
+/// # Performance
+/// This plan uses name-based column reordering to ensure data integrity and records
+/// execution metrics (row count, compute time).
+pub struct DuckDBScanExec {
+    pool: Arc<DuckDBPool>,
+    query: String,
+    schema: SchemaRef,
+    properties: Arc<PlanProperties>,
+    metrics: ExecutionPlanMetricsSet,
+    /// Memoized column index mapping to avoid per-batch reordering overhead.
+    /// Stores Result to propagate initialization errors safely instead of panicking.
+    memoized_index_map: Arc<OnceLock<Result<Vec<usize>, datafusion::error::DataFusionError>>>,
+}
+
+impl std::fmt::Debug for DuckDBScanExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DuckDBScanExec")
+            .field("query", &self.query)
+            .field("schema", &self.schema)
+            .field("metrics", &"ExecutionPlanMetricsSet")
+            .finish()
+    }
+}
+
+impl DuckDBScanExec {
+    pub fn new(pool: Arc<DuckDBPool>, query: String, schema: SchemaRef) -> Self {
+        let properties = Arc::new(PlanProperties::new(
+            datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        Self {
+            pool,
+            query,
+            schema,
+            properties,
+            metrics: ExecutionPlanMetricsSet::new(),
+            memoized_index_map: Arc::new(OnceLock::new()),
+        }
+    }
+}
+
+impl DisplayAs for DuckDBScanExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "DuckDBScanExec: query={}", self.query)
+    }
+}
+
+#[async_trait]
+impl ExecutionPlan for DuckDBScanExec {
+    fn name(&self) -> &str {
+        "DuckDBScanExec"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        _children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        Ok(self)
+    }
+
+    fn execute(
+        &self,
+        _partition: usize,
+        _context: Arc<datafusion::execution::TaskContext>,
+    ) -> datafusion::error::Result<datafusion::execution::SendableRecordBatchStream> {
+        let pool = self.pool.clone();
+        let schema = self.schema.clone();
+        let query = self.query.clone();
+
+        let mut builder = RecordBatchReceiverStream::builder(schema.clone(), 2);
+        let tx = builder.tx();
+        let metrics = BaselineMetrics::new(&self.metrics, 0);
+        let bytes_metrics =
+            datafusion::physical_plan::metrics::MetricBuilder::new(&self.metrics).output_bytes(0);
+        let index_map_cache = self.memoized_index_map.clone();
+
+        builder.spawn_blocking(move || {
+            let _timer = metrics.elapsed_compute().timer();
+            let conn = pool.get()
+                .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?;
+
+            let mut stmt = conn
+                .prepare(&query)
+                .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?;
+
+            let batches = stmt.query_arrow([])
+                .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?;
+
+            for batch in batches {
+                // Name-based column reordering to prevent silent data corruption.
+                // DuckDB might return columns in a different order than expected by DataFusion.
+                let batch = if batch.schema() != schema {
+                    // Avoid per-batch HashMap allocation.
+                    // We use a memoized index map computed once per ExecutionPlan.
+                    let batch_schema = batch.schema();
+                    let index_map = index_map_cache.get_or_init(|| {
+                        schema.fields().iter().map(|field| {
+                            batch_schema.index_of(field.name()).map_err(|_| {
+                                datafusion::error::DataFusionError::Execution(
+                                    format!("Missing column '{}' in DuckDB result batch", field.name())
+                                )
+                            })
+                        }).collect::<Result<Vec<_>, _>>()
+                    }).as_ref().map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))?;
+
+                    // Defensive check: Ensure the current batch is compatible with the memoized mapping.
+                    if batch_schema.fields().len() < index_map.iter().max().copied().unwrap_or(0) {
+                         return Err(datafusion::error::DataFusionError::Execution(
+                            "DuckDB batch schema is incompatible with memoized index map".to_string()
+                        ));
+                    }
+
+                    let columns: Vec<_> = index_map
+                        .iter()
+                        .map(|&idx| batch.column(idx).clone())
+                        .collect();
+
+                    RecordBatch::try_new(schema.clone(), columns)
+                        .map_err(|e| datafusion::error::DataFusionError::ArrowError(Box::new(e), None))?
+                } else {
+                    batch
+                };
+
+                metrics.record_output(batch.num_rows());
+                bytes_metrics.add(batch.get_array_memory_size());
+
+                if let Err(e) = tx.blocking_send(Ok(batch)) {
+                    tracing::debug!(target: "connector", error = %e, "Failed to send batch to execution stream");
+                    break;
+                }
+            }
+            Ok(())
+        });
+
+        Ok(builder.build())
+    }
+}
+
+/// Safely quotes a SQL identifier (table or column name) for DuckDB.
+pub fn quote_identifier(id: &str) -> String {
+    format!("\"{}\"", id.replace('"', "\"\""))
+}
+
+/// Safely escapes a string literal for DuckDB.
+pub fn escape_literal(lit: &str) -> String {
+    lit.replace('\'', "''")
+}
+
+/// Implementation of `TableProvider` for DuckDB.
+///
+/// Supports filter pushdown, limit pushdown, and native Arrow data exchange.
 pub struct DuckDBTableProvider {
-    connection_string: String,
+    pool: Arc<DuckDBPool>,
     table_name: String,
     schema: SchemaRef,
+    dialect: Arc<dyn datafusion::sql::unparser::dialect::Dialect + Send + Sync>,
+}
+
+impl std::fmt::Debug for DuckDBTableProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DuckDBTableProvider")
+            .field("table_name", &self.table_name)
+            .field("schema", &self.schema)
+            .finish()
+    }
 }
 
 impl DuckDBTableProvider {
-    pub async fn new(connection_string: String, table_name: String) -> Result<Self> {
-        let conn_str = connection_string.clone();
-        let tbl_name = table_name.clone();
-
-        let fields = tokio::task::spawn_blocking(move || {
-            let conn = duckdb::Connection::open(&conn_str)
-                .context("Failed to open DuckDB for schema inference")?;
-
-            let mut stmt = conn
-                .prepare(&format!("PRAGMA table_info('{}')", tbl_name))
-                .context("Failed to prepare table_info query")?;
-
-            let rows = stmt
-                .query_map([], |row| {
-                    let name: String = row.get("name")?;
-                    let type_str: String = row.get("type")?;
-                    let notnull: bool = row.get("notnull")?;
-                    Ok((name, type_str, notnull))
-                })
-                .context("Failed to execute table_info")?;
-
-            let mut fields = Vec::new();
-            for row in rows {
-                let (name, type_str, notnull) = row?;
-                let dt = map_duckdb_type(&type_str);
-                fields.push(Field::new(name, dt, !notnull));
-            }
-            Ok::<_, anyhow::Error>(fields)
-        })
-        .await
-        .context("Join error during schema inference")??;
+    /// Creates a new `DuckDBTableProvider`.
+    ///
+    /// # Errors
+    /// Returns an error if schema inference fails.
+    pub async fn new(pool: Arc<DuckDBPool>, table_name: String) -> Result<Self> {
+        let fields = infer_duckdb_schema(pool.clone(), &table_name).await?;
+        let dialect = Arc::new(datafusion::sql::unparser::dialect::DuckDBDialect::new());
 
         Ok(Self {
-            connection_string,
+            pool,
             table_name,
             schema: Arc::new(Schema::new(fields)),
+            dialect,
         })
     }
-    pub async fn execute_substrait_plan(&self, plan_bytes: Vec<u8>) -> Result<RecordBatch> {
-        // Isolate DuckDB interaction
-        let connection_string = self.connection_string.clone();
-        let schema = self.schema.clone();
 
-        let batch = tokio::task::spawn_blocking(move || {
-            let conn = duckdb::Connection::open(&connection_string)?;
-
-            // Enable Substrait extension
-            conn.execute("INSTALL substrait", [])
-                .context("Failed to install substrait extension")?;
-            conn.execute("LOAD substrait", [])
-                .context("Failed to load substrait extension")?;
-
-            // Execute plan
-            let mut stmt = conn
-                .prepare("SELECT * FROM from_substrait(?)")
-                .context("Failed to prepare substrait query")?;
-
-            let mut rows = stmt
-                .query([plan_bytes])
-                .context("Failed to execute substrait query")?;
-
-            // Convert to RecordBatch
-            convert_duckdb_rows_to_arrow(&mut rows, schema)
-        })
-        .await
-        .context("Join error during substrait execution")??;
-
-        Ok(batch)
+    /// Generates the SQL query for pushdown.
+    pub fn generate_pushdown_sql(
+        &self,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> datafusion::error::Result<(SchemaRef, String)> {
+        let unparser = datafusion::sql::unparser::Unparser::new(self.dialect.as_ref());
+        generate_duckdb_pushdown_sql(
+            &self.table_name,
+            &self.schema,
+            &unparser,
+            projection,
+            filters,
+            limit,
+        )
     }
 }
 
+/// Infers the schema for a DuckDB table.
+pub async fn infer_duckdb_schema(pool: Arc<DuckDBPool>, table_name: &str) -> Result<Vec<Field>> {
+    let pool_cloned = pool.clone();
+    let tbl_name = table_name.to_string();
+
+    tokio::task::spawn_blocking(move || {
+        let conn = pool_cloned
+            .get()
+            .context("Failed to get DuckDB connection from pool")?;
+
+        let mut stmt = conn
+            .prepare(&format!(
+                "PRAGMA table_info('{}')",
+                escape_literal(&tbl_name)
+            ))
+            .context("Failed to prepare table_info query")?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                let name: String = row.get("name")?;
+                let type_str: String = row.get("type")?;
+                let notnull: bool = row.get("notnull")?;
+                Ok((name, type_str, notnull))
+            })
+            .context("Failed to execute table_info")?;
+
+        let mut fields = Vec::with_capacity(16);
+        for row in rows {
+            let (name, type_str, notnull) = row?;
+            let dt = map_duckdb_type(&type_str);
+            fields.push(Field::new(name, dt, !notnull));
+        }
+        Ok::<_, anyhow::Error>(fields)
+    })
+    .await
+    .context("Join error during schema inference")?
+}
+
+/// Generates the SQL query for pushdown.
+pub fn generate_duckdb_pushdown_sql(
+    table_name: &str,
+    schema: &SchemaRef,
+    unparser: &datafusion::sql::unparser::Unparser,
+    projection: Option<&Vec<usize>>,
+    filters: &[Expr],
+    limit: Option<usize>,
+) -> datafusion::error::Result<(SchemaRef, String)> {
+    let target_schema = if let Some(proj) = projection {
+        schema.project(proj)?
+    } else {
+        schema.as_ref().clone()
+    };
+    let target_schema = Arc::new(target_schema);
+
+    let col_names: Vec<String> = target_schema
+        .fields()
+        .iter()
+        .map(|f| quote_identifier(f.name()))
+        .collect();
+
+    let mut query = format!(
+        "SELECT {} FROM {}",
+        col_names.join(", "),
+        quote_identifier(table_name)
+    );
+
+    let mut where_clauses = Vec::new();
+    for filter in filters {
+        if let Ok(sql) = unparser.expr_to_sql(filter) {
+            where_clauses.push(sql.to_string());
+        } else {
+            tracing::warn!(filter = ?filter, "Failed to unparse filter for pushdown");
+        }
+    }
+
+    if !where_clauses.is_empty() {
+        query.push_str(" WHERE ");
+        query.push_str(&where_clauses.join(" AND "));
+    }
+
+    if let Some(n) = limit {
+        query.push_str(&format!(" LIMIT {}", n));
+    }
+
+    Ok((target_schema, query))
+}
+
+/// Maps a DuckDB type string to an Arrow `DataType`.
 pub fn map_duckdb_type(type_str: &str) -> DataType {
-    let t = type_str.to_uppercase();
-    if t == "BIGINT" || t == "INT8" || t == "LONG" {
+    if type_str.starts_with("DECIMAL") || type_str.starts_with("decimal") {
+        let t = type_str.to_uppercase();
+        // Parse DECIMAL(P, S)
+        if let (Some(start), Some(end)) = (t.find('('), t.find(')')) {
+            let parts: Vec<&str> = t[start + 1..end].split(',').map(|s| s.trim()).collect();
+            if parts.len() == 2
+                && let (Ok(p), Ok(s)) = (parts[0].parse::<u8>(), parts[1].parse::<i8>())
+            {
+                return DataType::Decimal128(p, s);
+            }
+        }
+        return DataType::Decimal128(18, 2); // Default
+    }
+
+    if type_str.eq_ignore_ascii_case("BIGINT")
+        || type_str.eq_ignore_ascii_case("INT8")
+        || type_str.eq_ignore_ascii_case("LONG")
+    {
         DataType::Int64
-    } else if t == "INTEGER" || t == "INT" || t == "INT4" || t == "SIGNED" {
+    } else if type_str.eq_ignore_ascii_case("INTEGER")
+        || type_str.eq_ignore_ascii_case("INT")
+        || type_str.eq_ignore_ascii_case("INT4")
+        || type_str.eq_ignore_ascii_case("SIGNED")
+    {
         DataType::Int32
-    } else if t == "SMALLINT" || t == "INT2" || t == "SHORT" {
+    } else if type_str.eq_ignore_ascii_case("SMALLINT")
+        || type_str.eq_ignore_ascii_case("INT2")
+        || type_str.eq_ignore_ascii_case("SHORT")
+    {
         DataType::Int16
-    } else if t == "TINYINT" || t == "INT1" {
+    } else if type_str.eq_ignore_ascii_case("TINYINT") || type_str.eq_ignore_ascii_case("INT1") {
         DataType::Int8
-    } else if t == "UBIGINT" {
+    } else if type_str.eq_ignore_ascii_case("UBIGINT") {
         DataType::UInt64
-    } else if t == "UINTEGER" || t == "UINT" {
+    } else if type_str.eq_ignore_ascii_case("UINTEGER") || type_str.eq_ignore_ascii_case("UINT") {
         DataType::UInt32
-    } else if t == "USMALLINT" || t == "USHORT" {
+    } else if type_str.eq_ignore_ascii_case("USMALLINT") || type_str.eq_ignore_ascii_case("USHORT")
+    {
         DataType::UInt16
-    } else if t == "UTINYINT" {
+    } else if type_str.eq_ignore_ascii_case("UTINYINT") {
         DataType::UInt8
-    } else if t == "VARCHAR" || t == "TEXT" || t == "STRING" || t == "CHAR" || t == "BPCHAR" {
+    } else if type_str.eq_ignore_ascii_case("VARCHAR")
+        || type_str.eq_ignore_ascii_case("TEXT")
+        || type_str.eq_ignore_ascii_case("STRING")
+        || type_str.eq_ignore_ascii_case("CHAR")
+        || type_str.eq_ignore_ascii_case("BPCHAR")
+    {
         DataType::Utf8
-    } else if t == "DOUBLE" || t == "FLOAT8" || t == "DECIMAL" {
-        DataType::Float64 // Treat decimals as Float64 for simplicity unless precise mapping strategy
-    } else if t == "FLOAT" || t == "FLOAT4" || t == "REAL" {
+    } else if type_str.eq_ignore_ascii_case("DOUBLE") || type_str.eq_ignore_ascii_case("FLOAT8") {
+        DataType::Float64
+    } else if type_str.eq_ignore_ascii_case("FLOAT")
+        || type_str.eq_ignore_ascii_case("FLOAT4")
+        || type_str.eq_ignore_ascii_case("REAL")
+    {
         DataType::Float32
-    } else if t == "BOOLEAN" || t == "BOOL" {
+    } else if type_str.eq_ignore_ascii_case("BOOLEAN") || type_str.eq_ignore_ascii_case("BOOL") {
         DataType::Boolean
-    } else if t.contains("TIMESTAMP") {
+    } else if type_str.to_uppercase().contains("TIMESTAMP") {
         DataType::Timestamp(TimeUnit::Microsecond, None)
-    } else if t == "DATE" {
+    } else if type_str.eq_ignore_ascii_case("DATE") {
         DataType::Date32
-    } else if t == "BLOB" || t == "BYTEA" || t == "BINARY" || t == "VARBINARY" {
+    } else if type_str.eq_ignore_ascii_case("BLOB")
+        || type_str.eq_ignore_ascii_case("BYTEA")
+        || type_str.eq_ignore_ascii_case("BINARY")
+        || type_str.eq_ignore_ascii_case("VARBINARY")
+    {
         DataType::Binary
     } else {
         // Fallback
@@ -167,157 +539,84 @@ impl TableProvider for DuckDBTableProvider {
 
     async fn scan(
         &self,
-        state: &dyn Session,
+        _state: &dyn datafusion::catalog::Session,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        // Isolate DuckDB interaction to ensure no non-Send types cross await points
-        let connection_string = self.connection_string.clone();
-        let table_name = self.table_name.clone();
+        let (target_schema, query) = self.generate_pushdown_sql(projection, filters, limit)?;
 
-        let target_schema = if let Some(proj) = projection {
-            self.schema.project(proj)?
-        } else {
-            self.schema.as_ref().clone()
-        };
-        let target_schema = Arc::new(target_schema);
+        tracing::info!(query = %query, "Executing Streaming DuckDB Pushdown Query");
 
-        // Generate SQL Query outside blocking task
-        let col_names: Vec<String> = target_schema
-            .fields()
-            .iter()
-            .map(|f| format!("\"{}\"", f.name()))
-            .collect();
-
-        let mut query = format!("SELECT {} FROM {}", col_names.join(", "), table_name);
-
-        let mut where_clauses = Vec::new();
-        {
-            let dialect = datafusion::sql::unparser::dialect::PostgreSqlDialect {};
-            let unparser = datafusion::sql::unparser::Unparser::new(&dialect);
-
-            for filter in filters {
-                if let Ok(sql) = unparser.expr_to_sql(filter) {
-                    where_clauses.push(sql.to_string());
-                } else {
-                    tracing::warn!("Failed to unparse filter for pushdown: {:?}", filter);
-                }
-            }
-        }
-
-        if !where_clauses.is_empty() {
-            query.push_str(" WHERE ");
-            query.push_str(&where_clauses.join(" AND "));
-        }
-
-        if let Some(n) = limit {
-            query.push_str(&format!(" LIMIT {}", n));
-        }
-
-        tracing::info!(query = %query, "Executing DuckDB Pushdown Query");
-
-        let batch = tokio::task::spawn_blocking(move || {
-            let conn = duckdb::Connection::open(&connection_string)
-                .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?;
-
-            let mut stmt = conn
-                .prepare(&query)
-                .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?;
-
-            let mut rows = stmt
-                .query([])
-                .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?;
-
-            convert_duckdb_rows_to_arrow(&mut rows, target_schema)
-                .map_err(|e| datafusion::error::DataFusionError::External(e.into()))
-        })
-        .await
-        .map_err(|e| {
-            datafusion::error::DataFusionError::Execution(format!("Join Error: {}", e))
-        })??;
-
-        let mem_table = MemTable::try_new(batch.schema(), vec![vec![batch]])?;
-
-        // Note: we pass 'None' for filters and 'None' for limit to mem_table.scan
-        // because we have already applied them at the source (DuckDB).
-        // However, DataFusion might still stick a Filter/Limit node on top if we don't return Exact pushdown confirmation.
-        // For correctness, passing them again to MemTable is safe (limit 2 on 2 rows is 2 rows).
-        // But to verify pushdown optimization, we ideally want to fetch less data.
-        mem_table.scan(state, None, filters, limit).await
+        Ok(Arc::new(DuckDBScanExec::new(
+            self.pool.clone(),
+            query,
+            target_schema,
+        )))
     }
 
     fn supports_filters_pushdown(
         &self,
         filters: &[&Expr],
     ) -> datafusion::error::Result<Vec<TableProviderFilterPushDown>> {
-        // Optimistically accept all filters
-        Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
+        let unparser = datafusion::sql::unparser::Unparser::new(self.dialect.as_ref());
+
+        // Only return Exact if we can actually unparse the filter.
+        Ok(filters
+            .iter()
+            .map(|f| {
+                if unparser.expr_to_sql(f).is_ok() {
+                    TableProviderFilterPushDown::Exact
+                } else {
+                    TableProviderFilterPushDown::Unsupported
+                }
+            })
+            .collect())
     }
 }
 
-fn convert_duckdb_rows_to_arrow(rows: &mut duckdb::Rows, schema: SchemaRef) -> Result<RecordBatch> {
-    let num_cols = schema.fields().len();
-    let mut col_buffers: Vec<Vec<ScalarValue>> = vec![vec![]; num_cols];
-
-    while let Some(row) = rows.next()? {
-        for (i, buffer) in col_buffers.iter_mut().enumerate() {
-            // Safety: We assume schema matches row width.
-            // If row has fewer columns, unwrap panics.
-            // Should be robust?
-            if i >= row.as_ref().column_count() {
-                continue; // or error
-            }
-            let val_ref = row.get_ref(i)?;
-            let scalar = duck_val_to_scalar(val_ref, schema.field(i).data_type());
-            buffer.push(scalar);
-        }
-    }
-
-    let mut arrays = Vec::new();
-    for buffer in col_buffers {
-        let array = ScalarValue::iter_to_array(buffer)?;
-        arrays.push(array);
-    }
-
-    Ok(arrow::record_batch::RecordBatch::try_new(schema, arrays)?)
-}
-
-fn duck_val_to_scalar(val: duckdb::types::ValueRef, dt: &DataType) -> ScalarValue {
-    use duckdb::types::ValueRef;
-
-    // Attempt to match requested type if possible
-    match val {
-        ValueRef::Null => ScalarValue::try_from(dt).unwrap(),
-        ValueRef::Boolean(b) => ScalarValue::Boolean(Some(b)),
-        ValueRef::TinyInt(i) => ScalarValue::Int8(Some(i)),
-        ValueRef::SmallInt(i) => ScalarValue::Int16(Some(i)),
-        ValueRef::Int(i) => {
-            if let DataType::Int64 = dt {
-                ScalarValue::Int64(Some(i as i64))
-            } else {
-                ScalarValue::Int32(Some(i))
-            }
-        }
-        ValueRef::BigInt(i) => ScalarValue::Int64(Some(i)),
-        ValueRef::HugeInt(i) => ScalarValue::Decimal128(Some(i), 38, 0),
-        ValueRef::Float(f) => ScalarValue::Float32(Some(f)),
-        ValueRef::Double(f) => ScalarValue::Float64(Some(f)),
-        ValueRef::Text(s) => ScalarValue::Utf8(Some(String::from_utf8_lossy(s).to_string())),
-        ValueRef::Blob(b) => ScalarValue::Binary(Some(b.to_vec())),
-        ValueRef::Date32(d) => ScalarValue::Date32(Some(d)),
-        ValueRef::Timestamp(u, _unit) => ScalarValue::TimestampMicrosecond(Some(u as i64), None),
-        _ => ScalarValue::Utf8(Some(format!("{:?}", val))),
+impl DynamicFilterSource for DuckDBTableProvider {
+    fn supports_dynamic_filter(&self) -> bool {
+        // We support dynamic filtering signals for coordination.
+        true
     }
 }
 
+// Manual conversion functions removed in favor of duckdb's native query_arrow
+
+/// Factory for creating DuckDB table providers.
+///
+/// Implements `SqlProviderFactory` to integrate with the Strake source registration system.
 pub struct DuckDBTableFactory {
-    connection_string: String,
+    pool: Arc<DuckDBPool>,
+    /// Shared federation provider across all tables from this database.
+    federation_provider: Arc<dyn datafusion_federation::FederationProvider>,
 }
 
 impl DuckDBTableFactory {
-    pub fn new(connection_string: String) -> Self {
-        Self { connection_string }
+    /// Creates a new `DuckDBTableFactory`.
+    ///
+    /// # Errors
+    /// Returns an error if the connection pool cannot be initialized.
+    pub fn new(path: DuckDBPath) -> Result<Self> {
+        let manager = DuckdbConnectionManager::file(path.as_str())
+            .map_err(|e| anyhow::anyhow!("Failed to create DuckDB connection manager: {}", e))?;
+        let pool = r2d2::Pool::builder()
+            .max_size(10)
+            .build(manager)
+            .context("Failed to create DuckDB connection pool")?;
+
+        let pool = Arc::new(pool);
+        let executor = Arc::new(super::duckdb_federation::DuckDBExecutor::new(
+            pool.clone(),
+            path.clone(),
+        )?);
+        let federation_provider = executor.create_federation_provider();
+
+        Ok(Self {
+            pool,
+            federation_provider,
+        })
     }
 }
 
@@ -330,19 +629,77 @@ impl SqlProviderFactory for DuckDBTableFactory {
         cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
     ) -> Result<Arc<dyn TableProvider>> {
         let table_name = table_ref.table();
-        let provider =
-            DuckDBTableProvider::new(self.connection_string.clone(), table_name.to_string())
-                .await?;
+        let provider = DuckDBTableProvider::new(self.pool.clone(), table_name.to_string()).await?;
 
-        // Wrap with metadata and circuit breaker
-        Ok(super::wrappers::wrap_provider(
-            Arc::new(provider),
-            cb,
-            metadata,
-        ))
+        // First wrap with metadata and circuit breaker
+        let wrapped_provider = super::wrappers::wrap_provider(Arc::new(provider), cb, metadata);
+
+        // Enable federation support using the SHARED federation provider from the factory.
+        // This ensures the federation optimizer identifies tables as coming from the same source.
+        let table_source = Arc::new(DuckDBTableSource::new(
+            self.federation_provider.clone(),
+            wrapped_provider.clone(),
+        ));
+        let federated_provider = Arc::new(
+            datafusion_federation::FederatedTableProviderAdaptor::new_with_provider(
+                table_source,
+                wrapped_provider,
+            ),
+        );
+
+        Ok(federated_provider)
     }
 }
 
+/// A custom TableSource for DuckDB that integrates with our custom federation provider.
+pub struct DuckDBTableSource {
+    federation_provider: Arc<dyn datafusion_federation::FederationProvider>,
+    table_provider: Arc<dyn TableProvider>,
+}
+
+impl DuckDBTableSource {
+    pub fn new(
+        federation_provider: Arc<dyn datafusion_federation::FederationProvider>,
+        table_provider: Arc<dyn TableProvider>,
+    ) -> Self {
+        Self {
+            federation_provider,
+            table_provider,
+        }
+    }
+}
+
+impl datafusion::logical_expr::TableSource for DuckDBTableSource {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn schema(&self) -> datafusion::arrow::datatypes::SchemaRef {
+        self.table_provider.schema()
+    }
+
+    fn table_type(&self) -> datafusion::logical_expr::TableType {
+        self.table_provider.table_type()
+    }
+
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&datafusion::logical_expr::Expr],
+    ) -> datafusion::error::Result<Vec<datafusion::logical_expr::TableProviderFilterPushDown>> {
+        self.table_provider.supports_filters_pushdown(filters)
+    }
+}
+
+impl datafusion_federation::FederatedTableSource for DuckDBTableSource {
+    fn federation_provider(&self) -> Arc<dyn datafusion_federation::FederationProvider> {
+        self.federation_provider.clone()
+    }
+}
+
+/// Registers a DuckDB source in the DataFusion context.
+///
+/// # Errors
+/// Returns an error if the database connection fails or introspection fails.
 pub async fn register_duckdb(params: SqlSourceParams) -> Result<()> {
     let context = params.context;
     let catalog_name = params.catalog_name;
@@ -369,7 +726,7 @@ pub async fn register_duckdb(params: SqlSourceParams) -> Result<()> {
                     context,
                     catalog_name,
                     name,
-                    connection_string,
+                    connection_string.into(),
                     cb,
                     explicit_tables,
                     max_concurrent_queries,
@@ -386,14 +743,12 @@ async fn try_register_duckdb(
     context: Arc<SessionContext>,
     catalog_name: String,
     name: String,
-    connection_string: String,
+    db_path: DuckDBPath,
     cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
     explicit_tables: Arc<Option<Vec<TableConfig>>>,
     max_concurrent_queries: usize,
 ) -> Result<()> {
-    // For DuckDB, connection is file path.
-    // We don't use a pool yet, just path string.
-    let factory = DuckDBTableFactory::new(connection_string.clone());
+    let factory = DuckDBTableFactory::new(db_path.clone())?;
 
     let tables_to_register: Vec<(String, String)> =
         if let Some(config_tables) = explicit_tables.as_ref() {
@@ -409,16 +764,16 @@ async fn try_register_duckdb(
                 })
                 .collect()
         } else {
-            introspect_duckdb_tables(&connection_string)
+            factory
+                .introspect_tables()
                 .await?
                 .into_iter()
                 .map(|t| (t, name.to_string()))
                 .collect()
         };
 
-    let fetcher: Option<Box<dyn SqlMetadataFetcher>> = Some(Box::new(DuckDBMetadataFetcher {
-        db_path: connection_string.clone(),
-    }));
+    let fetcher: Option<Box<dyn SqlMetadataFetcher>> =
+        Some(Box::new(DuckDBMetadataFetcher { db_path }));
 
     register_tables(
         &context,
@@ -434,32 +789,40 @@ async fn try_register_duckdb(
     Ok(())
 }
 
-pub async fn introspect_duckdb_tables(db_path: &str) -> Result<Vec<String>> {
-    let db_path = db_path.to_string();
-    tokio::task::spawn_blocking(move || {
-        let conn = duckdb::Connection::open(&db_path)
-            .context("Failed to open DuckDB database for introspection")?;
+impl DuckDBTableFactory {
+    /// Introspects the DuckDB database using the shared pool to find all tables in the `main` schema.
+    ///
+    /// # Errors
+    /// Returns an error if the connection fails or the query fails.
+    pub async fn introspect_tables(&self) -> Result<Vec<String>> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool
+                .get()
+                .context("Failed to get DuckDB connection for introspection")?;
 
-        let mut stmt = conn
-            .prepare("SELECT table_name FROM information_schema.tables WHERE table_schema='main'")
-            .context("Failed to prepare DuckDB introspection query")?;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema='main'",
+                )
+                .context("Failed to prepare DuckDB introspection query")?;
 
-        let rows = stmt
-            .query_map([], |row| row.get(0))
-            .context("Failed to execute DuckDB introspection query")?
-            .collect::<std::result::Result<Vec<String>, _>>()
-            .context("Failed to collect DuckDB table names")?;
+            let rows = stmt
+                .query_map([], |row| row.get(0))
+                .context("Failed to execute DuckDB introspection query")?
+                .collect::<std::result::Result<Vec<String>, _>>()
+                .context("Failed to collect DuckDB table names")?;
 
-        Ok(rows)
-    })
-    .await
-    .context("Join error during introspection")?
+            Ok(rows)
+        })
+        .await
+        .context("Join error during introspection")?
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::prelude::*;
     use tempfile::tempdir;
 
     #[test]
@@ -480,79 +843,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_duckdb_substrait_handover() -> Result<()> {
+    async fn test_duckdb_table_provider_bad_path() -> Result<()> {
         let dir = tempdir()?;
-        let db_path = dir.path().join("test.duckdb");
+        let db_path = dir.path().join("bad.duckdb");
         let db_path_str = db_path.to_str().unwrap();
 
-        // 1. Setup DuckDB with some data
-        {
-            let conn = duckdb::Connection::open(db_path_str)?;
-            conn.execute("CREATE TABLE users (id INTEGER, name VARCHAR)", [])?;
-            conn.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')", [])?;
-        }
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(duckdb::DuckdbConnectionManager::file(db_path_str)?)?;
+        let pool = Arc::new(pool);
 
-        let provider =
-            DuckDBTableProvider::new(db_path_str.to_string(), "users".to_string()).await?;
-
-        // 2. Create a DataFusion plan
-        let ctx = SessionContext::new();
-
-        // Use a simple logical plan that can be converted to Substrait.
-        // We use a scan of an empty table with the same schema to generate the plan,
-        // then we'll execute it against our DuckDB provider.
-        let schema = provider.schema();
-        ctx.register_table(
-            "users",
-            Arc::new(datafusion::datasource::empty::EmptyTable::new(schema)),
-        )?;
-
-        let plan = ctx
-            .table("users")
-            .await?
-            .filter(col("id").eq(lit(1)))?
-            .into_optimized_plan()?;
-
-        // 3. Convert to Substrait
-        let plan_bytes = strake_sql::substrait_producer::to_substrait_bytes(&plan, &ctx).await?;
-
-        // 4. Handover to DuckDB
-        // execute_substrait_plan will try to INSTALL/LOAD substrait
-        // In some environments this might fail if no internet.
-        // We catch error and skip if it's an extension loading error.
-        match provider.execute_substrait_plan(plan_bytes).await {
-            Ok(batch) => {
-                assert_eq!(batch.num_rows(), 1);
-                // Schema has id and name
-                let id_col = batch
-                    .column(0)
-                    .as_any()
-                    .downcast_ref::<arrow::array::Int32Array>()
-                    .unwrap();
-                assert_eq!(id_col.value(0), 1);
-                let name_col = batch
-                    .column(1)
-                    .as_any()
-                    .downcast_ref::<arrow::array::StringArray>()
-                    .unwrap();
-                assert_eq!(name_col.value(0), "Alice");
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("Failed to install substrait extension")
-                    || msg.contains("Failed to load substrait extension")
-                    || msg.contains("IO Error: Failed to download")
-                    || msg.contains("Extension \"substrait\" not found")
-                {
-                    println!(
-                        "Skipping test: Substrait extension not available or cannot be downloaded: {}",
-                        msg
-                    );
-                } else {
-                    return Err(e);
-                }
-            }
-        }
+        // Non-existent table
+        let provider = DuckDBTableProvider::new(pool, "ghost".to_string()).await;
+        // Provider creation might fail during schema inference if table doesn't exist
+        assert!(provider.is_err());
 
         Ok(())
     }

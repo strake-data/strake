@@ -6,9 +6,10 @@ use super::FunctionMapper;
 use datafusion::sql::unparser::dialect::Dialect;
 use sqlparser::ast::{Expr as SqlExpr, Value};
 
-/// Snowflake-specific SQL dialect for the Unparser
+/// Snowflake-specific SQL dialect for the Unparser.
 #[derive(Debug, Clone)]
 pub struct SnowflakeDialect {
+    /// Declarative mapping for renaming or transforming scalar functions.
     mapper: FunctionMapper,
 }
 
@@ -19,13 +20,14 @@ impl Default for SnowflakeDialect {
 }
 
 impl SnowflakeDialect {
+    /// Creates a new [`SnowflakeDialect`] with pre-configured function mappings.
     pub fn new() -> Self {
         Self {
             mapper: snowflake_function_rules(),
         }
     }
 
-    /// Access the function mapper for custom translations
+    /// Access the function mapper for custom translations.
     pub fn mapper(&self) -> &FunctionMapper {
         &self.mapper
     }

@@ -158,6 +158,13 @@ impl MetadataEnrichedTableProvider {
     }
 }
 
+impl MetadataEnrichedTableProvider {
+    /// Returns the underlying [`TableProvider`] wrapped by this metadata enricher.
+    pub fn inner(&self) -> Arc<dyn TableProvider> {
+        self.inner.clone()
+    }
+}
+
 #[async_trait]
 impl TableProvider for MetadataEnrichedTableProvider {
     fn as_any(&self) -> &dyn Any {
@@ -203,8 +210,15 @@ pub fn wrap_concurrent(
 
 #[derive(Debug)]
 pub struct ConcurrencyLimitedTableProvider {
-    inner: Arc<dyn TableProvider>,
-    semaphore: Arc<Semaphore>,
+    pub inner: Arc<dyn TableProvider>,
+    pub semaphore: Arc<Semaphore>,
+}
+
+impl ConcurrencyLimitedTableProvider {
+    /// Returns the underlying [`TableProvider`] wrapped by this concurrency limiter.
+    pub fn inner(&self) -> Arc<dyn TableProvider> {
+        self.inner.clone()
+    }
 }
 
 #[async_trait]

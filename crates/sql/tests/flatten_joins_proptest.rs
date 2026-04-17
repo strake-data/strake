@@ -1,3 +1,4 @@
+//! Tests for flatten joins proptest
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::error::Result;
 use datafusion::logical_expr::LogicalPlan;

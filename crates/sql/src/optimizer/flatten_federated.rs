@@ -11,10 +11,10 @@ use datafusion::optimizer::optimizer::{OptimizerConfig, OptimizerRule};
 ///
 /// 1. **Name-Based Resolution**: The SQL generator resolves all columns by name,
 ///    not position, making this safe for remote execution.
-///    
+///
 /// 2. **Schema Preservation**: Aggregate nodes preserve output schema order
 ///    through `group_expr` iteration, ensuring correct SQL SELECT lists.
-///    
+///
 /// 3. **Alias Uniqueness**: Systematic aliasing (t0, t1, ...) prevents name
 ///    collisions across joined tables.
 ///
@@ -29,19 +29,21 @@ use datafusion::optimizer::optimizer::{OptimizerConfig, OptimizerRule};
 /// N-way joins (3+ tables) are not supported by `SqlGenerator`'s `extract_relation`
 /// unless they are explicitly aliased as subqueries. This rule is verified safe for
 /// 2-way federated joins but should be applied cautiously for deeper join trees.
+/// Optimizer rule that flattens joins for federation.
 #[derive(Debug, Default)]
 pub struct FlattenJoinsRule {
+    /// Maximum depth to traverse during flattening.
     #[allow(dead_code)]
     max_depth: usize,
 }
 
 impl FlattenJoinsRule {
-    /// Create with default depth limit
+    /// Creates a new [`FlattenJoinsRule`] with default depth limit.
     pub fn new() -> Self {
         Self { max_depth: 10 }
     }
 
-    /// Create with custom depth limit (for testing)
+    /// Creates a [`FlattenJoinsRule`] with a custom depth limit (primarily for testing).
     pub fn with_max_depth(max_depth: usize) -> Self {
         Self { max_depth }
     }

@@ -275,7 +275,7 @@ async fn test_cache_performance_improvement() -> anyhow::Result<()> {
     let user = make_user("perf_test_user");
 
     // Test with a larger dataset
-    let sql = "SELECT * FROM (VALUES 
+    let sql = "SELECT * FROM (VALUES
         (1, 'row1', 100.5), (2, 'row2', 200.5), (3, 'row3', 300.5),
         (4, 'row4', 400.5), (5, 'row5', 500.5), (6, 'row6', 600.5),
         (7, 'row7', 700.5), (8, 'row8', 800.5), (9, 'row9', 900.5),

@@ -1,3 +1,21 @@
+//! # SQL Expression Translator
+//!
+//! Translates DataFusion [`Expr`] variants into [`sqlparser::ast::Expr`] nodes.
+//!
+//! ## Overview
+//!
+//! The [`ExprTranslator`] uses the [`GeneratorContext`] to resolve column references
+//! and the [`GeneratorDialect`] to handle dialect-specific function and operator mappings.
+//!
+//! Expressions not handled by specialized match arms fall through to DataFusion's
+//! built-in [`Unparser`], with the result parsed back into a `sqlparser` AST for
+//! structural consistency.
+//!
+//! ## Errors
+//!
+//! - [`SqlGenError::ScopeViolation`]: Returned when a column reference cannot be resolved in the current context.
+//! - [`SqlGenError::UnsupportedPlan`]: Returned for expressions that cannot be translated to the target dialect.
+
 use crate::sql_generator::context::GeneratorContext;
 use crate::sql_generator::dialect::GeneratorDialect;
 use crate::sql_generator::error::SqlGenError;
@@ -9,26 +27,38 @@ use sqlparser::ast::{
     ObjectNamePart, WindowSpec, WindowType,
 };
 use sqlparser::parser::Parser;
+use std::sync::OnceLock;
 
-pub struct ExprTranslator<'a> {
-    context: &'a mut GeneratorContext,
-    dialect: &'a GeneratorDialect<'a>,
+/// Translates DataFusion logical expressions into SQL AST expressions.
+pub struct ExprTranslator<'a, 'b> {
+    /// Reference to the generator context for column resolution.
+    pub context: &'a mut GeneratorContext,
+    /// Reference to the generator dialect for function mapping.
+    pub dialect: &'b GeneratorDialect<'b>,
+    /// Internal DataFusion unparser used as a fallback.
+    unparser: OnceLock<Unparser<'b>>,
 }
 
-impl<'a> ExprTranslator<'a> {
-    pub fn new(context: &'a mut GeneratorContext, dialect: &'a GeneratorDialect<'a>) -> Self {
-        Self { context, dialect }
+impl<'a, 'b> ExprTranslator<'a, 'b> {
+    /// Creates a new [`ExprTranslator`].
+    pub fn new(context: &'a mut GeneratorContext, dialect: &'b GeneratorDialect<'b>) -> Self {
+        Self {
+            context,
+            dialect,
+            unparser: OnceLock::new(),
+        }
     }
 
+    /// Translates a DataFusion [`Expr`] into a `sqlparser` [`Expr`].
     pub fn expr_to_sql(&mut self, expr: &Expr) -> Result<sqlparser::ast::Expr, SqlGenError> {
         match expr {
-            Expr::Column(col) => {
-                let (scope_alias, col_name) = self.context.resolve_column(col, "Expression")?;
-                Ok(sqlparser::ast::Expr::CompoundIdentifier(vec![
-                    safe_ident(&scope_alias)?,
-                    safe_ident(&col_name)?,
-                ]))
-            }
+            Expr::Column(col) => match self.context.resolve_column(col, "Column") {
+                Ok(entry) => Ok(sqlparser::ast::Expr::CompoundIdentifier(vec![
+                    safe_ident(entry.source_alias.as_ref())?,
+                    safe_ident(entry.name.as_ref())?,
+                ])),
+                Err(e) => Err(e),
+            },
 
             Expr::ScalarFunction(func) => self.translate_function(func.name(), &func.args, None),
 
@@ -122,16 +152,22 @@ impl<'a> ExprTranslator<'a> {
             }
 
             _ => {
-                let unparser = Unparser::new(self.dialect.unparser_dialect);
+                let unparser = self
+                    .unparser
+                    .get_or_init(|| Unparser::new(self.dialect.unparser_dialect));
                 let sql_str = unparser
                     .expr_to_sql(expr)
-                    .map_err(SqlGenError::DataFusion)?;
+                    .map_err(|e| SqlGenError::UnsupportedPlan {
+                        message: format!("Unparser failed: {e}"),
+                        node_type: "Expr".to_string(),
+                    })?
+                    .to_string();
 
                 // Parse back to AST to maintain structural integrity
                 let dialect = sqlparser::dialect::GenericDialect {};
                 let parser = Parser::new(&dialect);
                 parser
-                    .try_with_sql(&sql_str.to_string())
+                    .try_with_sql(&sql_str)
                     .map_err(SqlGenError::Parser)?
                     .parse_expr()
                     .map_err(SqlGenError::Parser)
@@ -338,6 +374,7 @@ impl<'a> ExprTranslator<'a> {
         Ok(sqlparser::ast::Expr::Value(sql_value))
     }
 
+    /// Translates a function call, applying dialect-specific name mappings and stripping qualifiers if needed.
     pub fn translate_function(
         &mut self,
         name: &str,
@@ -391,7 +428,7 @@ impl<'a> ExprTranslator<'a> {
 
         Ok(sqlparser::ast::Expr::Function(Function {
             name: ObjectName(vec![ObjectNamePart::Identifier(safe_ident_unquoted(
-                final_name.as_str(),
+                &final_name,
             )?)]),
             args: func_args,
             filter: None,

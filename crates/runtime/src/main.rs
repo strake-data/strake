@@ -60,12 +60,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Example query
     let sql = r#"
-        SELECT 
-            first_name, 
-            last_name, 
-            job_title 
-        FROM metadata 
-        WHERE last_payment_amount > 500 
+        SELECT
+            first_name,
+            last_name,
+            job_title
+        FROM metadata
+        WHERE last_payment_amount > 500
         LIMIT 10
     "#;
 

@@ -17,11 +17,11 @@ use std::sync::Arc;
 /// Type alias for transform function closures.
 pub type TransformFn = Arc<dyn Fn(&[SqlExpr]) -> SqlExpr + Send + Sync>;
 
-/// A translation rule for converting a function to target dialect
+/// A translation rule for converting a function to target dialect.
 pub enum Translation {
-    /// Simple rename: "coalesce" → "NVL"
+    /// Simple rename: "coalesce" → "NVL".
     Rename(&'static str),
-    /// Custom transform with access to arguments
+    /// Custom transform with access to arguments.
     Transform(TransformFn),
 }
 
@@ -34,8 +34,9 @@ impl Clone for Translation {
     }
 }
 
-/// Registry of function translations from DataFusion to target dialect
+/// Registry of function translations from DataFusion to target dialect.
 pub struct FunctionMapper {
+    /// Mapping from lowercase DataFusion function names to translation rules.
     rules: HashMap<&'static str, Translation>,
 }
 
@@ -62,19 +63,20 @@ impl Default for FunctionMapper {
 }
 
 impl FunctionMapper {
+    /// Creates a new empty [`FunctionMapper`].
     pub fn new() -> Self {
         Self {
             rules: HashMap::new(),
         }
     }
 
-    /// Add a simple rename rule
+    /// Add a simple rename rule.
     pub fn rename(mut self, from: &'static str, to: &'static str) -> Self {
         self.rules.insert(from, Translation::Rename(to));
         self
     }
 
-    /// Add a custom transform rule
+    /// Add a custom transform rule.
     pub fn transform<F>(mut self, from: &'static str, f: F) -> Self
     where
         F: Fn(&[SqlExpr]) -> SqlExpr + Send + Sync + 'static,

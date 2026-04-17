@@ -1,13 +1,24 @@
+//! Handles `Union`, `Distinct`, `Limit`, and other set-based logical plan nodes.
+//!
+//! ## Usage
+//!
+//! Handled internal by [`SqlGenerator`].
+//!
+//! ## Performance Characteristics
+//!
+//! Set operations are generally O(N) where N is the number of inputs. `DistinctOn`
+//! translation may involve subquery wrapping which adds planning complexity.
+
 use super::SqlGenerator;
 use crate::sql_generator::context::ColumnEntry;
 use crate::sql_generator::error::SqlGenError;
 use crate::sql_generator::expr::ExprTranslator;
 use datafusion::logical_expr::{Distinct, Expr};
-// use datafusion::scalar::ScalarValue;
 use sqlparser::ast::{
-    Expr as SqlExpr, Ident, LimitClause, ObjectName, ObjectNamePart, Offset, SelectItem, SetExpr,
-    TableAlias, TableFactor, TableWithJoins, Value, WildcardAdditionalOptions,
+    Expr as SqlExpr, Ident, LimitClause, ObjectName, ObjectNamePart, Offset, SetExpr, TableAlias,
+    TableWithJoins, Value, WildcardAdditionalOptions,
 };
+use std::sync::Arc;
 
 pub(crate) fn handle_union(
     generator: &mut SqlGenerator,
@@ -52,19 +63,22 @@ pub(crate) fn handle_union(
     }
 
     let union_alias = generator.context.next_alias();
-    let columns = union
-        .schema
-        .fields()
-        .iter()
-        .map(|f| ColumnEntry {
-            name: std::sync::Arc::from(f.name().as_ref()),
-            data_type: f.data_type().clone(),
-            source_alias: std::sync::Arc::from(union_alias.as_str()),
-            provenance: vec![union_alias.clone()],
-            unique_id: generator.context.next_column_id(),
-        })
-        .collect::<Vec<_>>()
-        .into();
+    let columns: Arc<[ColumnEntry]> = Arc::from(
+        union
+            .schema
+            .fields()
+            .iter()
+            .map(|f| ColumnEntry {
+                name: Arc::from(f.name().as_str()),
+                name_lower: Arc::from(f.name().to_lowercase().as_str()),
+                data_type: f.data_type().clone(),
+                source_alias: union_alias.clone().into(),
+                provenance: vec![union_alias.clone()],
+                unique_id: generator.context.next_column_id(),
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
     generator
         .context
         .enter_scope(union_alias, columns, vec![])
@@ -157,11 +171,15 @@ pub(crate) fn handle_empty_relation(
         .schema
         .fields()
         .iter()
-        .map(|_| SelectItem::UnnamedExpr(SqlExpr::Value(sqlparser::ast::Value::Null.into())))
+        .map(|_| {
+            sqlparser::ast::SelectItem::UnnamedExpr(SqlExpr::Value(
+                sqlparser::ast::Value::Null.into(),
+            ))
+        })
         .collect::<Vec<_>>();
 
     if projection.is_empty() {
-        projection.push(SelectItem::UnnamedExpr(SqlExpr::Value(
+        projection.push(sqlparser::ast::SelectItem::UnnamedExpr(SqlExpr::Value(
             sqlparser::ast::Value::Null.into(),
         )));
     }
@@ -172,7 +190,7 @@ pub(crate) fn handle_empty_relation(
     // Dialect-specific: Oracle needs FROM DUAL
     if generator.dialect.capabilities.requires_from_dual() {
         select.from = vec![TableWithJoins {
-            relation: TableFactor::Table {
+            relation: sqlparser::ast::TableFactor::Table {
                 name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("DUAL"))]),
                 alias: None,
                 args: None,
@@ -205,9 +223,10 @@ pub(crate) fn handle_empty_relation(
         .fields()
         .iter()
         .map(|f| ColumnEntry {
-            name: std::sync::Arc::from(f.name().as_ref()),
+            name: Arc::from(f.name().as_str()),
+            name_lower: Arc::from(f.name().to_lowercase().as_str()),
             data_type: f.data_type().clone(),
-            source_alias: std::sync::Arc::from(alias.as_str()),
+            source_alias: alias.clone().into(),
             provenance: vec![alias.clone()],
             unique_id: generator.context.next_column_id(),
         })
@@ -261,7 +280,7 @@ pub(crate) fn handle_values(
                 .enumerate()
                 .map(|(i, expr)| {
                     let field = values.schema.field(i);
-                    SelectItem::ExprWithAlias {
+                    sqlparser::ast::SelectItem::ExprWithAlias {
                         expr,
                         alias: Ident::new(field.name().clone()),
                     }
@@ -271,7 +290,7 @@ pub(crate) fn handle_values(
 
             if generator.dialect.capabilities.requires_from_dual() {
                 select.from = vec![TableWithJoins {
-                    relation: TableFactor::Table {
+                    relation: sqlparser::ast::TableFactor::Table {
                         name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("DUAL"))]),
                         alias: None,
                         args: None,
@@ -311,9 +330,10 @@ pub(crate) fn handle_values(
         .fields()
         .iter()
         .map(|f| ColumnEntry {
-            name: std::sync::Arc::from(f.name().as_ref()),
+            name: Arc::from(f.name().as_str()),
+            name_lower: Arc::from(f.name().to_lowercase().as_str()),
             data_type: f.data_type().clone(),
-            source_alias: std::sync::Arc::from(alias.as_str()),
+            source_alias: alias.clone().into(),
             provenance: vec![alias.clone()],
             unique_id: generator.context.next_column_id(),
         })
@@ -418,7 +438,7 @@ fn rewrite_distinct_on_to_row_number(
         .columns
         .iter()
         .map(|entry| {
-            Ok(SelectItem::ExprWithAlias {
+            Ok(sqlparser::ast::SelectItem::ExprWithAlias {
                 expr: SqlExpr::CompoundIdentifier(vec![
                     sqlparser::ast::Ident::new(entry.source_alias.as_ref()),
                     sqlparser::ast::Ident::new(entry.name.as_ref()),
@@ -428,7 +448,7 @@ fn rewrite_distinct_on_to_row_number(
         })
         .collect::<Result<Vec<_>, SqlGenError>>()?;
 
-    projection.push(SelectItem::ExprWithAlias {
+    projection.push(sqlparser::ast::SelectItem::ExprWithAlias {
         expr: row_num_expr,
         alias: Ident::new(row_num_alias),
     });
@@ -438,7 +458,7 @@ fn rewrite_distinct_on_to_row_number(
     let inner_alias = generator.context.next_alias();
     let mut outer_select = generator.create_skeleton_select();
     outer_select.from = vec![TableWithJoins {
-        relation: TableFactor::Derived {
+        relation: sqlparser::ast::TableFactor::Derived {
             lateral: false,
             subquery: Box::new(sqlparser::ast::Query {
                 with: None,
@@ -465,7 +485,7 @@ fn rewrite_distinct_on_to_row_number(
     outer_select.projection = input_scope
         .columns
         .iter()
-        .map(|entry| SelectItem::ExprWithAlias {
+        .map(|entry| sqlparser::ast::SelectItem::ExprWithAlias {
             expr: SqlExpr::CompoundIdentifier(vec![
                 Ident::new(inner_alias.clone()),
                 Ident::new(entry.name.as_ref()),
@@ -490,7 +510,7 @@ fn rewrite_distinct_on_to_row_number(
         .iter()
         .map(|e| {
             let mut e = e.clone();
-            e.source_alias = std::sync::Arc::from(final_alias.as_str());
+            e.source_alias = final_alias.clone().into();
             e.provenance.push(final_alias.clone());
             e
         })
@@ -556,7 +576,7 @@ pub(crate) fn handle_recursive_query(
 
     if let SetExpr::Select(ref mut select) = *query.body {
         select.from = vec![TableWithJoins {
-            relation: TableFactor::Table {
+            relation: sqlparser::ast::TableFactor::Table {
                 name: sqlparser::ast::ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
                     Ident::new(cte_name.clone()),
                 )]),
@@ -572,7 +592,9 @@ pub(crate) fn handle_recursive_query(
             },
             joins: vec![],
         }];
-        select.projection = vec![SelectItem::Wildcard(WildcardAdditionalOptions::default())];
+        select.projection = vec![sqlparser::ast::SelectItem::Wildcard(
+            WildcardAdditionalOptions::default(),
+        )];
     }
 
     let alias = generator.context.next_alias();
@@ -583,9 +605,10 @@ pub(crate) fn handle_recursive_query(
         .iter()
         .map(
             |f: &std::sync::Arc<datafusion::arrow::datatypes::Field>| ColumnEntry {
-                name: std::sync::Arc::from(f.name().as_ref()),
+                name: Arc::from(f.name().as_str()),
+                name_lower: Arc::from(f.name().to_lowercase().as_str()),
                 data_type: f.data_type().clone(),
-                source_alias: std::sync::Arc::from(alias.as_str()),
+                source_alias: alias.clone().into(),
                 provenance: vec![alias.clone()],
                 unique_id: generator.context.next_column_id(),
             },

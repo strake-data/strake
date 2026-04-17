@@ -42,9 +42,9 @@ use datafusion_datasource::file_scan_config::FileScanConfigBuilder;
 use datafusion_datasource::source::DataSourceExec;
 use datafusion_datasource_parquet::source::ParquetSource;
 use datafusion_datasource_parquet::{DefaultParquetFileReaderFactory, ParquetFileReaderFactory};
-#[cfg(feature = "iceberg")]
-use iceberg::metadata_columns::RESERVED_COL_NAME_FILE;
-#[cfg(not(feature = "iceberg"))]
+// #[cfg(feature = "iceberg")]
+// use iceberg::metadata_columns::RESERVED_COL_NAME_FILE;
+// #[cfg(not(feature = "iceberg"))]
 const RESERVED_COL_NAME_FILE: &str = "_file_path";
 use strake_common::predicate_cache::{BlockKey, PredicateCache};
 

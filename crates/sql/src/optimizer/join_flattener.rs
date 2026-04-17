@@ -15,9 +15,13 @@ use datafusion::optimizer::optimizer::{OptimizerConfig, OptimizerRule};
 /// Represents a branch in an N-way join.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct JoinBranch {
+    /// The input plan for the right side of the join.
     pub input: LogicalPlan,
+    /// The type of join (e.g. Inner, Left).
     pub join_type: JoinType,
+    /// The join predicates (left_expr = right_expr).
     pub on: Vec<(Expr, Expr)>,
+    /// Optional post-join filter.
     pub filter: Option<Expr>,
 }
 
@@ -27,12 +31,16 @@ pub struct JoinBranch {
 /// excessive subqueries for nested joins.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct NaryJoinNode {
+    /// The leftmost base table of the join chain.
     pub base: LogicalPlan,
+    /// Subsequent joins in the chain.
     pub branches: Vec<JoinBranch>,
+    /// The combined schema of the join chain.
     pub schema: DFSchemaRef,
 }
 
 impl NaryJoinNode {
+    /// Creates a new [`NaryJoinNode`].
     pub fn new(base: LogicalPlan, branches: Vec<JoinBranch>, schema: DFSchemaRef) -> Self {
         Self {
             base,
@@ -178,6 +186,7 @@ impl UserDefinedLogicalNode for NaryJoinNode {
 pub struct JoinTreeFlattener;
 
 impl JoinTreeFlattener {
+    /// Creates a new [`JoinTreeFlattener`].
     pub fn new() -> Self {
         Self
     }

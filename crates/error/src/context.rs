@@ -53,7 +53,7 @@ pub enum ErrorContext {
         field: Option<String>,
     },
 
-    /// Context for STRAKE-4001/4002 (auth errors)  
+    /// Context for STRAKE-4001/4002 (auth errors)
     Auth {
         user: Option<String>,
         source: Option<String>,

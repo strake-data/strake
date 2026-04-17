@@ -360,6 +360,11 @@ impl SchemaDriftTableProvider {
             expected_schema,
         }
     }
+
+    /// Returns the underlying [`TableProvider`] wrapped by this schema drift detector.
+    pub fn inner(&self) -> Arc<dyn TableProvider> {
+        self.inner.clone()
+    }
 }
 
 #[async_trait]

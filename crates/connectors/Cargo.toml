@@ -5,7 +5,8 @@ license.workspace = true
 edition = "2024"
 
 [features]
-iceberg = ["dep:iceberg", "dep:iceberg-catalog-rest", "dep:iceberg-datafusion"]
+# experimental-iceberg = ["dep:iceberg", "dep:iceberg-catalog-rest", "dep:iceberg-datafusion"]
+experimental-iceberg = []
 
 [dependencies]
 strake-common = { path = "../common" }
@@ -26,11 +27,13 @@ globset = "0.4"
 parquet = { workspace = true }
 datafusion-datasource = { workspace = true }
 datafusion-datasource-parquet = { workspace = true }
+# datafusion-catalog = "53.0.0"
 bytes = "1.6"
 object_store = { workspace = true, features = ["aws"] }
 
 # Connectors
-duckdb = { version = "1.1", features = ["bundled"], default-features = false }
+duckdb = { version = "1.10501.0", features = ["bundled", "vtab-arrow", "r2d2"], default-features = false }
+r2d2 = "0.8"
 tokio-postgres = { workspace = true }
 postgres-types = { workspace = true }
 rust_decimal = { workspace = true }
@@ -55,10 +58,10 @@ tower = { workspace = true }
 prost-reflect = { version = "0.16", features = ["serde"] }
 moka = { version = "0.12", features = ["future"] }
 chrono = "0.4"
-# Apache Iceberg integration
-iceberg = { version = "0.8", optional = true }
-iceberg-catalog-rest = { version = "0.8", optional = true }
-iceberg-datafusion = { version = "0.9", optional = true }
+# Apache Iceberg integration (Disabled for DF 53 compatibility)
+# iceberg = { version = "0.9", optional = true }
+# iceberg-catalog-rest = { version = "0.9", optional = true }
+# iceberg-datafusion = { version = "0.9", optional = true }
 aws-config = "1.8.14"
 aws-credential-types = "1.2.12"
 dashmap = "6.1.0"

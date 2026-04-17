@@ -145,11 +145,11 @@ impl MetadataStore for PostgresStore {
             // Use an UPSERT to handle both initial creation and existing increments
             let row = client
                 .query_one(
-                    "INSERT INTO domains (name, version) 
-                     VALUES ($1, 1) 
-                     ON CONFLICT (name) DO UPDATE 
-                     SET version = domains.version + 1 
-                     WHERE domains.version = $2 
+                    "INSERT INTO domains (name, version)
+                     VALUES ($1, 1)
+                     ON CONFLICT (name) DO UPDATE
+                     SET version = domains.version + 1
+                     WHERE domains.version = $2
                      RETURNING version",
                     &[&domain_str, &expected_version],
                 )
@@ -202,8 +202,8 @@ impl MetadataStore for PostgresStore {
             for source in &config.sources {
                 // Upsert Source
                 let source_rows = tx.query(
-                    "INSERT INTO sources (name, type, url, username, password, domain_name) 
-                     VALUES ($1, $2, $3, $4, $5, $6) 
+                    "INSERT INTO sources (name, type, url, username, password, domain_name)
+                     VALUES ($1, $2, $3, $4, $5, $6)
                      ON CONFLICT (domain_name, name) DO UPDATE SET type=$2, url=$3, username=$4, password=$5
                      RETURNING id, (xmax = 0) as is_new",
                     &[&source.name.to_string(), &source.source_type.to_string(), &source.url, &source.username, &source.password.as_ref().map(|s| s.expose_secret()), &domain],
@@ -225,7 +225,7 @@ impl MetadataStore for PostgresStore {
                         .query(
                             "INSERT INTO tables (source_id, name, schema_name, partition_column)
                          VALUES ($1, $2, $3, $4)
-                         ON CONFLICT (source_id, schema_name, name) 
+                         ON CONFLICT (source_id, schema_name, name)
                          DO UPDATE SET partition_column=$4
                          RETURNING id",
                             &[
@@ -413,7 +413,7 @@ impl MetadataStore for PostgresStore {
             let client = client_ptr.lock().await;
             let rows = client
                 .query(
-                    "SELECT domain_name, version, user_id, sources_added, sources_deleted, tables_modified, config_hash, config_yaml, timestamp 
+                    "SELECT domain_name, version, user_id, sources_added, sources_deleted, tables_modified, config_hash, config_yaml, timestamp
                      FROM apply_history WHERE domain_name = $1 ORDER BY version DESC LIMIT $2",
                     &[&domain_str, &limit],
                 )

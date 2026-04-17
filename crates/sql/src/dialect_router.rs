@@ -13,7 +13,8 @@
 //! (e.g., "postgres", "oracle") to the appropriate `DialectPath`.
 
 use datafusion::sql::unparser::dialect::{
-    DefaultDialect, Dialect as UnparserDialect, MySqlDialect, PostgreSqlDialect, SqliteDialect,
+    DefaultDialect, Dialect as UnparserDialect, DuckDBDialect, MySqlDialect, PostgreSqlDialect,
+    SqliteDialect,
 };
 use std::sync::Arc;
 
@@ -24,24 +25,34 @@ use crate::sql_generator::dialect::{
     TypeMapper,
 };
 
+/// Dialect name for DuckDB.
+pub const DUCKDB_DIALECT: &str = "duckdb";
+
 /// Represents the dialect translation path for a source
 pub enum DialectPath {
-    /// DataFusion built-in Unparser dialects
+    /// DataFusion built-in Unparser dialects.
     Native(
+        /// The DataFusion unparser dialect.
         Arc<dyn UnparserDialect + Send + Sync>,
+        /// Dialect-specific capabilities for SQL generation.
         Arc<dyn DialectCapabilities>,
+        /// Type mapping for CAST expressions.
         Arc<dyn TypeMapper>,
     ),
-    /// Strake custom Unparser dialects with FunctionMapper
+    /// Strake custom Unparser dialects with FunctionMapper.
     Custom(
+        /// The DataFusion unparser dialect.
         Arc<dyn UnparserDialect + Send + Sync>,
+        /// Dialect-specific capabilities for SQL generation.
         Arc<dyn DialectCapabilities>,
+        /// Type mapping for CAST expressions.
         Arc<dyn TypeMapper>,
+        /// Optional mapper for renaming or transforming scalar functions.
         Option<crate::dialects::FunctionMapper>,
     ),
-    /// Substrait binary plan (for DuckDB, remote DataFusion)
+    /// Substrait binary plan (for DuckDB, remote DataFusion).
     Substrait,
-    /// No pushdown — fetch all data and execute locally
+    /// No pushdown — fetch all data and execute locally.
     LocalExecution,
 }
 
@@ -52,6 +63,11 @@ pub fn route_dialect(source_type: &str) -> DialectPath {
         "postgres" | "postgresql" => DialectPath::Native(
             Arc::new(PostgreSqlDialect {}),
             Arc::new(PostgreSqlCapabilities),
+            Arc::new(DefaultTypeMapper),
+        ),
+        DUCKDB_DIALECT => DialectPath::Native(
+            Arc::new(DuckDBDialect::new()),
+            Arc::new(crate::sql_generator::dialect::DuckDBCapabilities),
             Arc::new(DefaultTypeMapper),
         ),
         "mysql" | "mariadb" => DialectPath::Native(
@@ -90,7 +106,7 @@ pub fn route_dialect(source_type: &str) -> DialectPath {
         }
 
         // Tier 3: Substrait-capable engines
-        "duckdb" | "datafusion" => DialectPath::Substrait,
+        "datafusion" => DialectPath::Substrait,
 
         // Tier 4: Unknown — fallback to local execution (no pushdown)
         _ => {
@@ -144,11 +160,15 @@ mod tests {
 
     #[test]
     fn test_substrait() {
-        assert!(matches!(route_dialect("duckdb"), DialectPath::Substrait));
         assert!(matches!(
             route_dialect("datafusion"),
             DialectPath::Substrait
         ));
+    }
+
+    #[test]
+    fn test_duckdb_sql() {
+        assert!(matches!(route_dialect("duckdb"), DialectPath::Native(..)));
     }
 
     #[test]

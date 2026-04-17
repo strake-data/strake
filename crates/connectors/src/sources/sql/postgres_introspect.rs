@@ -117,8 +117,8 @@ impl SchemaIntrospector for PostgresIntrospector {
         // 1. Column details + comments
         let col_query = client.query(
             "
-            SELECT 
-                a.attname as name, 
+            SELECT
+                a.attname as name,
                 pg_catalog.format_type(a.atttypid, a.atttypmod) as type_str,
                 NOT a.attnotnull as nullable,
                 col_description(a.attrelid, a.attnum) as comment

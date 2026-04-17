@@ -1,3 +1,4 @@
+//! Tests for flatten joins limit
 use anyhow::Result;
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::optimizer::optimizer::{OptimizerContext, OptimizerRule};

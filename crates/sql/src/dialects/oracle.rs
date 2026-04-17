@@ -6,10 +6,10 @@ use super::FunctionMapper;
 use datafusion::sql::unparser::dialect::Dialect;
 use sqlparser::ast::{BinaryOperator, Expr as SqlExpr, Value};
 
-/// Oracle-specific SQL dialect for the Unparser
-
+/// Oracle-specific SQL dialect for the Unparser.
 #[derive(Debug, Clone)]
 pub struct OracleDialect {
+    /// Declarative mapping for renaming or transforming scalar functions.
     mapper: FunctionMapper,
 }
 
@@ -20,13 +20,14 @@ impl Default for OracleDialect {
 }
 
 impl OracleDialect {
+    /// Creates a new [`OracleDialect`] with pre-configured function mappings.
     pub fn new() -> Self {
         Self {
             mapper: oracle_function_rules(),
         }
     }
 
-    /// Access the function mapper for custom translations
+    /// Access the function mapper for custom translations.
     pub fn mapper(&self) -> &FunctionMapper {
         &self.mapper
     }

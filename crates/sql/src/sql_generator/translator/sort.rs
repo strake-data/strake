@@ -1,3 +1,16 @@
+//! # Sort Translator
+//!
+//! Translates DataFusion `Sort` logical plan nodes into SQL `ORDER BY` clauses.
+//!
+//! ## Usage
+//! Handled internally by [`SqlGenerator`](crate::sql_generator::translator::SqlGenerator); not intended for direct use.
+//!
+//! ## Performance Characteristics
+//! - **Complexity:** Linearly iterates sort expressions O(N).
+//!
+//! ## Errors
+//! - [`SqlGenError::ScopeViolation`]: If an `ORDER BY` expression references undefined columns.
+
 use super::SqlGenerator;
 use crate::sql_generator::error::SqlGenError;
 use crate::sql_generator::expr::ExprTranslator;
@@ -7,9 +20,10 @@ pub(crate) fn handle_sort(
     generator: &mut SqlGenerator,
     sort: &datafusion::logical_expr::Sort,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
-    let mut query = generator.plan_to_query(&sort.input)?;
+    let mut query = generator.plan_to_stable_query(&sort.input)?;
 
-    let mut translator = ExprTranslator::new(&mut generator.context, &generator.dialect);
+    let (ctx, dial) = (&mut generator.context, &generator.dialect);
+    let mut translator = ExprTranslator::new(ctx, dial);
     let order_by_exprs = sort
         .expr
         .iter()

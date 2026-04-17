@@ -10,14 +10,17 @@ use tracing::warn;
 /// with missing statistics, to prevent runway queries.
 #[derive(Debug)]
 pub struct DefensiveLimitRule {
+    /// The default limit to apply if no limit is present.
     default_limit: usize,
 }
 
 impl DefensiveLimitRule {
+    /// Creates a new [`DefensiveLimitRule`] with the specified default limit.
     pub fn new(default_limit: usize) -> Self {
         Self { default_limit }
     }
 }
+
 impl OptimizerRule for DefensiveLimitRule {
     fn name(&self) -> &str {
         "defensive_limit_rule"

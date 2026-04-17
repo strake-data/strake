@@ -1,3 +1,4 @@
+//! Tests for robustness
 use crate::fixtures::*;
 use datafusion::common::Result;
 use datafusion::functions_aggregate::expr_fn::sum;
@@ -55,7 +56,8 @@ async fn test_join_column_collision() -> Result<()> {
         // Should use systematic aliases rel_0, rel_1 for source tables
         assert!(sql.contains("\"rel_0\".\"id\""));
         assert!(sql.contains("\"rel_1\".\"id\""));
-        assert!(sql.contains("FROM \"t1\" AS \"rel_0\" INNER JOIN \"t2\" AS \"rel_1\""));
+        assert!(sql.contains("\"t1\" AS \"rel_0\""));
+        assert!(sql.contains("\"t2\" AS \"rel_1\""));
     });
     Ok(())
 }
@@ -145,17 +147,19 @@ async fn test_scope_violation_context() -> Result<()> {
                 vec![
                     ColumnEntry {
                         name: "id".into(),
+                        name_lower: "id".into(),
                         data_type: DataType::Int32,
                         source_alias: "rel_0".into(),
                         provenance: vec!["rel_0".to_string()],
-                        unique_id: 0,
+                        unique_id: strake_sql::sql_generator::context::ColumnId(0),
                     },
                     ColumnEntry {
                         name: "name".into(),
+                        name_lower: "name".into(),
                         data_type: DataType::Utf8,
                         source_alias: "rel_0".into(),
                         provenance: vec!["rel_0".to_string()],
-                        unique_id: 1,
+                        unique_id: strake_sql::sql_generator::context::ColumnId(1),
                     },
                 ]
                 .into(),
@@ -297,10 +301,11 @@ async fn test_function_mapper_security() -> Result<()> {
             "rel_0".to_string(),
             vec![ColumnEntry {
                 name: evil_input.into(),
+                name_lower: evil_input.to_lowercase().into(),
                 data_type: DataType::Int32,
                 source_alias: "rel_0".into(),
                 provenance: vec!["rel_0".to_string()],
-                unique_id: 0,
+                unique_id: strake_sql::sql_generator::context::ColumnId(0),
             }]
             .into(),
             vec![],

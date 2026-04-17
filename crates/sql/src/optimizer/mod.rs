@@ -9,6 +9,9 @@
 //! - `CostBasedValidator`: Analyzing the physical plan *after* optimization to reject expensive queries based on estimated rows/bytes.
 //! - `FederationOptimizerRule`: (External crate) Responsible for pushing down subqueries to remote sources.
 
+/// Rule for injecting defensive limits to prevent runaway queries.
 pub mod defensive_trace;
+/// Rule for flattening join trees into N-way joins.
 pub mod flatten_federated;
+/// Custom logical node for representing N-way joins.
 pub mod join_flattener;

@@ -1,11 +1,27 @@
+//! # Join Translator
+//!
+//! Handles translation of DataFusion `Join` logical plan nodes into SQL `JOIN` constraints.
+//!
+//! ## Usage
+//! Handled internally by [`SqlGenerator`](crate::sql_generator::translator::SqlGenerator); not intended for direct use.
+//!
+//! ## Performance Characteristics
+//! - **Complexity:** O(N) where N is the number of join constraints and filters.
+//! - **Allocation:** Efficiently handles scope manipulation, repushing left and right scopes to avoid leaks.
+//!
+//! ## Errors
+//!
+//! - [`SqlGenError::UnsupportedPlan`]: Returned when an unsupported join type (e.g. cross join if not handled) is encountered.
+//! - [`SqlGenError::ScopeViolation`]: Propagated from expression translation if a column reference cannot be resolved.
+
 use super::SqlGenerator;
 use crate::sql_generator::error::SqlGenError;
 use crate::sql_generator::expr::ExprTranslator;
 use crate::sql_generator::sanitize::safe_ident;
 use datafusion::logical_expr::JoinType;
 use sqlparser::ast::{
-    BinaryOperator, Expr as SqlExpr, Join as SqlJoin, JoinConstraint, JoinOperator, SelectItem,
-    SetExpr, TableWithJoins,
+    BinaryOperator, Expr as SqlExpr, Join as SqlJoin, JoinConstraint, JoinOperator, SetExpr,
+    TableWithJoins,
 };
 
 pub(crate) fn handle_join(
@@ -13,17 +29,46 @@ pub(crate) fn handle_join(
     join: &datafusion::logical_expr::Join,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     let left_query = generator.plan_to_query(&join.left)?;
-    let right_query = generator.plan_to_query(&join.right)?;
-
     let left_relation = generator.extract_relation(left_query)?;
+
+    let right_query = generator.plan_to_query(&join.right)?;
     let right_relation = generator.extract_relation(right_query)?;
 
-    let mut translator = ExprTranslator::new(&mut generator.context, &generator.dialect);
     let mut on_expr: Option<SqlExpr> = None;
 
     for (l, r) in &join.on {
-        let l_sql = translator.expr_to_sql(l)?;
-        let r_sql = translator.expr_to_sql(r)?;
+        // Translation of join expressions must happen in isolation.
+        // We use a ScopeHolder RAII guard to ensure the scope stack is restored on any error path.
+        let mut holder = crate::sql_generator::context::ScopeHolder::new(&mut generator.context);
+
+        // Pop Right
+        let right_scope = holder.pop()?;
+
+        let l_sql = {
+            let mut translator = ExprTranslator::new(holder.ctx_mut(), &generator.dialect);
+            translator.expr_to_sql(l)?
+        };
+
+        // Pop Left
+        let left_scope = holder.pop()?;
+
+        // Restore right for r_sql translation
+        holder.repush(right_scope);
+
+        let r_sql = {
+            let mut translator = ExprTranslator::new(holder.ctx_mut(), &generator.dialect);
+            translator.expr_to_sql(r)?
+        };
+
+        // Re-pop right, then restore left+right order
+        let right_scope = holder.pop()?;
+        holder.repush(left_scope);
+        holder.repush(right_scope);
+
+        // Success path: commit the holder to prevent restoration on drop
+        // We commit here to prevent the ScopeHolder from rolling back the stack on successful translation.
+        holder.commit();
+
         let eq = SqlExpr::BinaryOp {
             left: Box::new(l_sql),
             op: BinaryOperator::Eq,
@@ -41,6 +86,8 @@ pub(crate) fn handle_join(
     }
 
     if let Some(filter) = &join.filter {
+        let (ctx, dial) = (&mut generator.context, &generator.dialect);
+        let mut translator = ExprTranslator::new(ctx, dial);
         let f_sql = translator.expr_to_sql(filter)?;
         on_expr = match on_expr {
             Some(e) => Some(SqlExpr::BinaryOp {
@@ -102,6 +149,7 @@ pub(crate) fn handle_join(
         .columns
         .iter()
         .chain(right_scope.columns.iter())
+        // Build output names and commit the scope change.
         .map(|e| {
             let mut e = e.clone();
             e.provenance.push(join_alias.clone());
@@ -126,10 +174,12 @@ pub(crate) fn handle_join(
     select.projection = merged_columns
         .iter()
         .map(|entry| {
-            Ok(SelectItem::UnnamedExpr(SqlExpr::CompoundIdentifier(vec![
-                safe_ident(entry.source_alias.as_ref())?,
-                safe_ident(entry.name.as_ref())?,
-            ])))
+            Ok(sqlparser::ast::SelectItem::UnnamedExpr(
+                SqlExpr::CompoundIdentifier(vec![
+                    safe_ident(entry.source_alias.as_ref())?,
+                    safe_ident(entry.name.as_ref())?,
+                ]),
+            ))
         })
         .collect::<Result<Vec<_>, SqlGenError>>()?;
 
@@ -180,13 +230,43 @@ pub(crate) fn handle_nary_join(
                     })?
                     .clone();
 
-                let mut translator =
-                    ExprTranslator::new(&mut generator.context, &generator.dialect);
                 let mut on_expr: Option<SqlExpr> = None;
 
                 for (l, r) in &branch.on {
-                    let l_sql = translator.expr_to_sql(l)?;
-                    let r_sql = translator.expr_to_sql(r)?;
+                    // Similar P0 Fix for NaryJoin using ScopeHolder RAII guards
+                    let mut holder =
+                        crate::sql_generator::context::ScopeHolder::new(&mut generator.context);
+
+                    // Pop current branch
+                    let current_branch_scope = holder.pop()?;
+
+                    let l_sql = {
+                        let mut translator =
+                            ExprTranslator::new(holder.ctx_mut(), &generator.dialect);
+                        translator.expr_to_sql(l)?
+                    };
+
+                    // Pop merged so far
+                    let merged_scope_so_far = holder.pop()?;
+
+                    // Restore current branch for r_sql translation
+                    holder.repush(current_branch_scope);
+
+                    let r_sql = {
+                        let mut translator =
+                            ExprTranslator::new(holder.ctx_mut(), &generator.dialect);
+                        translator.expr_to_sql(r)?
+                    };
+
+                    // Restore stack: [..., MERGED_SO_FAR, CURRENT_BRANCH]
+                    let current_branch_scope = holder.pop()?;
+                    holder.repush(merged_scope_so_far);
+                    holder.repush(current_branch_scope);
+
+                    // Commit all successful operations
+                    // Commit the scope change to prevent rollback on successful translation.
+                    holder.commit();
+
                     let eq = SqlExpr::BinaryOp {
                         left: Box::new(l_sql),
                         op: BinaryOperator::Eq,
@@ -204,6 +284,8 @@ pub(crate) fn handle_nary_join(
                 }
 
                 if let Some(filter) = &branch.filter {
+                    let (ctx, dial) = (&mut generator.context, &generator.dialect);
+                    let mut translator = ExprTranslator::new(ctx, dial);
                     let f_sql = translator.expr_to_sql(filter)?;
                     on_expr = match on_expr {
                         Some(e) => Some(SqlExpr::BinaryOp {
@@ -247,7 +329,7 @@ pub(crate) fn handle_nary_join(
         })();
 
         // Always rollback - if success, we want to pop the component scopes and merge them.
-        // If error, we want to cleanup.
+        // If error, we want to cleanup. Our robust rollback() now handles restoration of pops.
         generator.context.rollback(checkpoint);
         result?
     };
@@ -276,10 +358,12 @@ pub(crate) fn handle_nary_join(
     select.projection = final_columns
         .iter()
         .map(|entry| {
-            Ok(SelectItem::UnnamedExpr(SqlExpr::CompoundIdentifier(vec![
-                safe_ident(entry.source_alias.as_ref())?,
-                safe_ident(entry.name.as_ref())?,
-            ])))
+            Ok(sqlparser::ast::SelectItem::UnnamedExpr(
+                SqlExpr::CompoundIdentifier(vec![
+                    safe_ident(entry.source_alias.as_ref())?,
+                    safe_ident(entry.name.as_ref())?,
+                ]),
+            ))
         })
         .collect::<Result<Vec<_>, SqlGenError>>()?;
 

@@ -12,7 +12,7 @@ use std::fmt;
 ///
 /// ## Code Ranges
 /// - **1000-1999**: Connection errors
-/// - **2000-2999**: Query errors  
+/// - **2000-2999**: Query errors
 /// - **3000-3999**: Configuration errors
 /// - **4000-4999**: Authentication/Authorization errors
 /// - **5000-5999**: Internal/System errors

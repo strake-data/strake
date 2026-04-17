@@ -2,47 +2,69 @@ use datafusion::error::DataFusionError;
 use sqlparser::parser::ParserError;
 use thiserror::Error;
 
+/// Errors that can occur during translation from DataFusion plans to SQL queries.
 #[derive(Debug, Error)]
 pub enum SqlGenError {
+    /// Errors propagated from the underlying DataFusion engine.
     #[error("DataFusion error: {0}")]
     DataFusion(#[from] DataFusionError),
 
+    /// Errors encountered during SQL parsing or validation via `sqlparser-rs`.
     #[error("SQL Parser error: {0}")]
     Parser(#[from] ParserError),
 
+    /// Returned when the plan contains a node type that cannot be translated to SQL.
     #[error("Unsupported plan type: {message} (node: {node_type})")]
-    UnsupportedPlan { message: String, node_type: String },
+    UnsupportedPlan {
+        /// Descriptive message explaining why the node is unsupported.
+        message: String,
+        /// The type name of the logical plan node.
+        node_type: String,
+    },
 
+    /// Returned when a column reference matches multiple entries in the visible scope.
     #[error("Ambiguous column reference: {name}. Candidates: {candidates:?}")]
     AmbiguousColumn {
+        /// The name of the ambiguous column.
         name: String,
+        /// List of candidate identifiers (e.g. "t0.id", "t1.id").
         candidates: Vec<String>,
     },
 
+    /// Returned when a specific expression (e.g. a complex scalar function) cannot be translated.
     #[error("Unsupported expression: {0}")]
     UnsupportedExpr(String),
 
+    /// Returned when a column reference cannot be resolved in the current scope stack.
     #[error(
         "Scope violation: Column '{col}' not found. Node: {node_type}, Available: {available:?}, Stack: {scope_stack:?}"
     )]
     ScopeViolation {
+        /// The name of the missing column.
         col: String,
+        /// The type of plan node where resolution failed.
         node_type: &'static str,
+        /// List of available column names in the current scope.
         available: Vec<String>,
+        /// The current stack of active scope aliases.
         scope_stack: Vec<String>,
     },
 
+    /// Errors specific to dialect-level configuration or mapping.
     #[error("Dialect error: {0}")]
     DialectError(String),
 
+    /// Returned when an identifier (table or column name) contains illegal characters.
     #[error("Invalid identifier: {0}")]
     InvalidIdentifier(String),
 
+    /// Returned when recursion depth exceeds [`MAX_RECURSION_DEPTH`](crate::sql_generator::translator::MAX_RECURSION_DEPTH).
     #[error("Maximum recursion depth ({0}) exceeded")]
     MaxRecursion(usize),
 }
 
 impl SqlGenError {
+    /// Converts the `SqlGenError` into a user-facing [`StrakeError`].
     pub fn to_strake_error(self, dialect_name: &str) -> strake_error::StrakeError {
         use strake_error::{ErrorCode, ErrorContext, StrakeError};
 

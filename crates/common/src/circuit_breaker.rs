@@ -304,6 +304,11 @@ impl CircuitBreakerTableProvider {
     pub fn new(inner: Arc<dyn TableProvider>, cb: Arc<AdaptiveCircuitBreaker>) -> Self {
         Self { inner, cb }
     }
+
+    /// Returns the underlying [`TableProvider`] wrapped by this circuit breaker.
+    pub fn inner(&self) -> Arc<dyn TableProvider> {
+        self.inner.clone()
+    }
 }
 
 #[async_trait::async_trait]

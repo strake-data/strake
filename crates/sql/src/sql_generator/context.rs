@@ -1,102 +1,104 @@
+//! ## Usage
+//!
+//! ```rust
+//! use strake_sql::sql_generator::context::GeneratorContext;
+//! use std::sync::Arc;
+//!
+//! let mut ctx = GeneratorContext::new();
+//! // Enter a scope with columns
+//! let columns = Arc::from(vec![]);
+//! let guard = ctx.enter_scope("rel_0".to_string(), columns, vec!["users".to_string()]);
+//! guard.commit();
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Column resolution is O(scopes × columns) per lookup. Alias generation is O(1)
+//! via monotonic counter.
+//!
+//! ## Errors
+//!
+//! - [`SqlGenError::ScopeViolation`]: Returned by `resolve_column` when a column cannot be found in any visible scope.
+//! - [`SqlGenError::AmbiguousColumn`]: Returned when a column name matches multiple entries without sufficient qualification.
+
 use crate::sql_generator::error::SqlGenError;
 use datafusion::arrow::datatypes::DataType;
 use datafusion::common::Column;
 use std::sync::Arc;
 
+/// Global unique identifier for a column instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ColumnId(pub usize);
+
+impl From<usize> for ColumnId {
+    fn from(id: usize) -> Self {
+        Self(id)
+    }
+}
+
+impl From<ColumnId> for usize {
+    fn from(id: ColumnId) -> Self {
+        id.0
+    }
+}
+
+impl std::fmt::Display for ColumnId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Metadata for a column in the SQL generator's scope.
 #[derive(Debug, Clone)]
 pub struct ColumnEntry {
+    /// The name of the column as it appears in the projection or JOIN output.
     pub name: Arc<str>,
+    /// The pre-computed lowercase representation of the column name for case-insensitive matching.
+    pub name_lower: Arc<str>,
+    /// The Arrow data type of the column.
     pub data_type: DataType,
     /// The alias of the table/relation where this column originates.
-    /// Used to resolve `t0` vs `t1` in joins.
+    /// Used to resolve `t0.col` vs `t1.col` in joins.
     pub source_alias: Arc<str>,
     /// Chain of aliases/qualifiers this column has passed through.
     /// Used for disambiguation in complex joins.
     pub provenance: Vec<String>,
-    /// Global unique identifier for this specific column instance.
-    pub unique_id: usize,
+    /// Global unique identifier for this specific column instance,
+    /// used to track columns through transformations.
+    pub unique_id: ColumnId,
 }
 
+/// Represents a named set of columns visible during translation.
 #[derive(Debug, Clone)]
 pub struct Scope {
-    /// The alias of this scope (e.g., "t0")
+    /// The stable alias assigned to this scope (e.g., "rel_0").
     pub alias: String,
-    /// Columns exposed by this scope
+    /// The set of columns exposed by this relation.
     pub columns: Arc<[ColumnEntry]>,
-    /// Whether this scope represents a derived table / subquery
+    /// True if this scope represents a derived table, subquery, or JOIN result.
     pub is_derived: bool,
-    /// Original relation names that this scope represents (e.g. "users", "orders")
-    /// Used for qualified column resolution logic (fallback)
+    /// Original relation names that this scope represents (e.g. "users", "orders").
+    /// Used for qualified column resolution fallback.
     pub qualifiers: Vec<String>,
 }
 
-pub struct GeneratorContext {
-    /// Global counter for deterministic aliases (t0, t1...)
-    counter: usize,
-    /// Global counter for unique column IDs
-    column_id_counter: usize,
-    /// Stack of visible scopes, from outermost to innermost
-    scope_stack: Vec<Scope>,
-}
-
-/// RAII Guard for Scope management.
-/// Pops the scope when dropped, unless committed.
-pub struct ScopeGuard<'a> {
-    context: &'a mut GeneratorContext,
-    expected_alias: String,
-    committed: bool,
-}
-
-impl<'a> ScopeGuard<'a> {
-    pub fn new(
-        context: &'a mut GeneratorContext,
-        alias: String,
-        columns: Arc<[ColumnEntry]>,
-        qualifiers: Vec<String>,
-    ) -> Self {
-        let alias_clone = alias.clone();
-        context.push_scope(alias, columns, qualifiers);
-        Self {
-            context,
-            expected_alias: alias_clone,
-            committed: false,
-        }
-    }
-
-    /// Prevent the scope from being popped on drop.
-    /// Useful for when the scope ownership is transferred or persisted.
-    #[allow(dead_code)] // May be used in future
-    pub fn commit(mut self) {
-        self.committed = true;
-    }
-}
-
-impl<'a> Drop for ScopeGuard<'a> {
-    fn drop(&mut self) {
-        if !self.committed {
-            if let Some(top) = self.context.current_scope()
-                && top.alias != self.expected_alias
-            {
-                tracing::error!(
-                    target: "sql_generator",
-                    expected = %self.expected_alias,
-                    actual = %top.alias,
-                    "Scope stack corruption detected"
-                );
-                #[cfg(debug_assertions)]
-                panic!(
-                    "Scope stack corruption: expected {}, got {}",
-                    self.expected_alias, top.alias
-                );
-            }
-            self.context.pop_scope();
-        }
-    }
-}
-
 /// Represents a state in the scope stack that can be rolled back to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Checkpoint {
     pub(crate) stack_len: usize,
+    pub(crate) undo_len: usize,
+}
+
+/// Manages the scope stack and alias generation for SQL translation.
+pub struct GeneratorContext {
+    /// Global counter for deterministic aliases (rel_0, rel_1...).
+    counter: usize,
+    /// Global counter for unique column IDs.
+    column_id_counter: usize,
+    /// Stack of visible scopes, from outermost to innermost.
+    pub(crate) scope_stack: Vec<Scope>,
+    /// Tracks popped scopes to allow robust restoration via Checkpoints.
+    undo_stack: Vec<Scope>,
 }
 
 impl Default for GeneratorContext {
@@ -106,11 +108,13 @@ impl Default for GeneratorContext {
 }
 
 impl GeneratorContext {
+    /// Creates a new, empty [`GeneratorContext`].
     pub fn new() -> Self {
         Self {
             counter: 0,
             column_id_counter: 0,
             scope_stack: Vec::new(),
+            undo_stack: Vec::new(),
         }
     }
 
@@ -122,13 +126,14 @@ impl GeneratorContext {
     }
 
     /// Assign next unique column ID and increment counter
-    pub fn next_column_id(&mut self) -> usize {
+    pub fn next_column_id(&mut self) -> ColumnId {
         let id = self.column_id_counter;
         self.column_id_counter += 1;
-        id
+        ColumnId(id)
     }
 
     /// Enter a new scope, returning a guard that will pop it when dropped.
+    #[must_use = "The ScopeGuard must be committed to persist the scope change"]
     pub fn enter_scope(
         &mut self,
         alias: String,
@@ -138,7 +143,6 @@ impl GeneratorContext {
         ScopeGuard::new(self, alias, columns, qualifiers)
     }
 
-    /// Legacy push method - usage should be migrated to enter_scope where possible for safety
     pub(crate) fn push_scope(
         &mut self,
         alias: String,
@@ -153,13 +157,35 @@ impl GeneratorContext {
         });
     }
 
+    pub(crate) fn push_existing_scope(&mut self, scope: Scope) {
+        // If we are pushing back something we just popped, remove it from undo history
+        if self
+            .undo_stack
+            .last()
+            .map(|s| s.alias == scope.alias)
+            .unwrap_or(false)
+        {
+            self.undo_stack.pop();
+        }
+        self.scope_stack.push(scope);
+    }
+
+    /// Pop the current scope (e.g. leaving a subquery).
+    /// Returns the popped scope.
+    pub fn pop_and_return_scope(&mut self) -> Option<Scope> {
+        let scope = self.scope_stack.pop();
+        if let Some(ref s) = scope {
+            self.undo_stack.push(s.clone());
+            tracing::trace!(target: "sql_generator", stack_len = self.scope_stack.len(), "Popped scope");
+        } else {
+            tracing::warn!(target: "sql_generator", "Attempted to pop scope from empty stack");
+        }
+        scope
+    }
+
     /// Pop the current scope (e.g. leaving a subquery)
     pub fn pop_scope(&mut self) {
-        if self.scope_stack.pop().is_none() {
-            tracing::warn!(target: "sql_generator", "Attempted to pop scope from empty stack");
-        } else {
-            tracing::trace!(target: "sql_generator", stack_len = self.scope_stack.len(), "Popped scope");
-        }
+        self.pop_and_return_scope();
     }
 
     /// Get the current (top) scope
@@ -167,6 +193,7 @@ impl GeneratorContext {
         self.scope_stack.last()
     }
 
+    /// Returns the number of active scopes in the stack.
     pub fn scope_stack_len(&self) -> usize {
         self.scope_stack.len()
     }
@@ -175,15 +202,32 @@ impl GeneratorContext {
     pub fn checkpoint(&self) -> Checkpoint {
         Checkpoint {
             stack_len: self.scope_stack.len(),
+            undo_len: self.undo_stack.len(),
         }
     }
 
     /// Roll back the scope stack to a previously created checkpoint.
+    /// Correctly handles both extra pushes (via truncate) and extra pops (via undo_stack).
     pub fn rollback(&mut self, checkpoint: Checkpoint) {
+        // 1. Remove extra pushes
         if self.scope_stack.len() > checkpoint.stack_len {
-            let diff = self.scope_stack.len() - checkpoint.stack_len;
-            tracing::trace!(target: "sql_generator", count = diff, "Rolling back scopes");
             self.scope_stack.truncate(checkpoint.stack_len);
+        }
+
+        // 2. Restore extra pops
+        if self.undo_stack.len() > checkpoint.undo_len {
+            let mut to_restore = Vec::new();
+            while self.undo_stack.len() > checkpoint.undo_len {
+                if let Some(scope) = self.undo_stack.pop() {
+                    to_restore.push(scope);
+                }
+            }
+            // Items were pushed to undo_stack in pop order.
+            // newest_pop is at the end. newest_pop was the top of the stack.
+            // Items must be pushed back to scope_stack in the same order they were originally.
+            for scope in to_restore {
+                self.scope_stack.push(scope);
+            }
         }
     }
 
@@ -193,46 +237,65 @@ impl GeneratorContext {
         &self,
         col: &Column,
         node_type: &'static str,
-    ) -> Result<(String, String), SqlGenError> {
-        // Search from top of stack down
+    ) -> Result<&ColumnEntry, SqlGenError> {
+        let lookup_name = crate::sql_generator::translator::derive_bare_name(&col.name);
+        let lookup_lower = lookup_name.to_lowercase();
+
         for scope in self.scope_stack.iter().rev() {
-            // Find all matching columns in this scope
-            let matches: Vec<&ColumnEntry> = scope
+            // Primary match: derive_bare_name normalization
+            let mut matches: Vec<&ColumnEntry> = scope
                 .columns
                 .iter()
-                .filter(|e| e.name.as_ref() == col.name)
+                .filter(|e| {
+                    let entry_bare =
+                        crate::sql_generator::translator::derive_bare_name(e.name.as_ref());
+                    entry_bare == lookup_name
+                })
                 .collect();
+
+            // Fallback: direct case-insensitive comparison (safety net)
+            if matches.is_empty() {
+                matches = scope
+                    .columns
+                    .iter()
+                    .filter(|e| e.name_lower.as_ref() == lookup_lower.as_str())
+                    .collect();
+            }
 
             if matches.is_empty() {
                 continue;
             }
 
-            // If we have a qualifier (relation), try to find a specific match
             if let Some(relation) = &col.relation {
                 let table_str = relation.to_string();
+                let table_norm = table_str.replace('"', "").to_lowercase();
 
-                // Check exact provenance or search scope's known qualifiers
                 let specific = matches.iter().find(|e| {
-                    e.provenance.contains(&table_str) || e.source_alias.as_ref() == table_str
+                    e.source_alias.as_ref().replace('"', "").to_lowercase() == table_norm
+                        || e.provenance
+                            .iter()
+                            .any(|p| p.replace('"', "").to_lowercase() == table_norm)
                 });
 
                 if let Some(found) = specific {
-                    return Ok((found.source_alias.to_string(), col.name.clone()));
+                    return Ok(found);
                 }
 
-                // If qualifier was provided but didn't match anything in this scope's columns,
-                // we should continue searching down or check if the qualifier itself matches this scope.
-                if !scope.qualifiers.contains(&table_str) && scope.alias != table_str {
+                let scope_alias_norm = scope.alias.replace('"', "").to_lowercase();
+                if !scope
+                    .qualifiers
+                    .iter()
+                    .any(|q| q.replace('"', "").to_lowercase() == table_norm)
+                    && scope_alias_norm != table_norm
+                {
                     continue;
                 }
             }
 
-            // If no qualifier or simple match found, and it's unambiguous within this scope
             if matches.len() == 1 {
-                return Ok((matches[0].source_alias.to_string(), col.name.clone()));
+                return Ok(matches[0]);
             }
 
-            // Ambigous within the current scope
             return Err(SqlGenError::AmbiguousColumn {
                 name: col.name.clone(),
                 candidates: matches
@@ -266,5 +329,103 @@ impl GeneratorContext {
                 })
                 .collect(),
         })
+    }
+}
+
+/// RAII Guard for Scope management.
+/// Pops the scope when dropped, unless committed.
+pub struct ScopeGuard<'a> {
+    context: &'a mut GeneratorContext,
+    expected_alias: String,
+    committed: bool,
+}
+
+impl<'a> ScopeGuard<'a> {
+    /// Creates a new [`ScopeGuard`] and pushes a new scope to the context.
+    pub fn new(
+        context: &'a mut GeneratorContext,
+        alias: String,
+        columns: Arc<[ColumnEntry]>,
+        qualifiers: Vec<String>,
+    ) -> Self {
+        let alias_clone = alias.clone();
+        context.push_scope(alias, columns, qualifiers);
+        Self {
+            context,
+            expected_alias: alias_clone,
+            committed: false,
+        }
+    }
+
+    /// Prevents the scope from being popped on drop.
+    pub fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl<'a> Drop for ScopeGuard<'a> {
+    fn drop(&mut self) {
+        if !self.committed {
+            if let Some(top) = self.context.current_scope()
+                && top.alias != self.expected_alias
+            {
+                tracing::error!(
+                    target: "sql_generator",
+                    expected = %self.expected_alias,
+                    actual = %top.alias,
+                    "Scope stack corruption detected"
+                );
+            }
+            self.context.pop_scope();
+        }
+    }
+}
+
+/// RAII guard for manual scope stack manipulation in complex nodes like Joins.
+///
+/// On drop, rolls back the scope stack to the state at creation time,
+/// unless `commit` was called (which updates the checkpoint to the current state).
+pub struct ScopeHolder<'a> {
+    ctx: &'a mut GeneratorContext,
+    checkpoint: Checkpoint,
+}
+
+impl<'a> ScopeHolder<'a> {
+    /// Creates a new [`ScopeHolder`] and captures a checkpoint of the current stack.
+    pub fn new(ctx: &'a mut GeneratorContext) -> Self {
+        let checkpoint = ctx.checkpoint();
+        Self { ctx, checkpoint }
+    }
+
+    /// Pops a scope from the context.
+    pub fn pop(&mut self) -> Result<Scope, SqlGenError> {
+        self.ctx
+            .pop_and_return_scope()
+            .ok_or_else(|| SqlGenError::UnsupportedPlan {
+                message: "Missing scope during manual stack manipulation".to_string(),
+                node_type: "Context".to_string(),
+            })
+    }
+
+    /// Pushes a scope back to the context.
+    pub fn repush(&mut self, scope: Scope) {
+        self.ctx.push_existing_scope(scope);
+    }
+
+    /// Provides mutable access to the underlying context.
+    pub fn ctx_mut(&mut self) -> &mut GeneratorContext {
+        self.ctx
+    }
+
+    /// Marks the current stack state as the new checkpoint,
+    /// preventing rollback on drop.
+    pub fn commit(&mut self) {
+        self.checkpoint = self.ctx.checkpoint();
+    }
+}
+
+impl<'a> Drop for ScopeHolder<'a> {
+    fn drop(&mut self) {
+        self.ctx.rollback(self.checkpoint);
     }
 }

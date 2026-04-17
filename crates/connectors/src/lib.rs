@@ -11,6 +11,7 @@
 //!    subqueries on remote engines (e.g., PostgreSQL, SQLite, Iceberg).
 //! 3. **Optimization**: Pushing down filters and limits to minimize data transfer.
 #![deny(missing_docs)]
+#![allow(unexpected_cfgs)]
 
 /// Schema introspection utilities for discovering tables in external sources.
 pub mod introspect;
