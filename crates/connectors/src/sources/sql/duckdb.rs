@@ -23,17 +23,22 @@
 use anyhow::{Context, Result};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use datafusion::catalog::TableProvider;
-use datafusion::prelude::SessionContext;
+use datafusion::datasource::TableProvider;
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::prelude::Expr;
 use datafusion::sql::TableReference;
 use duckdb::DuckdbConnectionManager;
 use r2d2::Pool;
-use std::sync::{Arc, OnceLock};
+use secrecy::SecretString;
+use std::sync::Arc;
+use std::sync::OnceLock;
+use strake_common::circuit_breaker::AdaptiveCircuitBreaker;
 
-use super::common::{FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams};
-use super::wrappers::register_tables;
-use strake_common::config::TableConfig;
-use strake_common::retry::retry_async;
+use super::base_connector::GenericSqlConnector;
+use super::common::{
+    FetchedMetadata, SchemaMappingRule, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams,
+};
+use super::duckdb_introspect::DuckDBIntrospector;
 
 /// Newtype for a DuckDB database path.
 ///
@@ -119,13 +124,11 @@ impl SqlMetadataFetcher for DuckDBMetadataFetcher {
 }
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
+use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-};
+use datafusion::physical_plan::{DisplayAs, DisplayFormatType, Partitioning, PlanProperties};
 use std::any::Any;
 
 use crate::sources::predicate_caching::DynamicFilterSource;
@@ -229,9 +232,9 @@ impl ExecutionPlan for DuckDBScanExec {
 
         let mut builder = RecordBatchReceiverStream::builder(schema.clone(), 2);
         let tx = builder.tx();
-        let metrics = BaselineMetrics::new(&self.metrics, 0);
-        let bytes_metrics =
-            datafusion::physical_plan::metrics::MetricBuilder::new(&self.metrics).output_bytes(0);
+        let metrics = BaselineMetrics::new(&self.metrics, _partition);
+        let bytes_metrics = datafusion::physical_plan::metrics::MetricBuilder::new(&self.metrics)
+            .output_bytes(_partition);
         let index_map_cache = self.memoized_index_map.clone();
 
         builder.spawn_blocking(move || {
@@ -264,7 +267,7 @@ impl ExecutionPlan for DuckDBScanExec {
                     }).as_ref().map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))?;
 
                     // Defensive check: Ensure the current batch is compatible with the memoized mapping.
-                    if batch_schema.fields().len() < index_map.iter().max().copied().unwrap_or(0) {
+                    if index_map.iter().any(|&idx| idx >= batch_schema.fields().len()) {
                          return Err(datafusion::error::DataFusionError::Execution(
                             "DuckDB batch schema is incompatible with memoized index map".to_string()
                         ));
@@ -543,7 +546,7 @@ impl TableProvider for DuckDBTableProvider {
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
-    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let (target_schema, query) = self.generate_pushdown_sql(projection, filters, limit)?;
 
         tracing::info!(query = %query, "Executing Streaming DuckDB Pushdown Query");
@@ -625,14 +628,16 @@ impl SqlProviderFactory for DuckDBTableFactory {
     async fn create_table_provider(
         &self,
         table_ref: TableReference,
-        metadata: FetchedMetadata,
-        cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
+        metadata: Arc<FetchedMetadata>,
+        cb: Arc<AdaptiveCircuitBreaker>,
     ) -> Result<Arc<dyn TableProvider>> {
         let table_name = table_ref.table();
         let provider = DuckDBTableProvider::new(self.pool.clone(), table_name.to_string()).await?;
 
         // First wrap with metadata and circuit breaker
-        let wrapped_provider = super::wrappers::wrap_provider(Arc::new(provider), cb, metadata);
+        // DuckDB is local/authoritative, so we skip schema drift detection.
+        let wrapped_provider =
+            super::wrappers::wrap_provider(Arc::new(provider), cb, metadata, false);
 
         // Enable federation support using the SHARED federation provider from the factory.
         // This ensures the federation optimizer identifies tables as coming from the same source.
@@ -652,6 +657,10 @@ impl SqlProviderFactory for DuckDBTableFactory {
 }
 
 /// A custom TableSource for DuckDB that integrates with our custom federation provider.
+///
+/// # FIXME (#st-1234)
+/// This struct duplicates logic from `SQLTableSource`. It should ideally be refactored
+/// to use a more generic approach once the `datafusion-federation` API stabilizes.
 pub struct DuckDBTableSource {
     federation_provider: Arc<dyn datafusion_federation::FederationProvider>,
     table_provider: Arc<dyn TableProvider>,
@@ -696,128 +705,24 @@ impl datafusion_federation::FederatedTableSource for DuckDBTableSource {
     }
 }
 
-/// Registers a DuckDB source in the DataFusion context.
-///
-/// # Errors
-/// Returns an error if the database connection fails or introspection fails.
 pub async fn register_duckdb(params: SqlSourceParams) -> Result<()> {
-    let context = params.context;
-    let catalog_name = params.catalog_name;
-    let name = params.name;
-    let connection_string = params.connection_string;
-    let cb = params.cb.clone();
-    let explicit_tables = params.explicit_tables;
-    let retry_settings = params.retry;
-    let max_concurrent_queries = params.max_concurrent_queries;
-
-    retry_async(
-        format!("register_duckdb({})", name),
-        retry_settings,
-        move || {
-            let cb = cb.clone();
-            let context = context.clone();
-            let catalog_name = catalog_name.clone();
-            let name = name.clone();
-            let connection_string = connection_string.clone();
-            let explicit_tables = explicit_tables.clone();
-
-            async move {
-                try_register_duckdb(
-                    context,
-                    catalog_name,
-                    name,
-                    connection_string.into(),
-                    cb,
-                    explicit_tables,
-                    max_concurrent_queries,
-                )
-                .await
-            }
-        },
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn try_register_duckdb(
-    context: Arc<SessionContext>,
-    catalog_name: String,
-    name: String,
-    db_path: DuckDBPath,
-    cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
-    explicit_tables: Arc<Option<Vec<TableConfig>>>,
-    max_concurrent_queries: usize,
-) -> Result<()> {
+    let connection_string = params.connection_string.clone();
+    let db_path_str = connection_string.clone();
+    let db_path = tokio::task::spawn_blocking(move || DuckDBPath::new(db_path_str))
+        .await
+        .context("Blocking task panicked")?;
     let factory = DuckDBTableFactory::new(db_path.clone())?;
 
-    let tables_to_register: Vec<(String, String)> =
-        if let Some(config_tables) = explicit_tables.as_ref() {
-            config_tables
-                .iter()
-                .map(|t| {
-                    let schema = if t.schema.is_empty() || t.schema == "public" {
-                        name.to_string()
-                    } else {
-                        t.schema.clone()
-                    };
-                    (t.name.clone(), schema)
-                })
-                .collect()
-        } else {
-            factory
-                .introspect_tables()
-                .await?
-                .into_iter()
-                .map(|t| (t, name.to_string()))
-                .collect()
-        };
+    let connector = GenericSqlConnector {
+        introspector: Arc::new(DuckDBIntrospector {
+            db_path: SecretString::from(connection_string.clone()),
+        }),
+        factory: Arc::new(factory),
+        metadata_fetcher: Some(Arc::new(DuckDBMetadataFetcher { db_path })),
+        schema_mapping: SchemaMappingRule::Standard,
+    };
 
-    let fetcher: Option<Box<dyn SqlMetadataFetcher>> =
-        Some(Box::new(DuckDBMetadataFetcher { db_path }));
-
-    register_tables(
-        &context,
-        &catalog_name,
-        &name,
-        fetcher,
-        &factory,
-        cb,
-        max_concurrent_queries,
-        tables_to_register,
-    )
-    .await?;
-    Ok(())
-}
-
-impl DuckDBTableFactory {
-    /// Introspects the DuckDB database using the shared pool to find all tables in the `main` schema.
-    ///
-    /// # Errors
-    /// Returns an error if the connection fails or the query fails.
-    pub async fn introspect_tables(&self) -> Result<Vec<String>> {
-        let pool = self.pool.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = pool
-                .get()
-                .context("Failed to get DuckDB connection for introspection")?;
-
-            let mut stmt = conn
-                .prepare(
-                    "SELECT table_name FROM information_schema.tables WHERE table_schema='main'",
-                )
-                .context("Failed to prepare DuckDB introspection query")?;
-
-            let rows = stmt
-                .query_map([], |row| row.get(0))
-                .context("Failed to execute DuckDB introspection query")?
-                .collect::<std::result::Result<Vec<String>, _>>()
-                .context("Failed to collect DuckDB table names")?;
-
-            Ok(rows)
-        })
-        .await
-        .context("Join error during introspection")?
-    }
+    connector.register(params).await
 }
 
 #[cfg(test)]

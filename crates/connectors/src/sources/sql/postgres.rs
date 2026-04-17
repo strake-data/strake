@@ -1,171 +1,75 @@
+//! # Postgres Connector
+//!
+//! Provides integration for PostgreSQL data sources, including table discovery,
+//! execution via `tokio-postgres`, and federation support.
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use datafusion::datasource::TableProvider;
-use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
 use datafusion_table_providers::postgres::PostgresTableFactory;
 use datafusion_table_providers::sql::db_connection_pool::postgrespool::PostgresConnectionPool;
+use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_postgres::Config;
 
-use super::common::{FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams};
-use super::wrappers::register_tables;
-use strake_common::config::TableConfig;
-use strake_common::retry::retry_async;
+use super::base_connector::GenericSqlConnector;
+use super::common::{
+    FetchedMetadata, GenericFederatedTableFactory, SchemaMappingRule, SqlMetadataFetcher,
+    SqlSourceParams, TableFactory,
+};
+use super::postgres_introspect::PostgresIntrospector;
 
 pub struct PostgresMetadataFetcher {
-    pub connection_string: String,
+    pub connection_string: SecretString,
 }
 
 #[async_trait]
 impl SqlMetadataFetcher for PostgresMetadataFetcher {
     async fn fetch_metadata(&self, schema: &str, table: &str) -> Result<FetchedMetadata> {
-        fetch_postgres_comments(&self.connection_string, schema, table).await
+        fetch_postgres_comments(self.connection_string.expose_secret(), schema, table).await
     }
-}
-
-pub async fn register_postgres(params: SqlSourceParams) -> Result<()> {
-    let context = params.context;
-    let catalog_name = params.catalog_name;
-    let name = params.name;
-    let connection_string = params.connection_string;
-    let pool_size = params.pool_size;
-    let cb = params.cb;
-    let explicit_tables = params.explicit_tables;
-    let retry_settings = params.retry;
-    let max_concurrent_queries = params.max_concurrent_queries;
-
-    retry_async(
-        format!("register_mysql({})", name),
-        retry_settings,
-        move || {
-            let cb = cb.clone();
-            let context = context.clone();
-            let catalog_name = catalog_name.clone();
-            let name = name.clone();
-            let connection_string = connection_string.clone();
-            let explicit_tables = explicit_tables.clone();
-
-            async move {
-                try_register_postgres(
-                    context,
-                    catalog_name,
-                    name,
-                    connection_string,
-                    pool_size,
-                    cb,
-                    explicit_tables,
-                    max_concurrent_queries,
-                )
-                .await
-            }
-        },
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn try_register_postgres(
-    context: Arc<SessionContext>,
-    catalog_name: String,
-    name: String,
-    connection_string: String,
-    pool_size: usize,
-    cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
-    explicit_tables: Arc<Option<Vec<TableConfig>>>,
-    max_concurrent_queries: usize,
-) -> Result<()> {
-    let pool = create_pg_pool(&connection_string, pool_size).await?;
-    let inner_factory = PostgresTableFactory::new(pool);
-
-    // Create federation provider
-    let executor = super::postgres_federation::PostgresExecutor::new(connection_string.clone());
-    let federation_provider = executor.create_federation_provider();
-
-    let factory = FederatedPostgresTableFactory {
-        inner: inner_factory,
-        federation_provider,
-    };
-
-    let tables_to_register: Vec<(String, String)> =
-        if let Some(config_tables) = explicit_tables.as_ref() {
-            config_tables
-                .iter()
-                .map(|t| {
-                    // FIX: Transform schema - use source name if empty or "public"
-                    let target_schema = if t.schema.is_empty() || t.schema == "public" {
-                        name.to_string()
-                    } else {
-                        t.schema.clone()
-                    };
-                    (t.name.clone(), target_schema)
-                })
-                .collect()
-        } else {
-            introspect_pg_tables(&connection_string)
-                .await?
-                .into_iter()
-                .map(|t| (t, name.to_string()))
-                .collect()
-        };
-
-    let fetcher: Option<Box<dyn SqlMetadataFetcher>> = Some(Box::new(PostgresMetadataFetcher {
-        connection_string: connection_string.clone(),
-    }));
-
-    register_tables(
-        &context,
-        &catalog_name,
-        &name,
-        fetcher,
-        &factory,
-        cb,
-        max_concurrent_queries,
-        tables_to_register,
-    )
-    .await?;
-    Ok(())
-}
-
-struct FederatedPostgresTableFactory {
-    inner: PostgresTableFactory,
-    federation_provider: Arc<datafusion_federation::sql::SQLFederationProvider>,
 }
 
 #[async_trait]
-impl SqlProviderFactory for FederatedPostgresTableFactory {
-    async fn create_table_provider(
-        &self,
-        table_ref: TableReference,
-        metadata: FetchedMetadata,
-        cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
-    ) -> Result<Arc<dyn TableProvider>> {
-        let inner_provider = self
-            .inner
-            .table_provider(table_ref.clone())
+impl TableFactory for PostgresTableFactory {
+    async fn table_provider(&self, table_ref: TableReference) -> Result<Arc<dyn TableProvider>> {
+        self.table_provider(table_ref)
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-        // Wrap the inner provider with metadata and circuit breaker
-        let wrapped_inner = super::wrappers::wrap_provider(inner_provider, cb, metadata);
-
-        // Use SQLTableSource for federation logic
-        let sql_source = datafusion_federation::sql::SQLTableSource::new_with_schema(
-            self.federation_provider.clone(),
-            table_ref.into(),
-            wrapped_inner.schema(),
-        );
-
-        // Wrap with federation adaptor
-        // First arg: Source (logical), Second arg: Provider (physical fallback)
-        let adaptor = datafusion_federation::FederatedTableProviderAdaptor::new_with_provider(
-            Arc::new(sql_source),
-            wrapped_inner,
-        );
-
-        Ok(Arc::new(adaptor))
+            .map_err(|e| anyhow::anyhow!("{}", e))
     }
+}
+
+/// Registers a PostgreSQL source into the provided context.
+pub async fn register_postgres(params: SqlSourceParams) -> Result<()> {
+    let connection_string = params.connection_string.clone();
+    let pool_size = params.pool_size;
+
+    let pool = create_pg_pool(&connection_string, pool_size).await?;
+    let inner_factory = PostgresTableFactory::new(pool);
+
+    let executor = super::postgres_federation::PostgresExecutor::new(connection_string.clone());
+    let federation_provider = executor.create_federation_provider();
+
+    let factory = GenericFederatedTableFactory {
+        inner_factory,
+        federation_provider,
+        schema_drift: true,
+    };
+
+    let connector = GenericSqlConnector {
+        introspector: Arc::new(PostgresIntrospector {
+            connection_string: SecretString::from(connection_string.clone()),
+        }),
+        factory: Arc::new(factory),
+        metadata_fetcher: Some(Arc::new(PostgresMetadataFetcher {
+            connection_string: SecretString::from(connection_string.clone()),
+        })),
+        schema_mapping: SchemaMappingRule::Standard,
+    };
+
+    connector.register(params).await
 }
 
 async fn create_pg_pool(

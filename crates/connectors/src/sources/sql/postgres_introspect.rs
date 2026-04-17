@@ -9,8 +9,10 @@ use strake_common::schema::{
     normalize_type_str,
 };
 
+use secrecy::{ExposeSecret, SecretString};
+
 pub struct PostgresIntrospector {
-    pub connection_string: String,
+    pub connection_string: SecretString,
 }
 
 #[async_trait]
@@ -19,9 +21,10 @@ impl SchemaIntrospector for PostgresIntrospector {
         &self,
         pattern: Option<&GlobMatcher>,
     ) -> Result<Vec<TableRef>, IntrospectError> {
-        let (client, connection) = tokio_postgres::connect(&self.connection_string, NoTls)
-            .await
-            .map_err(|e| IntrospectError::Connection(e.to_string()))?;
+        let (client, connection) =
+            tokio_postgres::connect(self.connection_string.expose_secret(), NoTls)
+                .await
+                .map_err(|e| IntrospectError::Connection(e.to_string()))?;
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {
@@ -63,9 +66,10 @@ impl SchemaIntrospector for PostgresIntrospector {
         table: &TableRef,
         full: bool,
     ) -> Result<IntrospectedTable, IntrospectError> {
-        let (client, connection) = tokio_postgres::connect(&self.connection_string, NoTls)
-            .await
-            .map_err(|e| IntrospectError::Connection(e.to_string()))?;
+        let (client, connection) =
+            tokio_postgres::connect(self.connection_string.expose_secret(), NoTls)
+                .await
+                .map_err(|e| IntrospectError::Connection(e.to_string()))?;
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {

@@ -10,12 +10,14 @@ use std::sync::Arc;
 use crate::sources::SourceProvider;
 use strake_common::config::{RetrySettings, SourceConfig, TableConfig};
 
+pub mod base_connector;
 pub mod common;
 pub mod mysql;
 pub mod postgres;
 pub mod postgres_federation;
 pub mod sqlite;
 pub mod sqlite_federation;
+pub mod sqlite_introspect;
 pub mod wrappers;
 
 pub use common::SqlDialect;
@@ -66,19 +68,14 @@ impl SourceProvider for SqlSourceProvider {
 
         let effective_retry = sql_config.retry.unwrap_or(self.global_retry);
 
-        let mut tables = if !config.tables.is_empty() {
+        let tables = if !config.tables.is_empty() {
             config.tables.clone()
         } else {
             sql_config.tables.unwrap_or_default()
         };
 
-        // Refined Schema Rule for SQL:
-        // If schema is empty or "public", use the source name as the schema namespace.
-        for table in &mut tables {
-            if table.schema.is_empty() || table.schema == "public" {
-                table.schema = config.name.to_string();
-            }
-        }
+        // Schema mapping logic is now handled in GenericSqlConnector::register
+        // using SchemaMappingRule, so we just pass the tables through.
 
         let explicit_tables = if !tables.is_empty() {
             Some(tables)

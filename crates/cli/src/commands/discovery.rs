@@ -45,6 +45,7 @@ use crate::output::{self, OutputFormat};
 use crate::secrets::ResolverContext;
 use anyhow::{Context, Result, anyhow};
 use owo_colors::OwoColorize;
+use secrecy::SecretString;
 use strake_common::models::DomainName;
 
 /// Performs a fuzzy search against all configured upstream sources to locate tables.
@@ -724,7 +725,7 @@ async fn resolve_introspector(
                     .context("Postgres URL is required for introspection")?;
                 return Ok(Box::new(
                     strake_connectors::sources::sql::postgres_introspect::PostgresIntrospector {
-                        connection_string: conn_str.clone(),
+                        connection_string: SecretString::from(conn_str.clone()),
                     },
                 ));
             }
@@ -735,7 +736,7 @@ async fn resolve_introspector(
                     .context("DuckDB path is required for introspection")?;
                 return Ok(Box::new(
                     strake_connectors::sources::sql::duckdb_introspect::DuckDBIntrospector {
-                        db_path: db_path.clone(),
+                        db_path: SecretString::from(db_path.clone()),
                     },
                 ));
             }

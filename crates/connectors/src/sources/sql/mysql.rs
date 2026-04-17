@@ -1,30 +1,40 @@
+//! # MySQL Connector
+//!
+//! Provides integration for MySQL data sources, including table discovery
+//! and provider creation.
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use datafusion::datasource::TableProvider;
-use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
 use datafusion_table_providers::mysql::MySQLTableFactory;
 use datafusion_table_providers::sql::db_connection_pool::mysqlpool::MySQLConnectionPool;
 use mysql_async::params;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
 use std::sync::Arc;
+use strake_common::circuit_breaker::AdaptiveCircuitBreaker;
 
-use super::common::{FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams};
-use super::wrappers::register_tables;
-use strake_common::config::TableConfig;
-use strake_common::retry::retry_async;
+use super::base_connector::GenericSqlConnector;
+use super::common::{
+    FetchedMetadata, SchemaMappingRule, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams,
+};
+use crate::introspect::{IntrospectError, SchemaIntrospector, TableRef};
+use globset::GlobMatcher;
 
 pub struct MySqlMetadataFetcher {
-    pub connection_string: String,
+    pub connection_string: SecretString,
 }
 
 #[async_trait]
 impl SqlMetadataFetcher for MySqlMetadataFetcher {
     async fn fetch_metadata(&self, _schema: &str, table: &str) -> Result<FetchedMetadata> {
-        fetch_mysql_comments(&self.connection_string, table).await
+        fetch_mysql_comments(self.connection_string.expose_secret(), table).await
     }
 }
+
+// FIXME: MySQL presently lacks federation support (join pushdown).
+// It should be migrated to GenericFederatedTableFactory in the future.
 
 pub struct MySQLTableFactoryWrapper {
     pub factory: MySQLTableFactory,
@@ -34,72 +44,76 @@ pub struct MySQLTableFactoryWrapper {
 impl SqlProviderFactory for MySQLTableFactoryWrapper {
     async fn create_table_provider(
         &self,
-        _table_ref: TableReference,
-        metadata: FetchedMetadata,
-        cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
+        table_ref: TableReference,
+        metadata: Arc<FetchedMetadata>,
+        cb: Arc<AdaptiveCircuitBreaker>,
     ) -> Result<Arc<dyn TableProvider>> {
         let inner = self
             .factory
-            .table_provider(_table_ref)
+            .table_provider(table_ref)
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        // Wrap with metadata and circuit breaker
-        Ok(super::wrappers::wrap_provider(inner, cb, metadata))
+        // Wrap with metadata and circuit breaker.
+        // MySQL is usually a remote federated source (or at least treated as such),
+        // so we enable schema drift detection.
+        Ok(super::wrappers::wrap_provider(inner, cb, metadata, true))
     }
 }
 
-pub async fn register_mysql(params: SqlSourceParams) -> Result<()> {
-    let context = params.context;
-    let catalog_name = params.catalog_name;
-    let name = params.name;
-    let connection_string = params.connection_string;
-    let pool_size = params.pool_size;
-    let cb = params.cb.clone();
-    let explicit_tables = params.explicit_tables;
-    let retry_settings = params.retry;
-    let max_concurrent_queries = params.max_concurrent_queries;
-
-    retry_async(
-        format!("register_mysql({})", name),
-        retry_settings,
-        move || {
-            let cb = cb.clone();
-            let context = context.clone();
-            let catalog_name = catalog_name.clone();
-            let name = name.clone();
-            let connection_string = connection_string.clone();
-            let explicit_tables = explicit_tables.clone();
-
-            async move {
-                try_register_mysql(
-                    context,
-                    catalog_name,
-                    name,
-                    connection_string,
-                    pool_size,
-                    cb,
-                    explicit_tables,
-                    max_concurrent_queries,
-                )
-                .await
-            }
-        },
-    )
-    .await
+pub struct MySqlIntrospector {
+    pub connection_string: SecretString,
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn try_register_mysql(
-    context: Arc<SessionContext>,
-    catalog_name: String,
-    name: String,
-    connection_string: String,
-    pool_size: usize,
-    cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
-    explicit_tables: Arc<Option<Vec<TableConfig>>>,
-    max_concurrent_queries: usize,
-) -> Result<()> {
+#[async_trait]
+impl SchemaIntrospector for MySqlIntrospector {
+    async fn list_tables(
+        &self,
+        pattern: Option<&GlobMatcher>,
+    ) -> Result<Vec<TableRef>, IntrospectError> {
+        let tables = introspect_mysql_tables(self.connection_string.expose_secret())
+            .await
+            .map_err(|e| IntrospectError::Query(e.to_string()))?;
+
+        let mut filtered = Vec::new();
+        for table in tables {
+            let table_ref = TableRef {
+                schema: "public".into(), // MySQL doesn't have schemas in the same way, usually use Database()
+                table,
+            };
+            if let Some(matcher) = pattern {
+                if matcher.is_match(&table_ref.table) {
+                    filtered.push(table_ref);
+                }
+            } else {
+                filtered.push(table_ref);
+            }
+        }
+        Ok(filtered)
+    }
+
+    async fn introspect_table(
+        &self,
+        table: &TableRef,
+        _full: bool,
+    ) -> Result<strake_common::schema::IntrospectedTable, IntrospectError> {
+        // Basic introspection for MySQL
+        Ok(strake_common::schema::IntrospectedTable {
+            source: "mysql".to_string(),
+            schema: table.schema.clone(),
+            name: table.table.clone(),
+            columns: vec![],
+            db_comment: None,
+            ai_description: None,
+        })
+    }
+}
+
+/// Registers a MySQL source into the provided context.
+pub async fn register_mysql(params: SqlSourceParams) -> Result<()> {
+    let connection_string = params.connection_string.clone();
+    let pool_size = params.pool_size;
+
     let mut pool_params = HashMap::new();
     pool_params.insert(
         "connection_string".to_string(),
@@ -116,44 +130,18 @@ async fn try_register_mysql(
     let factory = MySQLTableFactory::new(Arc::new(pool));
     let factory_wrapper = MySQLTableFactoryWrapper { factory };
 
-    let tables_to_register: Vec<(String, String)> =
-        if let Some(config_tables) = explicit_tables.as_ref() {
-            config_tables
-                .iter()
-                .map(|t: &TableConfig| {
-                    // FIX: Transform schema - use source name if empty or "public"
-                    let target_schema = if t.schema.is_empty() || t.schema == "public" {
-                        name.to_string()
-                    } else {
-                        t.schema.clone()
-                    };
-                    (t.name.clone(), target_schema)
-                })
-                .collect()
-        } else {
-            introspect_mysql_tables(&connection_string)
-                .await?
-                .into_iter()
-                .map(|t| (t, name.to_string()))
-                .collect()
-        };
+    let connector = GenericSqlConnector {
+        introspector: Arc::new(MySqlIntrospector {
+            connection_string: SecretString::from(connection_string.clone()),
+        }),
+        factory: Arc::new(factory_wrapper),
+        metadata_fetcher: Some(Arc::new(MySqlMetadataFetcher {
+            connection_string: SecretString::from(connection_string.clone()),
+        })),
+        schema_mapping: SchemaMappingRule::Standard,
+    };
 
-    let fetcher: Option<Box<dyn SqlMetadataFetcher>> = Some(Box::new(MySqlMetadataFetcher {
-        connection_string: connection_string.clone(),
-    }));
-
-    register_tables(
-        &context,
-        &catalog_name,
-        &name,
-        fetcher,
-        &factory_wrapper,
-        cb,
-        max_concurrent_queries,
-        tables_to_register,
-    )
-    .await?;
-    Ok(())
+    connector.register(params).await
 }
 
 pub async fn introspect_mysql_tables(connection_string: &str) -> Result<Vec<String>> {

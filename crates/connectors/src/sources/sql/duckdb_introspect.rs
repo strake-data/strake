@@ -5,8 +5,10 @@ use globset::GlobMatcher;
 use crate::introspect::{IntrospectError, SchemaIntrospector, TableRef};
 use strake_common::schema::{IntrospectedColumn, IntrospectedTable, normalize_type_str};
 
+use secrecy::{ExposeSecret, SecretString};
+
 pub struct DuckDBIntrospector {
-    pub db_path: String,
+    pub db_path: SecretString,
 }
 
 #[async_trait]
@@ -15,7 +17,7 @@ impl SchemaIntrospector for DuckDBIntrospector {
         &self,
         pattern: Option<&GlobMatcher>,
     ) -> Result<Vec<TableRef>, IntrospectError> {
-        let db_path = self.db_path.clone();
+        let db_path = self.db_path.expose_secret().to_string();
         let rows = tokio::task::spawn_blocking(move || {
             let conn = duckdb::Connection::open(&db_path)
                 .map_err(|e| IntrospectError::Connection(e.to_string()))?;
@@ -58,7 +60,7 @@ impl SchemaIntrospector for DuckDBIntrospector {
         table: &TableRef,
         _full: bool,
     ) -> Result<IntrospectedTable, IntrospectError> {
-        let db_path = self.db_path.clone();
+        let db_path = self.db_path.expose_secret().to_string();
         let table_ref = table.clone();
 
         let columns = tokio::task::spawn_blocking(move || {

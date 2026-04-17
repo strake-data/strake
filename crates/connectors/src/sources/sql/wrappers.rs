@@ -5,122 +5,59 @@
 //! This module provides wrappers for concurrency limiting, circuit breaking,
 //! metadata enrichment, and schema drift detection.
 
-use anyhow::Result;
-use async_trait::async_trait;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionContext;
-use datafusion::sql::TableReference;
 use futures::stream::TryStreamExt;
 use std::any::Any;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Semaphore;
 
-use super::common::{FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory};
+use super::common::FetchedMetadata;
+use async_trait::async_trait;
+use datafusion::catalog::Session;
+use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 
-#[allow(clippy::too_many_arguments)]
-pub async fn register_tables(
-    context: &SessionContext,
-    target_catalog: &str,
-    _source_name: &str,
-    metadata_fetcher: Option<Box<dyn SqlMetadataFetcher>>,
-    factory: &dyn SqlProviderFactory,
-    cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
-    max_concurrent_queries: usize,
-    tables: Vec<(String, String)>, // (table_name, target_schema_name)
-) -> Result<()> {
-    use datafusion::catalog::MemorySchemaProvider;
-
-    // Ensure catalog exists
-    let catalog = context
-        .catalog(target_catalog)
-        .ok_or(anyhow::anyhow!("Catalog {} not found", target_catalog))?;
-
-    for (table_name, target_schema) in tables {
-        // Ensure the schema exists
-        if catalog.schema(&target_schema).is_none() {
-            catalog.register_schema(&target_schema, Arc::new(MemorySchemaProvider::new()))?;
-        }
-
-        let metadata = if let Some(fetcher) = &metadata_fetcher {
-            match fetcher.fetch_metadata("public", &table_name).await {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to fetch metadata for {}.{}: {}",
-                        target_schema,
-                        table_name,
-                        e
-                    );
-                    FetchedMetadata::default()
-                }
-            }
-        } else {
-            FetchedMetadata::default()
-        };
-
-        let table_ref = TableReference::bare(table_name.as_str());
-        match factory
-            .create_table_provider(table_ref, metadata, cb.clone())
-            .await
-        {
-            Ok(provider) => {
-                let provider = wrap_concurrent(provider, max_concurrent_queries);
-                let qualified =
-                    TableReference::full(target_catalog, &*target_schema, table_name.as_str());
-                if let Err(e) = context.register_table(qualified, provider) {
-                    tracing::warn!(
-                        "Failed to register table {}.{}: {}",
-                        target_schema,
-                        table_name,
-                        e
-                    );
-                } else {
-                    tracing::info!(
-                        "Registered {}.{}.{}",
-                        target_catalog,
-                        target_schema,
-                        table_name
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Skipping table {} due to error: {}", table_name, e);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Helper to wrap a provider with metadata and circuit breaking
+/// Helper to wrap a provider with metadata and circuit breaking.
+///
+/// This function applies a decorator chain that adds table/column descriptions
+/// and provides circuit breaking protection. Optionally enables schema drift detection.
 pub fn wrap_provider(
     provider: Arc<dyn TableProvider>,
     cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
-    metadata: FetchedMetadata,
+    metadata: Arc<FetchedMetadata>,
+    schema_drift: bool,
 ) -> Arc<dyn TableProvider> {
     use strake_common::circuit_breaker::CircuitBreakerTableProvider;
 
     let enriched = Arc::new(MetadataEnrichedTableProvider::new(provider, metadata));
     let with_cb = Arc::new(CircuitBreakerTableProvider::new(enriched, cb));
-    Arc::new(crate::sources::schema_drift::SchemaDriftTableProvider::new(
-        with_cb,
-    ))
+
+    if schema_drift {
+        Arc::new(crate::sources::schema_drift::SchemaDriftTableProvider::new(
+            with_cb,
+        ))
+    } else {
+        with_cb
+    }
 }
 
+/// A [`TableProvider`] decorator that adds metadata (e.g. descriptions) to the schema.
 #[derive(Debug)]
 pub struct MetadataEnrichedTableProvider {
+    /// The underlying provider being enriched.
     pub inner: Arc<dyn TableProvider>,
-    pub metadata: FetchedMetadata,
+    /// Metadata to merge into the schema and fields.
+    pub metadata: Arc<FetchedMetadata>,
     // Use std::sync::OnceLock because schema() is a synchronous trait method.
     // We cannot await tokio::sync::OnceCell here, and the computation is CPU-bound.
-    pub schema: OnceLock<SchemaRef>,
+    schema: OnceLock<SchemaRef>,
 }
 
 impl MetadataEnrichedTableProvider {
-    pub fn new(provider: Arc<dyn TableProvider>, metadata: FetchedMetadata) -> Self {
+    /// Creates a new `MetadataEnrichedTableProvider`.
+    pub fn new(provider: Arc<dyn TableProvider>, metadata: Arc<FetchedMetadata>) -> Self {
         Self {
             inner: provider,
             metadata,
@@ -178,7 +115,7 @@ impl TableProvider for MetadataEnrichedTableProvider {
     }
     async fn scan(
         &self,
-        state: &dyn datafusion::catalog::Session,
+        state: &dyn Session,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
@@ -195,6 +132,10 @@ impl TableProvider for MetadataEnrichedTableProvider {
     }
 }
 
+/// Wraps a provider with a semaphore to limit concurrent query execution.
+///
+/// Permits are acquired during [`ExecutionPlan::execute`] and released when the
+/// resulting stream is dropped.
 pub fn wrap_concurrent(
     provider: Arc<dyn TableProvider>,
     max_concurrency: usize,
@@ -208,9 +149,12 @@ pub fn wrap_concurrent(
     })
 }
 
+/// A [`TableProvider`] that limits the number of concurrent scans.
 #[derive(Debug)]
 pub struct ConcurrencyLimitedTableProvider {
+    /// The underlying provider.
     pub inner: Arc<dyn TableProvider>,
+    /// Semaphore shared across all plans created by this provider.
     pub semaphore: Arc<Semaphore>,
 }
 
@@ -234,16 +178,16 @@ impl TableProvider for ConcurrencyLimitedTableProvider {
     }
     async fn scan(
         &self,
-        state: &dyn datafusion::catalog::Session,
+        state: &dyn Session,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let inner_plan = self.inner.scan(state, projection, filters, limit).await?;
-        Ok(Arc::new(ConcurrencyLimitedExec {
-            inner: inner_plan,
-            semaphore: self.semaphore.clone(),
-        }))
+        Ok(Arc::new(ConcurrencyLimitedExec::new(
+            inner_plan,
+            self.semaphore.clone(),
+        )))
     }
     fn supports_filters_pushdown(
         &self,
@@ -254,10 +198,23 @@ impl TableProvider for ConcurrencyLimitedTableProvider {
     }
 }
 
+/// An [`ExecutionPlan`] that acquires a semaphore permit before executing the inner plan.
 #[derive(Debug)]
 pub struct ConcurrencyLimitedExec {
     inner: Arc<dyn ExecutionPlan>,
     semaphore: Arc<Semaphore>,
+    metrics: ExecutionPlanMetricsSet,
+}
+
+impl ConcurrencyLimitedExec {
+    /// Creates a new `ConcurrencyLimitedExec`.
+    pub fn new(inner: Arc<dyn ExecutionPlan>, semaphore: Arc<Semaphore>) -> Self {
+        Self {
+            inner,
+            semaphore,
+            metrics: ExecutionPlanMetricsSet::new(),
+        }
+    }
 }
 
 impl datafusion::physical_plan::DisplayAs for ConcurrencyLimitedExec {
@@ -300,10 +257,19 @@ impl ExecutionPlan for ConcurrencyLimitedExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(ConcurrencyLimitedExec {
-            inner: self.inner.clone().with_new_children(children)?,
-            semaphore: self.semaphore.clone(),
-        }))
+        let inner = children.into_iter().next().ok_or_else(|| {
+            datafusion::error::DataFusionError::Internal(
+                "ConcurrencyLimitedExec requires exactly one child".to_string(),
+            )
+        })?;
+        Ok(Arc::new(ConcurrencyLimitedExec::new(
+            inner,
+            self.semaphore.clone(),
+        )))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
     fn partition_statistics(
         &self,
@@ -319,32 +285,33 @@ impl ExecutionPlan for ConcurrencyLimitedExec {
     ) -> datafusion::common::Result<datafusion::physical_plan::SendableRecordBatchStream> {
         let semaphore = self.semaphore.clone();
         let inner = self.inner.clone();
+        let metrics = BaselineMetrics::new(&self.metrics, partition);
+        let output_bytes = datafusion::physical_plan::metrics::MetricBuilder::new(&self.metrics)
+            .output_bytes(partition);
+        let metrics_cloned = metrics.clone();
 
         let stream = futures::stream::once(async move {
-            let permit = semaphore
-                .acquire_owned()
-                .await
-                .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+            let permit = {
+                let _timer = metrics_cloned.elapsed_compute().timer();
+                semaphore
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?
+            };
 
             let stream = inner.execute(partition, context)?;
             Ok::<_, datafusion::error::DataFusionError>((stream, permit))
         })
-        .try_filter_map(|(stream, permit)| {
-            let permit_stream = PermitStream {
+        .try_filter_map(move |(stream, permit)| {
+            let metrics = metrics.clone();
+            let output_bytes = output_bytes.clone();
+            futures::future::ready(Ok(Some(Box::pin(PermitStream {
                 inner: stream,
                 _permit: permit,
-            };
-            // This logic is a bit convoluted to match map semantics, but essentially we want to return the stream
-            // keeping the permit alive.
-            // Using try_flatten with a stream of stream is one way, but maybe creating a new stream is easier.
-
-            // Note: try_flat_map was removed/not available in recent futures or I'm misremembering.
-            // Let's use map + flatten or similar.
-            // Actually, let's just use then + flatten if possible or map.
-
-            futures::future::ready(Ok(Some(
-                Box::pin(permit_stream) as datafusion::physical_plan::SendableRecordBatchStream
-            )))
+                metrics,
+                output_bytes,
+            })
+                as datafusion::physical_plan::SendableRecordBatchStream)))
         })
         .try_flatten();
 
@@ -359,6 +326,8 @@ impl ExecutionPlan for ConcurrencyLimitedExec {
 struct PermitStream {
     inner: datafusion::physical_plan::SendableRecordBatchStream,
     _permit: tokio::sync::OwnedSemaphorePermit,
+    metrics: BaselineMetrics,
+    output_bytes: datafusion::physical_plan::metrics::Count,
 }
 
 impl futures::stream::Stream for PermitStream {
@@ -369,7 +338,12 @@ impl futures::stream::Stream for PermitStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         use futures::stream::StreamExt;
-        self.inner.poll_next_unpin(cx)
+        let poll = self.inner.poll_next_unpin(cx);
+        if let std::task::Poll::Ready(Some(Ok(ref batch))) = poll {
+            self.metrics.record_output(batch.num_rows());
+            self.output_bytes.add(batch.get_array_memory_size());
+        }
+        poll
     }
 }
 

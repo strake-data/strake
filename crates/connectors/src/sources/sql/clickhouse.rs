@@ -1,19 +1,26 @@
+//! # ClickHouse Connector
+//!
+//! Provides integration for ClickHouse data sources, including table discovery
+//! and provider creation.
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use datafusion::datasource::TableProvider;
-use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
 use datafusion_table_providers::clickhouse::ClickHouseTableFactory;
 use datafusion_table_providers::sql::db_connection_pool::clickhousepool::ClickHouseConnectionPool;
 use secrecy::SecretString;
 use std::collections::HashMap;
 use std::sync::Arc;
+use strake_common::circuit_breaker::AdaptiveCircuitBreaker;
 use url::Url;
 
-use super::common::{FetchedMetadata, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams};
-use super::wrappers::register_tables;
-use strake_common::config::TableConfig;
-use strake_common::retry::retry_async;
+use super::base_connector::GenericSqlConnector;
+use super::common::{
+    FetchedMetadata, SchemaMappingRule, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams,
+};
+use crate::introspect::{IntrospectError, SchemaIntrospector, TableRef};
+use globset::GlobMatcher;
 
 pub struct ClickHouseMetadataFetcher;
 
@@ -25,111 +32,94 @@ impl SqlMetadataFetcher for ClickHouseMetadataFetcher {
     }
 }
 
+// FIXME: ClickHouse presently lacks federation support (join pushdown).
+// It should be migrated to GenericFederatedTableFactory in the future.
+
 #[async_trait]
 impl SqlProviderFactory for ClickHouseTableFactory {
     async fn create_table_provider(
         &self,
         table_ref: TableReference,
-        metadata: FetchedMetadata,
-        cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
+        metadata: Arc<FetchedMetadata>,
+        cb: Arc<AdaptiveCircuitBreaker>,
     ) -> Result<Arc<dyn TableProvider>> {
         let inner = self
             .table_provider(table_ref, None)
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        // Wrap with metadata and circuit breaker
-        Ok(super::wrappers::wrap_provider(inner, cb, metadata))
+        // Wrap with metadata and circuit breaker.
+        // ClickHouse is a remote source, so enable schema drift detection.
+        Ok(super::wrappers::wrap_provider(inner, cb, metadata, true))
     }
 }
 
-pub async fn register_clickhouse(params: SqlSourceParams) -> Result<()> {
-    let context = params.context;
-    let catalog_name = params.catalog_name;
-    let name = params.name;
-    let connection_string = params.connection_string;
-    let cb = params.cb.clone();
-    let explicit_tables = params.explicit_tables;
-    let retry_settings = params.retry;
-    let max_concurrent_queries = params.max_concurrent_queries;
+use secrecy::ExposeSecret;
 
-    retry_async(
-        format!("register_clickhouse({})", name),
-        retry_settings,
-        move || {
-            let cb = cb.clone();
-            let context = context.clone();
-            let catalog_name = catalog_name.clone();
-            let name = name.clone();
-            let connection_string = connection_string.clone();
-            let explicit_tables = explicit_tables.clone();
-
-            async move {
-                try_register_clickhouse(
-                    context,
-                    catalog_name,
-                    name,
-                    connection_string,
-                    cb,
-                    explicit_tables,
-                    max_concurrent_queries,
-                )
-                .await
-            }
-        },
-    )
-    .await
+pub struct ClickHouseIntrospector {
+    pub connection_string: SecretString,
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn try_register_clickhouse(
-    context: Arc<SessionContext>,
-    catalog_name: String,
-    name: String,
-    connection_string: String,
-    cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
-    explicit_tables: Arc<Option<Vec<TableConfig>>>,
-    max_concurrent_queries: usize,
-) -> Result<()> {
+#[async_trait]
+impl SchemaIntrospector for ClickHouseIntrospector {
+    async fn list_tables(
+        &self,
+        pattern: Option<&GlobMatcher>,
+    ) -> Result<Vec<TableRef>, IntrospectError> {
+        let tables = introspect_clickhouse_tables(self.connection_string.expose_secret())
+            .await
+            .map_err(|e| IntrospectError::Query(e.to_string()))?;
+
+        let mut filtered = Vec::new();
+        for table in tables {
+            let table_ref = TableRef {
+                schema: "default".into(), // Default DB
+                table,
+            };
+            if let Some(matcher) = pattern {
+                if matcher.is_match(&table_ref.table) {
+                    filtered.push(table_ref);
+                }
+            } else {
+                filtered.push(table_ref);
+            }
+        }
+        Ok(filtered)
+    }
+
+    async fn introspect_table(
+        &self,
+        table: &TableRef,
+        _full: bool,
+    ) -> Result<strake_common::schema::IntrospectedTable, IntrospectError> {
+        Ok(strake_common::schema::IntrospectedTable {
+            source: "clickhouse".to_string(),
+            schema: table.schema.clone(),
+            name: table.table.clone(),
+            columns: vec![],
+            db_comment: None,
+            ai_description: None,
+        })
+    }
+}
+
+/// Registers a ClickHouse source into the provided context.
+pub async fn register_clickhouse(params: SqlSourceParams) -> Result<()> {
+    let connection_string = params.connection_string.clone();
+
     let pool = create_clickhouse_pool(&connection_string).await?;
     let factory = ClickHouseTableFactory::new(pool);
 
-    let tables_to_register: Vec<(String, String)> =
-        if let Some(config_tables) = explicit_tables.as_ref() {
-            config_tables
-                .iter()
-                .map(|t| {
-                    // FIX: Transform schema - use source name if empty or "public"
-                    let target_schema = if t.schema.is_empty() || t.schema == "public" {
-                        name.to_string()
-                    } else {
-                        t.schema.clone()
-                    };
-                    (t.name.clone(), target_schema)
-                })
-                .collect()
-        } else {
-            introspect_clickhouse_tables(&connection_string)
-                .await?
-                .into_iter()
-                .map(|t| (t, name.to_string()))
-                .collect()
-        };
+    let connector = GenericSqlConnector {
+        introspector: Arc::new(ClickHouseIntrospector {
+            connection_string: SecretString::from(connection_string.clone()),
+        }),
+        factory: Arc::new(factory),
+        metadata_fetcher: Some(Arc::new(ClickHouseMetadataFetcher {})),
+        schema_mapping: SchemaMappingRule::Standard,
+    };
 
-    let fetcher: Option<Box<dyn SqlMetadataFetcher>> = Some(Box::new(ClickHouseMetadataFetcher {}));
-
-    register_tables(
-        &context,
-        &catalog_name,
-        &name,
-        fetcher,
-        &factory,
-        cb,
-        max_concurrent_queries,
-        tables_to_register,
-    )
-    .await?;
-    Ok(())
+    connector.register(params).await
 }
 
 async fn create_clickhouse_pool(connection_string: &str) -> Result<Arc<ClickHouseConnectionPool>> {
@@ -160,10 +150,8 @@ async fn create_clickhouse_pool(connection_string: &str) -> Result<Arc<ClickHous
         );
     }
     if let Some(password) = url.password() {
-        params.insert(
-            "password".to_string(),
-            SecretString::from(password.to_string()),
-        );
+        let password_str: String = password.to_string();
+        params.insert("password".to_string(), SecretString::from(password_str));
     }
 
     let pool = ClickHouseConnectionPool::new(params)
@@ -176,19 +164,17 @@ async fn create_clickhouse_pool(connection_string: &str) -> Result<Arc<ClickHous
 
 async fn introspect_clickhouse_tables(connection_string: &str) -> Result<Vec<String>> {
     // We need to query system.tables to get the list of tables
-    // For now, use the HTTP API for introspection (simpler than setting up full connection)
+    // Use the ClickHouse HTTP parameter binding feature for safety.
     let url = Url::parse(connection_string)?;
     let db = url.path().trim_start_matches('/');
     let db_filter = if db.is_empty() { "default" } else { db };
 
-    let sql = format!(
-        "SELECT name FROM system.tables WHERE database = '{}'",
-        db_filter
-    );
+    let sql = "SELECT name FROM system.tables WHERE database = {db:String}";
 
     let client = reqwest::Client::new();
     let resp = client
         .post(connection_string)
+        .query(&[("param_db", db_filter)])
         .body(sql)
         .send()
         .await?
@@ -211,8 +197,9 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(body_string(
-                "SELECT name FROM system.tables WHERE database = 'default'",
+                "SELECT name FROM system.tables WHERE database = {db:String}",
             ))
+            .and(wiremock::matchers::query_param("param_db", "default"))
             .respond_with(ResponseTemplate::new(200).set_body_string("table1\ntable2"))
             .mount(&server)
             .await;
