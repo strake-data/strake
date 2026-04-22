@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/*", "python", "strake-enterprise"]
-exclude = ["submodules/datafusion-table-providers"]
+exclude = []
 resolver = "2"
 [workspace.package]
 version = "0.2.4"
@@ -20,7 +20,7 @@ arrow = "58.0.0"
 datafusion = "53.0.0"
 datafusion-python = "53.0.0"
 datafusion-federation = { version = "0.5.3", features = ["sql"] }
-datafusion-table-providers = { path = "submodules/datafusion-table-providers/core", features = ["postgres", "mysql", "sqlite", "flight", "clickhouse"] }
+datafusion-table-providers = { version = "0.11.0", features = ["postgres", "mysql", "sqlite", "flight", "clickhouse"] }
 arrow-flight = { version = "58.0.0", features = ["flight-sql-experimental"] }
 arrow-json = "58.0.0"
 parquet = "58.0.0"
