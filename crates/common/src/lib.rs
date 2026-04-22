@@ -1,5 +1,6 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
+#![deny(unsafe_code)]
 //! Common utilities, types, and configurations shared across Strake crates.
 //!
 //! This crate contains the base building blocks for the Strake system, including:

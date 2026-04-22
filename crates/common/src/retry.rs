@@ -60,8 +60,8 @@ pub fn next_retry_delay_with_rng(
     let multiplier = 2_u64.saturating_pow(attempt.saturating_sub(1) as u32);
     let delay = base_ms.saturating_mul(multiplier);
 
-    // Add jitter up to 1000ms using a more robust range.
-    let jitter = rng.random_range(0..1000);
+    // Add jitter up to the computed delay using a more robust range.
+    let jitter = rng.random_range(0..=delay);
 
     let total = delay.saturating_add(jitter);
     Duration::from_millis(total.min(max_ms))
@@ -91,6 +91,10 @@ where
     E: std::fmt::Display + Send,
 {
     let operation_name = operation_name.into();
+    if settings.max_attempts == 0 {
+        return operation().await;
+    }
+
     let mut attempt = 0;
     loop {
         match operation().await {

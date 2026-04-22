@@ -22,6 +22,7 @@
 //! // use strake_core::federation::FederationEngine; // Example usage
 //! ```
 
+pub mod extensions;
 pub mod federation;
 pub mod optimizer;
 pub mod query;

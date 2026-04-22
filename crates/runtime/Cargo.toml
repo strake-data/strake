@@ -8,7 +8,7 @@ edition = "2024"
 strake-common = { path = "../common", features = ["telemetry"] }
 strake-sql = { path = "../sql" }
 strake-connectors = { path = "../connectors" }
-strake-error = { path = "../error" }
+strake-error = { path = "../error", features = ["datafusion"] }
 
 arrow = { workspace = true }
 datafusion = { workspace = true }

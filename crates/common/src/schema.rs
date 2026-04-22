@@ -156,14 +156,16 @@ pub enum ContractRuleKind {
 /// assert_eq!(normalize_type_str("integer"), "INTEGER");
 /// ```
 pub fn normalize_type_str(raw: &str) -> String {
-    let raw = raw.to_lowercase();
-    let raw = raw.trim();
+    let trimmed = raw.trim();
+    let lower = trimmed.to_lowercase();
 
-    match raw {
+    match lower.as_str() {
         "character varying" | "varchar" => "VARCHAR".to_string(),
-        s if s.starts_with("character varying(") || s.starts_with("varchar(") => s.to_uppercase(),
+        s if s.starts_with("character varying(") || s.starts_with("varchar(") => {
+            trimmed.to_uppercase()
+        }
         "numeric" | "decimal" => "NUMERIC".to_string(),
-        s if s.starts_with("numeric(") || s.starts_with("decimal(") => s.to_uppercase(),
+        s if s.starts_with("numeric(") || s.starts_with("decimal(") => trimmed.to_uppercase(),
         "integer" | "int" | "int4" => "INTEGER".to_string(),
         "bigint" | "int8" => "BIGINT".to_string(),
         "boolean" | "bool" => "BOOLEAN".to_string(),
@@ -172,7 +174,7 @@ pub fn normalize_type_str(raw: &str) -> String {
         "text" => "TEXT".to_string(),
         "float" | "float8" | "double precision" => "DOUBLE".to_string(),
         "real" | "float4" => "FLOAT".to_string(),
-        other => other.to_uppercase(),
+        _ => trimmed.to_uppercase(),
     }
 }
 

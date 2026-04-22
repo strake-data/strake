@@ -63,6 +63,8 @@ futures = "0.3"
 async-trait = "0.1"
 tower = "0.5"
 url = "2.5"
+parking_lot = "0.12"
+
 
 # Cache serialization
 sha2 = "0.10"

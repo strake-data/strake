@@ -119,6 +119,7 @@ pub(crate) fn default_base_delay_ms() -> u64 {
 pub(crate) fn default_max_delay_ms() -> u64 {
     Defaults::MAX_DELAY_MS
 }
+#[allow(dead_code)]
 pub(crate) fn default_api_key() -> String {
     Defaults::API_KEY.to_string()
 }

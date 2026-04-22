@@ -378,7 +378,7 @@ impl SQLExecutor for DuckDBExecutor {
                     }).as_ref().map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))?;
 
                     // Defensive check: Ensure the current batch is compatible with the memoized mapping.
-                    if batch_schema.fields().len() < index_map.iter().max().copied().unwrap_or(0) {
+                    if batch_schema.fields().len() <= index_map.iter().max().copied().unwrap_or(0) {
                          return Err(datafusion::error::DataFusionError::Execution(
                             "DuckDB federated batch schema is incompatible with memoized index map".to_string()
                         ));
@@ -536,7 +536,7 @@ fn is_duckdb_federated_plan(
                     return check_provider(&w.inner());
                 }
                 if let Some(w) = any
-                    .downcast_ref::<strake_common::circuit_breaker::CircuitBreakerTableProvider>()
+                    .downcast_ref::<crate::resilience::circuit_breaker::CircuitBreakerTableProvider>()
                 {
                     return check_provider(&w.inner());
                 }

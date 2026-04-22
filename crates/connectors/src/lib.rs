@@ -13,7 +13,10 @@
 #![deny(missing_docs)]
 #![allow(unexpected_cfgs)]
 
+/// DataFusion session extensions.
+pub mod extensions;
 /// Schema introspection utilities for discovering tables in external sources.
 pub mod introspect;
+pub mod resilience;
 /// Data source providers for various backends.
 pub mod sources;

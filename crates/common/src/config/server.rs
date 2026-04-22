@@ -156,8 +156,13 @@ pub struct AuthSettings {
     #[serde(default = "Default::default")]
     pub enabled: bool,
     /// The API key required for access.
-    #[serde(default = "default_api_key")]
-    pub api_key: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::models::serialize_secret",
+        deserialize_with = "crate::models::deserialize_secret"
+    )]
+    pub api_key: Option<secrecy::SecretString>,
     /// Time-to-live for cached authentication results in seconds.
     #[serde(default = "default_cache_ttl")]
     pub cache_ttl_secs: u64,

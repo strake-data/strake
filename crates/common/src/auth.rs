@@ -38,9 +38,7 @@
 //! memory exposure.
 
 use crate::models::ActorName;
-use datafusion::common::config::{ConfigEntry, ConfigExtension, ExtensionOptions};
 use serde::{Deserialize, Serialize};
-use std::any::Any;
 use std::collections::{HashMap, HashSet};
 
 /// Rules for masking sensitive data in query results.
@@ -182,7 +180,7 @@ impl AuthenticatedUser {
     pub fn has_permission(&self, permission: &str) -> bool {
         // Optimized check
         if self.permissions.is_admin {
-            tracing::info!(
+            tracing::debug!(
                 target: "strake::audit",
                 user_id = %self.id,
                 permission = %permission,
@@ -222,31 +220,6 @@ impl AuthenticatedUser {
 
         false
     }
-}
-
-impl ExtensionOptions for AuthenticatedUser {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    fn cloned(&self) -> Box<dyn ExtensionOptions> {
-        Box::new(self.clone())
-    }
-
-    fn set(&mut self, _key: &str, _value: &str) -> datafusion::common::Result<()> {
-        Ok(())
-    }
-    fn entries(&self) -> Vec<ConfigEntry> {
-        vec![]
-    }
-}
-
-impl ConfigExtension for AuthenticatedUser {
-    const PREFIX: &'static str = "strake";
 }
 
 #[cfg(test)]

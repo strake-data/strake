@@ -148,33 +148,42 @@ impl<'de> serde::Deserialize<'de> for SourceType {
             "flight_sql" => Self::FlightSql,
             "rest" => Self::Rest,
             "grpc" => Self::Grpc,
-            _ => Self::Other(s),
+            _ => {
+                let lower = s.to_lowercase();
+                if [
+                    "postgres",
+                    "mysql",
+                    "sqlite",
+                    "duckdb",
+                    "clickhouse",
+                    "iceberg",
+                    "parquet",
+                    "csv",
+                    "json",
+                    "flight_sql",
+                    "rest",
+                    "grpc",
+                ]
+                .contains(&lower.as_str())
+                {
+                    return Err(serde::de::Error::custom(
+                        "Invalid exact known SourceType inside Other",
+                    ));
+                }
+                Self::Other(s)
+            }
         })
     }
 }
 
 impl std::fmt::Display for SourceType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Postgres => write!(f, "postgres"),
-            Self::Mysql => write!(f, "mysql"),
-            Self::Sqlite => write!(f, "sqlite"),
-            Self::Duckdb => write!(f, "duckdb"),
-            Self::Clickhouse => write!(f, "clickhouse"),
-            Self::Iceberg => write!(f, "iceberg"),
-            Self::Parquet => write!(f, "parquet"),
-            Self::Csv => write!(f, "csv"),
-            Self::Json => write!(f, "json"),
-            Self::FlightSql => write!(f, "flight_sql"),
-            Self::Rest => write!(f, "rest"),
-            Self::Grpc => write!(f, "grpc"),
-            Self::Other(s) => write!(f, "{}", s),
-        }
+        write!(f, "{}", self.as_str())
     }
 }
 
-// Custom Serde logic for SecretString
-fn serialize_secret<S>(secret: &Option<SecretString>, serializer: S) -> Result<S::Ok, S::Error>
+/// Custom Serde logic for SecretString serialization.
+pub fn serialize_secret<S>(secret: &Option<SecretString>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -184,7 +193,8 @@ where
     }
 }
 
-fn deserialize_secret<'de, D>(deserializer: D) -> Result<Option<SecretString>, D::Error>
+/// Custom Serde logic for SecretString deserialization.
+pub fn deserialize_secret<'de, D>(deserializer: D) -> Result<Option<SecretString>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {

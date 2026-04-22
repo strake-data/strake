@@ -30,7 +30,6 @@
 //! This module does not return errors.
 //!
 
-use datafusion::logical_expr::Expr;
 use std::sync::Arc;
 
 /// Content-addressed identity for a single Parquet row group.
@@ -78,19 +77,23 @@ pub struct PredicateKey {
 }
 
 impl PredicateKey {
-    /// Creates a new `PredicateKey` from a table name and DataFusion expression.
+    /// Creates a new `PredicateKey` from a table name and a canonical expression string.
+    ///
+    /// # Stability Guarantee
+    /// The `expr_display` string must be stable across parsing runs. Due to DataFusion's
+    /// `Debug` format occasionally changing across versions, callers should use
+    /// a custom normalizer or the `Display` representation to ensure cache keys
+    /// remain valid across engine upgrades.
     ///
     /// # Examples
     /// ```
     /// # use strake_common::predicate_cache::key::PredicateKey;
-    /// # use datafusion::logical_expr::{col, lit};
-    /// let expr = col("id").eq(lit(1));
-    /// let key = PredicateKey::new("users", &expr, 0);
+    /// let key = PredicateKey::new("users", "id = 1", 0);
     /// ```
-    pub fn new(table_name: &str, expr: &Expr, partition: usize) -> Self {
+    pub fn new(table_name: &str, expr_display: &str, partition: usize) -> Self {
         Self {
             table_name: table_name.to_string(),
-            expr_display: format!("{expr:?}"),
+            expr_display: expr_display.to_string(),
             partition,
         }
     }

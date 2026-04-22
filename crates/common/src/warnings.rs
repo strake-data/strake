@@ -5,8 +5,6 @@
 //! This module provides a mechanism to collect non-fatal warnings (e.g., schema drift)
 //! during query execution and propagate them back to the user context.
 
-use datafusion::common::config::{ConfigEntry, ConfigExtension, ExtensionOptions};
-use std::any::Any;
 use std::sync::{Arc, Mutex};
 
 tokio::task_local! {
@@ -46,35 +44,6 @@ impl WarningCollector {
             vec![]
         }
     }
-}
-
-impl ExtensionOptions for WarningCollector {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    fn cloned(&self) -> Box<dyn ExtensionOptions> {
-        Box::new(self.clone())
-    }
-
-    fn set(&mut self, key: &str, _value: &str) -> datafusion::common::Result<()> {
-        Err(datafusion::common::DataFusionError::Configuration(format!(
-            "WarningCollector does not support configuration key '{}'",
-            key
-        )))
-    }
-
-    fn entries(&self) -> Vec<ConfigEntry> {
-        vec![]
-    }
-}
-
-impl ConfigExtension for WarningCollector {
-    const PREFIX: &'static str = "strake";
 }
 
 /// Helper to add a warning to the current task's warning list, if active.

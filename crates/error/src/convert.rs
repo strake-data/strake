@@ -1,6 +1,10 @@
-use crate::{ErrorCode, ErrorContext, StrakeError};
+#[cfg(feature = "datafusion")]
+use crate::ErrorContext;
+use crate::{ErrorCode, StrakeError};
+#[cfg(feature = "datafusion")]
 use datafusion::error::DataFusionError;
 
+#[cfg(feature = "datafusion")]
 impl From<DataFusionError> for StrakeError {
     fn from(err: DataFusionError) -> Self {
         match &err {
@@ -69,6 +73,7 @@ impl From<serde_yaml::Error> for StrakeError {
 }
 
 // Levenshtein-based suggestion (moved from strake-common)
+#[cfg(feature = "datafusion")]
 fn find_closest_match(target: &str, options: &[String]) -> Option<String> {
     let mut best_match: Option<&str> = None;
     let mut min_distance = usize::MAX;
@@ -84,6 +89,7 @@ fn find_closest_match(target: &str, options: &[String]) -> Option<String> {
     best_match.map(|s| s.to_string())
 }
 
+#[cfg(feature = "datafusion")]
 fn levenshtein(a: &str, b: &str) -> usize {
     let len_a = a.len();
     let len_b = b.len();
@@ -118,6 +124,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "datafusion")]
     fn test_levenshtein_distance() {
         assert_eq!(levenshtein("kitten", "sitting"), 3);
         assert_eq!(levenshtein("book", "back"), 2);
@@ -126,6 +133,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "datafusion")]
     fn test_find_closest_match() {
         let options = vec![
             "revenue".to_string(),
@@ -154,6 +162,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "datafusion")]
     fn test_datafusion_error_mappings() {
         use datafusion::common::Column;
 

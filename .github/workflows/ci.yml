@@ -64,6 +64,13 @@ jobs:
       - name: Cargo Deny
         uses: EmbarkStudios/cargo-deny-action@v2
 
+      - name: Verify Architecture (Domain Isolation)
+        run: |
+          cargo tree -p strake-common --no-dev-dependencies | grep -q "datafusion" && \
+            (echo "ERROR: strake-common must not depend on datafusion" && exit 1) || true
+          cargo tree -p strake-common --no-dev-dependencies | grep -q "^.*arrow$" && \
+            (echo "ERROR: strake-common must not depend on arrow" && exit 1) || true
+
   test:
     name: Tests
     runs-on: ubuntu-latest

@@ -167,10 +167,6 @@ impl AppConfig {
         let builder = if std::path::Path::new(path).exists() {
             builder.add_source(config::File::with_name(path))
         } else {
-            tracing::warn!(
-                "Configuration file not found: {}. Proceeding with environment variables and defaults.",
-                path
-            );
             builder
         };
 
@@ -187,8 +183,30 @@ impl AppConfig {
             .validate()
             .map_err(|e| ConfigError::Validation(e.to_string()))?;
 
-        if app_config.server.auth.enabled && app_config.server.auth.api_key.is_empty() {
-            return Err(ConfigError::MissingApiKey);
+        if !std::path::Path::new(path).exists()
+            && app_config.environment == StrakeEnvironment::Production
+        {
+            return Err(ConfigError::FileNotFound(path.to_string()));
+        } else if !std::path::Path::new(path).exists() {
+            tracing::warn!(
+                "Configuration file not found: {}. Proceeding with environment variables and defaults.",
+                path
+            );
+        }
+
+        if app_config.server.auth.enabled {
+            use secrecy::ExposeSecret;
+            let is_missing = app_config
+                .server
+                .auth
+                .api_key
+                .as_ref()
+                .map(|k| k.expose_secret().is_empty())
+                .unwrap_or(true);
+
+            if is_missing {
+                return Err(ConfigError::MissingApiKey);
+            }
         }
 
         Ok(app_config)
@@ -235,9 +253,6 @@ impl Config {
 
 /// Generic URL validator for use with the `validator` crate.
 pub fn validate_url(url: &str) -> std::result::Result<(), validator::ValidationError> {
-    if url.is_empty() {
-        return Ok(());
-    }
     match url::Url::parse(url) {
         Ok(_) => Ok(()),
         Err(_) => Err(validator::ValidationError::new("invalid_url")),

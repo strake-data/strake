@@ -9,11 +9,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use datafusion::datasource::TableProvider;
 use datafusion::prelude::SessionContext;
-use strake_common::circuit_breaker::{
-    AdaptiveCircuitBreaker, CircuitBreakerConfig, CircuitBreakerTableProvider,
-};
+use strake_common::circuit_breaker::{AdaptiveCircuitBreaker, CircuitBreakerConfig};
 use strake_common::config::SourceConfig;
 use strake_common::config::{Config, ResourceConfig};
+use strake_connectors::resilience::circuit_breaker::CircuitBreakerTableProvider;
 use strake_connectors::sources::SourceProvider;
 use strake_connectors::sources::schema_drift::SchemaDriftTableProvider;
 use strake_runtime::federation::{FederationEngine, FederationEngineOptions};

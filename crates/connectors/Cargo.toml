@@ -10,7 +10,7 @@ experimental-iceberg = []
 
 [dependencies]
 strake-common = { path = "../common" }
-strake-error = { path = "../error" }
+strake-error = { path = "../error", features = ["datafusion"] }
 strake-sql = { path = "../sql" }
 datafusion = { workspace = true }
 datafusion-table-providers = { workspace = true }

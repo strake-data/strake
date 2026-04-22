@@ -44,24 +44,34 @@ static PHONE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 /// let text = "Contact me at hello@example.com.";
 /// assert_eq!(scrub(text), "Contact me at [EMAIL].");
 /// ```
-pub fn scrub(input: &str) -> String {
-    let mut scrubbed = input.to_string();
+pub fn scrub(input: &str) -> std::borrow::Cow<'_, str> {
+    let mut scrubbed = std::borrow::Cow::Borrowed(input);
 
     // Scrub Emails
-    scrubbed = EMAIL_REGEX.replace_all(&scrubbed, "[EMAIL]").to_string();
+    if EMAIL_REGEX.is_match(&scrubbed) {
+        scrubbed =
+            std::borrow::Cow::Owned(EMAIL_REGEX.replace_all(&scrubbed, "[EMAIL]").into_owned());
+    }
 
     // Scrub SSNs
-    scrubbed = SSN_REGEX.replace_all(&scrubbed, "[SSN]").to_string();
+    if SSN_REGEX.is_match(&scrubbed) {
+        scrubbed = std::borrow::Cow::Owned(SSN_REGEX.replace_all(&scrubbed, "[SSN]").into_owned());
+    }
 
     // Scrub Credit Cards
-    // Note: This matches 13-16 digits which might catch IDs too,
-    // but better safe for an audit log.
-    scrubbed = CREDIT_CARD_REGEX
-        .replace_all(&scrubbed, "[CREDIT_CARD]")
-        .to_string();
+    if CREDIT_CARD_REGEX.is_match(&scrubbed) {
+        scrubbed = std::borrow::Cow::Owned(
+            CREDIT_CARD_REGEX
+                .replace_all(&scrubbed, "[CREDIT_CARD]")
+                .into_owned(),
+        );
+    }
 
     // Scrub Phone Numbers
-    scrubbed = PHONE_REGEX.replace_all(&scrubbed, "[PHONE]").to_string();
+    if PHONE_REGEX.is_match(&scrubbed) {
+        scrubbed =
+            std::borrow::Cow::Owned(PHONE_REGEX.replace_all(&scrubbed, "[PHONE]").into_owned());
+    }
 
     scrubbed
 }

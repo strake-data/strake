@@ -415,12 +415,19 @@ impl FederationEngine {
         let state = self.context.state();
         let mut config = state.config().clone();
 
-        if let Some(u) = user.clone() {
-            config.options_mut().extensions.insert(u);
+        if let Some(user_opt) = user.clone() {
+            config
+                .options_mut()
+                .extensions
+                .insert(crate::extensions::auth_config::AuthExtension { user: user_opt });
         }
 
         let collector = strake_common::warnings::WarningCollector::new();
-        config.options_mut().extensions.insert(collector.clone());
+        config.options_mut().extensions.insert(
+            strake_connectors::extensions::warnings::WarningExtension {
+                collector: collector.clone(),
+            },
+        );
 
         // Re-construct state to ensure QueryPlanner is present and config is updated.
         let state = SessionStateBuilder::new_from_existing(state)

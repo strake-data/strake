@@ -29,7 +29,7 @@ pub fn wrap_provider(
     metadata: Arc<FetchedMetadata>,
     schema_drift: bool,
 ) -> Arc<dyn TableProvider> {
-    use strake_common::circuit_breaker::CircuitBreakerTableProvider;
+    use crate::resilience::circuit_breaker::CircuitBreakerTableProvider;
 
     let enriched = Arc::new(MetadataEnrichedTableProvider::new(provider, metadata));
     let with_cb = Arc::new(CircuitBreakerTableProvider::new(enriched, cb));

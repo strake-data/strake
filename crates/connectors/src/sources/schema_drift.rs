@@ -46,8 +46,6 @@ use datafusion::physical_plan::{
 };
 use futures::StreamExt;
 
-use strake_common::warnings::{WarningCollector, add_warning};
-
 #[derive(Debug, Clone)]
 pub enum DriftWarning {
     /// Column defined in catalog but missing from source (reconciled as NULLs)
@@ -61,11 +59,18 @@ pub enum DriftWarning {
         expected_type: DataType,
         actual_type: DataType,
     },
-    /// Source type conversion to catalog type failed (reconciled as NULLs)
+    /// Column cast failed (all values became NULL)
     CastFailed {
         name: String,
         expected_type: DataType,
         actual_type: DataType,
+    },
+    /// Column partially cast (some values became NULL)
+    PartialCast {
+        name: String,
+        expected_type: DataType,
+        actual_type: DataType,
+        surviving_rows: usize,
     },
     /// Source contains column not defined in catalog (dropped)
     ExtraColumn { name: String, actual_type: DataType },
@@ -97,8 +102,18 @@ impl std::fmt::Display for DriftWarning {
                 actual_type,
             } => write!(
                 f,
-                "[STRAKE-2010] Column '{}' cast failed from {} to {}, NULL-filled",
+                "[STRAKE-2010] Column '{}' cast failed from {} to {} (ALL values nullified)",
                 name, actual_type, expected_type
+            ),
+            Self::PartialCast {
+                name,
+                expected_type,
+                actual_type,
+                surviving_rows,
+            } => write!(
+                f,
+                "[STRAKE-2012] Column '{}' partially cast from {} to {} ({} rows survived)",
+                name, actual_type, expected_type, surviving_rows
             ),
             Self::ExtraColumn { name, actual_type } => write!(
                 f,
@@ -151,18 +166,28 @@ pub fn reconcile_batch(
                     // Type differs, attempt to cast
                     match cast(array, field.data_type()) {
                         Ok(casted) => {
-                            // If we introduced new nulls during cast, it was a partial/complete failure
-                            if casted.null_count() > array.null_count() {
+                            let array_nulls = array.null_count();
+                            let casted_nulls = casted.null_count();
+                            let len = casted.len();
+
+                            if casted_nulls <= array_nulls {
+                                warnings.push(DriftWarning::TypeCoerced {
+                                    name: field.name().clone(),
+                                    expected_type: field.data_type().clone(),
+                                    actual_type: actual_field.data_type().clone(),
+                                });
+                            } else if casted_nulls == len {
                                 warnings.push(DriftWarning::CastFailed {
                                     name: field.name().clone(),
                                     expected_type: field.data_type().clone(),
                                     actual_type: actual_field.data_type().clone(),
                                 });
                             } else {
-                                warnings.push(DriftWarning::TypeCoerced {
+                                warnings.push(DriftWarning::PartialCast {
                                     name: field.name().clone(),
                                     expected_type: field.data_type().clone(),
                                     actual_type: actual_field.data_type().clone(),
+                                    surviving_rows: len - casted_nulls,
                                 });
                             }
                             columns.push(casted);
@@ -285,23 +310,21 @@ impl ExecutionPlan for SchemaDriftExec {
         context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
         let inner_stream = self.inner.execute(partition, context.clone())?;
-        let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
 
-        // Use stream combinator instead of custom Stream impl
-        let expected_schema = self.expected_schema.clone();
-
+        // Capture WarningCollector if present in extensions
         let collector = context
             .session_config()
             .options()
             .extensions
-            .get::<WarningCollector>()
-            .cloned();
+            .get::<crate::extensions::warnings::WarningExtension>()
+            .map(|ext| ext.collector.clone());
 
-        if collector.is_none() {
-            println!("DEBUG: WarningCollector NOT FOUND in TaskContext extensions!");
-        } else {
-            println!("DEBUG: WarningCollector FOUND in TaskContext extensions.");
-        }
+        let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
+        let output_bytes = datafusion::physical_plan::metrics::MetricBuilder::new(&self.metrics)
+            .output_bytes(partition);
+
+        // Use stream combinator instead of custom Stream impl
+        let expected_schema = self.expected_schema.clone();
 
         let mapped = inner_stream.map(move |batch_res| match batch_res {
             Ok(batch) => {
@@ -309,13 +332,16 @@ impl ExecutionPlan for SchemaDriftExec {
                 match reconcile_batch(&expected_schema, &batch) {
                     Ok((reconciled, warnings)) => {
                         for warning in warnings {
-                            let w_str = warning.to_string();
-                            if let Some(c) = &collector {
-                                c.add(w_str.clone());
+                            let msg = warning.to_string();
+                            if let Some(c) = collector.as_ref() {
+                                c.add(msg);
+                            } else {
+                                // Fallback to task-local if collector extension not found (likely in tests)
+                                strake_common::warnings::add_warning(msg);
                             }
-                            add_warning(w_str);
                         }
                         baseline_metrics.record_output(reconciled.num_rows());
+                        output_bytes.add(reconciled.get_array_memory_size());
                         Ok(reconciled)
                     }
                     Err(e) => Err(e),
@@ -597,5 +623,76 @@ mod tests {
 
         assert!(res.is_some());
         assert!(res.unwrap().is_err());
+    }
+
+    #[test]
+    fn test_reconcile_batch_clean_coercion() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)])),
+            vec![Arc::new(StringArray::from(vec![Some("1"), None]))],
+        )
+        .unwrap();
+
+        let (reconciled, warnings) = reconcile_batch(&schema, &batch).unwrap();
+        assert_eq!(reconciled.num_rows(), 2);
+        assert_eq!(warnings.len(), 1);
+        assert!(matches!(warnings[0], DriftWarning::TypeCoerced { .. }));
+    }
+
+    #[test]
+    fn test_reconcile_batch_partial_cast() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)])),
+            vec![Arc::new(StringArray::from(vec![
+                Some("1"),
+                Some("not_a_number"),
+                Some("3"),
+                None,
+            ]))],
+        )
+        .unwrap();
+
+        let (reconciled, warnings) = reconcile_batch(&schema, &batch).unwrap();
+        assert_eq!(reconciled.num_rows(), 4);
+        assert_eq!(warnings.len(), 1);
+        if let DriftWarning::PartialCast { surviving_rows, .. } = &warnings[0] {
+            assert_eq!(*surviving_rows, 2); // "1" and "3" survived, "not_a_number" became null
+        } else {
+            panic!("Expected PartialCast, got {:?}", warnings[0]);
+        }
+    }
+
+    #[test]
+    fn test_reconcile_batch_cast_failed() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)])),
+            vec![Arc::new(StringArray::from(vec![Some("bad"), Some("data")]))],
+        )
+        .unwrap();
+
+        let (reconciled, warnings) = reconcile_batch(&schema, &batch).unwrap();
+        assert_eq!(reconciled.num_rows(), 2);
+        assert_eq!(warnings.len(), 1);
+        assert!(matches!(warnings[0], DriftWarning::CastFailed { .. }));
+    }
+
+    #[test]
+    fn test_reconcile_batch_null_reduction() {
+        // Unusual case: casting reduces nulls. In Strake this should be clean coercion.
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Boolean, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, true)])),
+            vec![Arc::new(Int64Array::from(vec![Some(0), Some(1), None]))],
+        )
+        .unwrap();
+
+        let (reconciled, warnings) = reconcile_batch(&schema, &batch).unwrap();
+        assert_eq!(reconciled.num_rows(), 3);
+        // datafusion's cast(Int64(0) as Boolean) -> false, Int64(1) -> true
+        assert_eq!(warnings.len(), 1);
+        assert!(matches!(warnings[0], DriftWarning::TypeCoerced { .. }));
     }
 }
