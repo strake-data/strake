@@ -5,7 +5,7 @@ on:
       - main
     paths:
       - 'docs/**'
-      - 'mkdocs.yml'
+      - 'zensical.toml'
       - '.github/workflows/docs.yml'
 
 permissions:
@@ -40,11 +40,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install mkdocs-material mkdocs-redirects mkdocs-minify-plugin
+          pip install zensical
 
       - name: Build Documentation
         run: |
-          mkdocs build --config-file mkdocs.yml
+          zensical build
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
