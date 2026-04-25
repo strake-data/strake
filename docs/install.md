@@ -64,7 +64,7 @@ curl -sSfL https://strakedata.com/install.sh | sh -s -- --cli --version v0.1.0
 
 > **Note:** Make sure `~/.local/bin` is in your `PATH`. The script will remind you if it's not.
 
-## 2. Building from Source
+## 3. Building from Source
 To build the Python bindings locally:
 
 1.  Navigate to the `strake-python` directory:
@@ -84,7 +84,7 @@ To build the Python bindings locally:
 
 ---
 
-## 3. Running the Server
+## 4. Running the Server
 
 You can run Strake as a standalone server exposing an Apache Arrow Flight SQL interface.
 

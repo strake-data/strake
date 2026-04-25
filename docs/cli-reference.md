@@ -6,7 +6,7 @@ The `strake-cli` is the primary tool for managing your Strake configuration, val
 
 These options can be used with any command.
 
-- `--output`, `-o`: `human | json | yaml`. *Default: human*.
+- `--output`: `human | json | yaml`. *Default: human*.
   Sets the output format. Machine-readable formats (`json`, `yaml`) are suitable for CI/CD and automation.
 - `--token`: `str`. *Default: STRAKE_TOKEN environment variable*.
   API token for authentication with the Strake server.
@@ -76,6 +76,9 @@ Preview the differences between your local configuration and the live metadata s
 
 `file` : `str`, *default: sources.yaml*
 :   Path to the configuration file to compare.
+
+`--impact` : `bool`, *default: false*
+:   Enable inline impact annotation for changes.
 
 ---
 
@@ -156,7 +159,7 @@ Search for tables and schemas in an upstream source.
 ### `add`
 
 <div class="api-signature">
-<code>strake-cli add &lt;source&gt; [table]</code>
+<code>strake-cli add &lt;source&gt; [table] [file]</code>
 <span class="type">command</span>
 </div>
 
@@ -208,7 +211,7 @@ Automatically adds one or more discovered tables into your `sources.yaml`.
 ### `remove`
 
 <div class="api-signature">
-<code>strake-cli remove &lt;source&gt; [table]</code>
+<code>strake-cli remove &lt;source&gt; [table] [file]</code>
 <span class="type">command</span>
 </div>
 
@@ -316,6 +319,9 @@ Revert a domain to a previous known-good version.
 
 `--to-version` : `int`
 :   **Required**. The specific target version to revert to.
+
+`--force` : `bool`, *default: false*
+:   Force operation (bypass safety guards).
 
 ---
 

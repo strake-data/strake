@@ -55,8 +55,8 @@ server.log
 data/
 strake-core/data/
 scripts/
-config/
-config/strake_test.yaml
+/config/
+/config/strake_test.yaml
 .test-secrets
 finance.yaml
 
@@ -86,3 +86,10 @@ site/
 /.agent/
 strake_agent.py
 /codeql-db/*
+target-check-*
+x_output_*.txt
+*.tar.gz
+cargo-deny-*/
+test_output.log
+test.log
+

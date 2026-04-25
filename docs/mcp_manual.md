@@ -53,7 +53,7 @@ INFO Starting MCP Sidecar...
 INFO Spawning MCP Agent: python3 -m strake.mcp --transport sse
 ```
 
-## connecting an Agent (Example: OpenAI)
+## Connecting an Agent (Example: OpenAI)
 
 We provide a sample OpenAI agent script demonstrating how to connect to this MCP server over `stdio` (or you can connect to the running sidecar if you adjusted the mode).
 

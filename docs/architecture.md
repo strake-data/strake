@@ -60,7 +60,7 @@ The Python bindings.
 
 ## Table Provider Interface
 
-Each Source Type implements the `TableProvider` trait (from DataFusion):
+Each Source Type implements the `TableProvider` trait (from DataFusion), translating logical plans into source-specific execution or API calls.
 
 ## Scaling Strategy
 
