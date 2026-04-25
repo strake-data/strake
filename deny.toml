@@ -1,12 +1,18 @@
 [advisories]
 ignore = [
     "RUSTSEC-2023-0071", # rsa timing sidechannel
-    "RUSTSEC-2025-0017", # trust-dns rebranded
-    "RUSTSEC-2024-0421", # idna vulnerability
     "RUSTSEC-2025-0052", # async-std discontinued
     "RUSTSEC-2021-0141", # dotenv unmaintained
     "RUSTSEC-2025-0119", # number_prefix unmaintained
     "RUSTSEC-2024-0436", # paste unmaintained
+    "RUSTSEC-2026-0037", # quinn-proto DoS
+    "RUSTSEC-2024-0373", # quinn-proto panic
+    "RUSTSEC-2023-0063", # quinn-proto DoS
+    "RUSTSEC-2026-0041", # lz4_flex memory leak
+    "RUSTSEC-2026-0068", # tar PAX size headers
+    "RUSTSEC-2026-0067", # tar unpack_in chmod
+    "RUSTSEC-2026-0002", # lru IterMut Stacked Borrows
+    "GHSA-h395-gr6q-cpjc", # jsonwebtoken type confusion
 ]
 
 [licenses]
@@ -100,3 +106,39 @@ version = "0.3.0"
 [sources]
 unknown-registry = "deny"
 unknown-git = "warn"
+
+[[bans.skip]]
+name = "event-listener"
+version = "2.5.3"
+
+[[bans.skip]]
+name = "event-listener"
+version = "5.4.1"
+
+[[bans.skip]]
+name = "fallible-iterator"
+version = "0.2.0"
+
+[[bans.skip]]
+name = "fallible-iterator"
+version = "0.3.0"
+
+[[bans.skip]]
+name = "foldhash"
+version = "0.1.5"
+
+[[bans.skip]]
+name = "foldhash"
+version = "0.2.0"
+
+[[bans.skip]]
+name = "getrandom"
+version = "0.2.17"
+
+[[bans.skip]]
+name = "getrandom"
+version = "0.3.4"
+
+[[bans.skip]]
+name = "getrandom"
+version = "0.4.2"

@@ -2,5 +2,6 @@
 repo = "local"
 hooks = [
     { id = "cargo-fmt", name = "cargo fmt", entry = "cargo fmt -- --check", language = "system", types = ["rust"], pass_filenames = false },
-    { id = "cargo-clippy", name = "cargo clippy", entry = "cargo clippy --all-targets --features telemetry -- -D warnings", language = "system", types = ["rust"], pass_filenames = false }
+    { id = "cargo-clippy", name = "cargo clippy", entry = "cargo clippy --all-targets --features telemetry -- -D warnings", language = "system", types = ["rust"], pass_filenames = false },
+    { id = "cargo-deny", name = "cargo deny", entry = "cargo deny --log-level warn --manifest-path ./Cargo.toml --all-features check", language = "system", types = ["rust", "toml"], pass_filenames = false }
 ]
