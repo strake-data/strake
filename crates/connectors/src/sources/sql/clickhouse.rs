@@ -107,7 +107,7 @@ impl SchemaIntrospector for ClickHouseIntrospector {
 pub async fn register_clickhouse(params: SqlSourceParams) -> Result<()> {
     let connection_string = params.connection_string.clone();
 
-    let pool = create_clickhouse_pool(&connection_string).await?;
+    let pool = create_clickhouse_pool(connection_string.expose_secret()).await?;
     let factory = ClickHouseTableFactory::new(pool);
 
     let connector = GenericSqlConnector {
@@ -162,27 +162,39 @@ async fn create_clickhouse_pool(connection_string: &str) -> Result<Arc<ClickHous
     Ok(Arc::new(pool))
 }
 
+static CLICKHOUSE_CLIENT: std::sync::LazyLock<reqwest::Client> =
+    std::sync::LazyLock::new(reqwest::Client::new);
+
 async fn introspect_clickhouse_tables(connection_string: &str) -> Result<Vec<String>> {
-    // We need to query system.tables to get the list of tables
-    // Use the ClickHouse HTTP parameter binding feature for safety.
+    // Use JSONCompact format for more robust parsing than plain text lines
     let url = Url::parse(connection_string)?;
     let db = url.path().trim_start_matches('/');
     let db_filter = if db.is_empty() { "default" } else { db };
 
-    let sql = "SELECT name FROM system.tables WHERE database = {db:String}";
+    let sql = "SELECT name FROM system.tables WHERE database = {db:String} FORMAT JSONCompact";
 
-    let client = reqwest::Client::new();
-    let resp = client
+    let resp = CLICKHOUSE_CLIENT
         .post(connection_string)
         .query(&[("param_db", db_filter)])
         .body(sql)
         .send()
         .await?
         .error_for_status()?
-        .text()
+        .json::<serde_json::Value>()
         .await?;
 
-    Ok(resp.lines().map(|s| s.to_string()).collect())
+    let mut tables = Vec::new();
+    if let Some(data) = resp.get("data").and_then(|v| v.as_array()) {
+        for row in data {
+            if let Some(row_arr) = row.as_array()
+                && let Some(name) = row_arr.first().and_then(|v| v.as_str())
+            {
+                tables.push(name.to_string());
+            }
+        }
+    }
+
+    Ok(tables)
 }
 
 #[cfg(test)]
@@ -195,12 +207,19 @@ mod tests {
     async fn test_introspect_clickhouse_tables() -> Result<()> {
         let server: MockServer = MockServer::start().await;
 
+        let mock_response = serde_json::json!({
+            "data": [
+                ["table1"],
+                ["table2"]
+            ]
+        });
+
         Mock::given(method("POST"))
             .and(body_string(
-                "SELECT name FROM system.tables WHERE database = {db:String}",
+                "SELECT name FROM system.tables WHERE database = {db:String} FORMAT JSONCompact",
             ))
             .and(wiremock::matchers::query_param("param_db", "default"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("table1\ntable2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(mock_response))
             .mount(&server)
             .await;
 

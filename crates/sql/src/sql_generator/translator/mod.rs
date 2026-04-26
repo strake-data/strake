@@ -199,18 +199,11 @@ impl<'a> SqlGenerator<'a> {
             _ => true,
         };
 
-        // DuckDB Stabilization: Unconditionally wrap complex queries (SELECTs)
-        // to ensure we always have a stable table alias for parent components (Sort, etc.)
-        // to reference. This avoids "Table not found" errors when parents resolve expressions
-        // against a scope that hasn't been explicitly aliased in the SQL FROM clause yet.
-        let should_wrap = if self.dialect.dialect_name == crate::dialect_router::DUCKDB_DIALECT {
-            // For DuckDB, we unconditionally wrap SELECTs to ensure stable aliases
-            // are always available for parent nodes (Sort, etc.) through subqueries.
-            matches!(*query.body, SetExpr::Select(_))
-        } else {
-            // For other dialects, only wrap if the query is actually complex
-            is_complex
-        };
+        // Wrap the query if it's complex or has a limit, to ensure that parent
+        // nodes (like Filter or Sort) apply to the results of this query rather
+        // than its internal components. Simple SELECTs from TableScan are already
+        // stable and aliased, so they don't need wrapping.
+        let should_wrap = is_complex || query.limit_clause.is_some();
 
         if should_wrap {
             let relation = self.extract_relation(query)?;

@@ -300,18 +300,13 @@ impl ExecutionPlan for ConcurrencyLimitedExec {
             };
 
             let stream = inner.execute(partition, context)?;
-            Ok::<_, datafusion::error::DataFusionError>((stream, permit))
-        })
-        .try_filter_map(move |(stream, permit)| {
-            let metrics = metrics.clone();
-            let output_bytes = output_bytes.clone();
-            futures::future::ready(Ok(Some(Box::pin(PermitStream {
+            Ok::<_, datafusion::error::DataFusionError>(Box::pin(PermitStream {
                 inner: stream,
                 _permit: permit,
-                metrics,
-                output_bytes,
+                metrics: metrics.clone(),
+                output_bytes: output_bytes.clone(),
             })
-                as datafusion::physical_plan::SendableRecordBatchStream)))
+                as datafusion::physical_plan::SendableRecordBatchStream)
         })
         .try_flatten();
 

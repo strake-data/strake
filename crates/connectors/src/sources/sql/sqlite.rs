@@ -10,7 +10,7 @@ use datafusion::sql::TableReference;
 use datafusion_table_providers::sql::db_connection_pool::sqlitepool::SqliteConnectionPool;
 use datafusion_table_providers::sql::db_connection_pool::*;
 use datafusion_table_providers::sqlite::SqliteTableFactory;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,7 +23,7 @@ use super::sqlite_introspect::SqliteIntrospector;
 
 pub struct SqliteMetadataFetcher {
     #[allow(dead_code)]
-    pub db_path: String,
+    pub db_path: SecretString,
 }
 
 #[async_trait]
@@ -48,7 +48,7 @@ pub async fn register_sqlite(params: SqlSourceParams) -> Result<()> {
     let connection_string = params.connection_string.clone();
 
     let pool = SqliteConnectionPool::new(
-        &connection_string,
+        connection_string.expose_secret(),
         Mode::File,
         JoinPushDown::Disallow,
         vec![],
@@ -70,7 +70,7 @@ pub async fn register_sqlite(params: SqlSourceParams) -> Result<()> {
 
     let connector = GenericSqlConnector {
         introspector: Arc::new(SqliteIntrospector {
-            db_path: SecretString::from(connection_string.clone()),
+            db_path: connection_string.clone(),
         }),
         factory: Arc::new(factory),
         metadata_fetcher: Some(Arc::new(SqliteMetadataFetcher {

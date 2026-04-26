@@ -35,23 +35,14 @@
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use datafusion::common::tree_node::{Transformed, TreeNode};
-use datafusion::datasource::TableProvider;
 use datafusion::execution::SendableRecordBatchStream;
-use datafusion::logical_expr::{Expr, Extension, LogicalPlan};
-use datafusion::optimizer::OptimizerConfig;
-use datafusion::optimizer::OptimizerRule;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use datafusion::sql::TableReference;
 use datafusion_federation::sql::SQLExecutor;
-use datafusion_federation::{
-    FederatedPlanNode, FederatedTableProviderAdaptor, FederatedTableSource, FederationPlanner,
-    FederationProvider,
-};
 use std::sync::{Arc, OnceLock};
 
-use super::duckdb::{DuckDBPath, DuckDBPool, DuckDBTableSource, escape_literal, map_duckdb_type};
+use super::strake_federation::StrakeFederationProvider;
+
+use super::duckdb::{DuckDBPath, DuckDBPool, escape_literal, map_duckdb_type};
 
 /// DuckDB SQL Executor for federated query execution.
 ///
@@ -94,9 +85,12 @@ impl DuckDBExecutor {
         &self.db_path
     }
 
-    /// Wraps this executor in a `DuckDBFederationProvider`.
-    pub fn create_federation_provider(self: Arc<Self>) -> Arc<DuckDBFederationProvider> {
-        Arc::new(DuckDBFederationProvider::new(self))
+    /// Wraps this executor in a `StrakeFederationProvider`.
+    pub fn create_federation_provider(self: Arc<Self>) -> Arc<StrakeFederationProvider> {
+        Arc::new(StrakeFederationProvider::new(
+            self,
+            crate::sources::sql::common::SqlDialect::DuckDB,
+        ))
     }
 }
 
@@ -105,198 +99,6 @@ impl std::fmt::Debug for DuckDBExecutor {
         f.debug_struct("DuckDBExecutor")
             .field("db_path", &self.db_path)
             .finish()
-    }
-}
-
-/// Custom Federation Provider for DuckDB.
-///
-/// Uses `strake_sql`'s internal SQL generator for higher-fidelity pushdown
-/// and better handling of subquery aliases.
-pub struct DuckDBFederationProvider {
-    executor: Arc<DuckDBExecutor>,
-}
-
-impl DuckDBFederationProvider {
-    /// Creates a new `DuckDBFederationProvider`.
-    pub fn new(executor: Arc<DuckDBExecutor>) -> Self {
-        Self { executor }
-    }
-}
-
-impl std::fmt::Debug for DuckDBFederationProvider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DuckDBFederationProvider")
-            .field("executor", &self.executor)
-            .finish()
-    }
-}
-
-#[async_trait]
-impl FederationProvider for DuckDBFederationProvider {
-    fn name(&self) -> &str {
-        "duckdb"
-    }
-
-    fn compute_context(&self) -> Option<String> {
-        self.executor.compute_context()
-    }
-
-    fn optimizer(&self) -> Option<Arc<datafusion::optimizer::optimizer::Optimizer>> {
-        // Use a custom optimizer rule that leverages DuckDBFederationPlanner.
-        // This planner uses strake_sql instead of the default DataFusion unparser.
-        let rule = Arc::new(DuckDBFederationOptimizerRule::new(self.executor.clone()));
-        Some(Arc::new(
-            datafusion::optimizer::optimizer::Optimizer::with_rules(vec![rule]),
-        ))
-    }
-}
-
-/// Custom Optimizer Rule for DuckDB federation.
-///
-/// This rule identifies sub-plans that can be pushed down to DuckDB and
-/// wraps them in a `FederatedPlanNode` with our custom `DuckDBFederationPlanner`.
-#[derive(Debug)]
-struct DuckDBFederationOptimizerRule {
-    planner: Arc<DuckDBFederationPlanner>,
-}
-
-impl DuckDBFederationOptimizerRule {
-    fn new(executor: Arc<DuckDBExecutor>) -> Self {
-        Self {
-            planner: Arc::new(DuckDBFederationPlanner::new(executor)),
-        }
-    }
-}
-
-impl OptimizerRule for DuckDBFederationOptimizerRule {
-    fn rewrite(
-        &self,
-        plan: LogicalPlan,
-        _config: &dyn OptimizerConfig,
-    ) -> datafusion::error::Result<datafusion::common::tree_node::Transformed<LogicalPlan>> {
-        if let LogicalPlan::Extension(Extension { ref node }) = plan
-            && node.name() == "Federated"
-        {
-            return Ok(datafusion::common::tree_node::Transformed::no(plan));
-        }
-
-        // Only wrap plans that exclusively contain DuckDB tables belonging to this instance.
-        if !is_duckdb_federated_plan(&plan)? {
-            return Ok(datafusion::common::tree_node::Transformed::no(plan));
-        }
-
-        let fed_plan = FederatedPlanNode::new(plan, self.planner.clone());
-        Ok(datafusion::common::tree_node::Transformed::yes(
-            LogicalPlan::Extension(Extension {
-                node: Arc::new(fed_plan),
-            }),
-        ))
-    }
-
-    fn name(&self) -> &str {
-        "duckdb_federation_rule"
-    }
-
-    fn supports_rewrite(&self) -> bool {
-        true
-    }
-}
-
-/// Custom Federated Planner for DuckDB.
-///
-/// Implements `FederationPlanner` to convert logical plans into physical DuckDB scans
-/// using Strake's internal SQL generator.
-#[derive(Debug)]
-struct DuckDBFederationPlanner {
-    executor: Arc<DuckDBExecutor>,
-}
-
-impl DuckDBFederationPlanner {
-    fn new(executor: Arc<DuckDBExecutor>) -> Self {
-        Self { executor }
-    }
-}
-
-#[async_trait]
-impl FederationPlanner for DuckDBFederationPlanner {
-    async fn plan_federation(
-        &self,
-        node: &FederatedPlanNode,
-        _session_state: &datafusion::execution::context::SessionState,
-    ) -> datafusion::error::Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
-        let plan = node.plan();
-
-        // Strip source-level qualifiers (e.g., "testdb.", "testdb.public.") from
-        // the plan and expressions before SQL generation. Strake registers sources by name,
-        // but DuckDB expects bare table names.
-        //
-        // IMPORTANT: We only strip MULTI-PART qualifiers (containing dots), or qualifiers
-        // that match the catalog/schema pattern. Single-word relations (e.g. SubqueryAlias
-        // names like "o" in "o.amount") are legitimate DataFusion join aliases and must be
-        // preserved for correct column resolution in the SQL generator.
-        let normalized_plan = plan
-            .clone()
-            .transform_up(|node| {
-                // 1. Strip qualifiers from all expressions in this node
-                let transformed = node.map_expressions(|expr| {
-                    expr.transform_down(|e| {
-                        if let Expr::Column(mut col) = e {
-                            let should_strip = col
-                                .relation
-                                .as_ref()
-                                .map(|r| {
-                                    let s = r.to_string();
-                                    // Strip only if the relation has catalog/schema separators (dots)
-                                    s.contains('.')
-                                })
-                                .unwrap_or(false);
-
-                            if should_strip {
-                                col.relation = None;
-                                Ok(Transformed::yes(Expr::Column(col)))
-                            } else {
-                                Ok(Transformed::no(Expr::Column(col)))
-                            }
-                        } else {
-                            Ok(Transformed::no(e))
-                        }
-                    })
-                })?;
-
-                // 2. Strip qualifier from TableScan name if applicable
-                if let LogicalPlan::TableScan(mut scan) = transformed.data {
-                    let bare_name = scan.table_name.table().to_string();
-                    scan.table_name = TableReference::bare(bare_name);
-                    Ok(Transformed::yes(LogicalPlan::TableScan(scan)))
-                } else {
-                    Ok(transformed)
-                }
-            })?
-            .data;
-
-        // Custom Unparser Logic
-        // Use strake_sql to generate SQL for the isolated sub-plan.
-        // This ensures we avoid DataFusion unparser bugs like unnamed_subquery.
-        let sql = strake_sql::sql_gen::get_sql_for_plan(&normalized_plan, "duckdb")
-            .map_err(|e| {
-                datafusion::error::DataFusionError::Execution(format!(
-                    "DuckDB federation SQL generation failed: {}",
-                    e
-                ))
-            })?
-            .ok_or_else(|| {
-                datafusion::error::DataFusionError::Execution(
-                    "Failed to generate SQL for DuckDB plan".to_string(),
-                )
-            })?;
-
-        tracing::info!(target: "federation", sql = %sql, "Generated federated SQL for DuckDB using strake_sql");
-
-        let schema = normalized_plan.schema().as_arrow().clone();
-
-        let exec =
-            super::duckdb::DuckDBScanExec::new(self.executor.pool.clone(), sql, Arc::new(schema));
-        Ok(Arc::new(exec) as Arc<dyn ExecutionPlan>)
     }
 }
 
@@ -500,87 +302,6 @@ impl SQLExecutor for DuckDBExecutor {
     }
 }
 
-/// Returns true if the plan contains only DuckDB table sources that belong to the
-/// specified executor (same database instance).
-fn is_duckdb_federated_plan(
-    plan: &LogicalPlan,
-) -> Result<bool, datafusion::error::DataFusionError> {
-    let mut has_duckdb_source = false;
-    let mut all_duckdb_sources = true;
-
-    plan.apply(|node| {
-        if let LogicalPlan::TableScan(scan) = node {
-            let mut is_duckdb = false;
-
-            // Helper to recursively check if a provider or its inner is DuckDB
-            fn check_provider(provider: &Arc<dyn TableProvider>) -> bool {
-                let any = provider.as_any();
-
-                // 1. Check if it's our DuckDBTableProvider
-                if any
-                    .downcast_ref::<super::duckdb::DuckDBTableProvider>()
-                    .is_some()
-                {
-                    return true;
-                }
-
-                // 2. Peel our known wrappers (Metadata, CircuitBreaker, etc.)
-                if let Some(w) =
-                    any.downcast_ref::<super::wrappers::MetadataEnrichedTableProvider>()
-                {
-                    return check_provider(&w.inner());
-                }
-                if let Some(w) =
-                    any.downcast_ref::<super::wrappers::ConcurrencyLimitedTableProvider>()
-                {
-                    return check_provider(&w.inner());
-                }
-                if let Some(w) = any
-                    .downcast_ref::<crate::resilience::circuit_breaker::CircuitBreakerTableProvider>()
-                {
-                    return check_provider(&w.inner());
-                }
-                if let Some(w) =
-                    any.downcast_ref::<crate::sources::schema_drift::SchemaDriftTableProvider>()
-                {
-                    return check_provider(&w.inner());
-                }
-                if let Some(inner) = any
-                    .downcast_ref::<FederatedTableProviderAdaptor>()
-                    .and_then(|w| w.table_provider.as_ref())
-                {
-                    return check_provider(inner);
-                }
-
-                false
-            }
-
-            let source_any = scan.source.as_any();
-            if let Some(s) = source_any.downcast_ref::<DuckDBTableSource>() {
-                if s.federation_provider().name() == "duckdb" {
-                    is_duckdb = true;
-                }
-            } else if let Some(default_source) =
-                source_any.downcast_ref::<datafusion::datasource::DefaultTableSource>()
-            {
-                #[allow(clippy::collapsible_if)]
-                if check_provider(&default_source.table_provider) {
-                    is_duckdb = true;
-                }
-            }
-
-            if is_duckdb {
-                has_duckdb_source = true;
-            } else {
-                all_duckdb_sources = false;
-            }
-        }
-        Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
-    })?;
-
-    Ok(has_duckdb_source && all_duckdb_sources)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -649,85 +370,6 @@ mod tests {
         let res = stream.next().await;
         assert!(res.is_some());
         assert!(res.unwrap().is_err());
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_duckdb_normalization() -> Result<(), Box<dyn std::error::Error>> {
-        // 1. Setup a qualified TableScan with a Projection
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "id",
-            arrow::datatypes::DataType::Int32,
-            false,
-        )]));
-
-        let table_name = TableReference::parse_str("testdb.public.users");
-        let scan = LogicalPlan::TableScan(datafusion::logical_expr::TableScan {
-            table_name: table_name.clone(),
-            source: Arc::new(datafusion::datasource::DefaultTableSource::new(Arc::new(
-                datafusion::datasource::empty::EmptyTable::new(schema.clone()),
-            ))),
-            projection: None,
-            projected_schema: Arc::new(datafusion::common::DFSchema::try_from_qualified_schema(
-                table_name.clone(),
-                schema.as_ref(),
-            )?),
-            filters: vec![],
-            fetch: None,
-        });
-
-        // Add a Projection referencing the qualified column
-        let col = Expr::Column(datafusion::common::Column::new(Some(table_name), "id"));
-        let plan = LogicalPlan::Projection(datafusion::logical_expr::Projection::try_new(
-            vec![col],
-            Arc::new(scan),
-        )?);
-
-        // 2. Apply the same normalization logic as in plan_federation
-        let normalized_plan = plan
-            .transform_up(|node| {
-                // 1. Strip qualifiers from all expressions in this node
-                let transformed = node.map_expressions(|expr| {
-                    expr.transform_down(|e| {
-                        if let Expr::Column(mut col) = e {
-                            let should_strip = col
-                                .relation
-                                .as_ref()
-                                .map(|r| r.to_string().contains('.'))
-                                .unwrap_or(false);
-                            if should_strip {
-                                col.relation = None;
-                                Ok(Transformed::yes(Expr::Column(col)))
-                            } else {
-                                Ok(Transformed::no(Expr::Column(col)))
-                            }
-                        } else {
-                            Ok(Transformed::no(e))
-                        }
-                    })
-                })?;
-
-                // 2. Strip qualifier from TableScan name if applicable
-                if let LogicalPlan::TableScan(mut scan) = transformed.data {
-                    let bare_name = scan.table_name.table().to_string();
-                    scan.table_name = TableReference::bare(bare_name);
-                    Ok(Transformed::yes(LogicalPlan::TableScan(scan)))
-                } else {
-                    Ok(transformed)
-                }
-            })?
-            .data;
-
-        // 3. Generate SQL using strake_sql
-        let sql = strake_sql::sql_gen::get_sql_for_plan(&normalized_plan, "duckdb")?
-            .ok_or("Failed to generate SQL")?;
-
-        // 4. Assert: Expect bare table name AND bare column name
-        assert!(sql.contains("users"));
-        assert!(sql.contains("\"id\"")); // Unqualified identifier
-        assert!(!sql.contains("testdb"));
-        assert!(!sql.contains("public"));
 
         Ok(())
     }

@@ -13,7 +13,10 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion_federation::sql::{SQLExecutor, SQLFederationProvider};
+use datafusion_federation::sql::SQLExecutor;
+
+use super::strake_federation::StrakeFederationProvider;
+use secrecy::ExposeSecret;
 use std::sync::Arc;
 
 /// PostgreSQL Executor for federation
@@ -23,17 +26,20 @@ use std::sync::Arc;
 /// identify tables from the same database and push down joins.
 #[derive(Debug, Clone)]
 pub struct PostgresExecutor {
-    connection_string: String,
+    connection_string: secrecy::SecretString,
 }
 
 impl PostgresExecutor {
-    pub fn new(connection_string: String) -> Self {
+    pub fn new(connection_string: secrecy::SecretString) -> Self {
         Self { connection_string }
     }
 
-    /// Create a SQLFederationProvider wrapping this executor
-    pub fn create_federation_provider(self) -> Arc<SQLFederationProvider> {
-        Arc::new(SQLFederationProvider::new(Arc::new(self)))
+    /// Create a StrakeFederationProvider wrapping this executor
+    pub fn create_federation_provider(self) -> Arc<StrakeFederationProvider> {
+        Arc::new(StrakeFederationProvider::new(
+            Arc::new(self),
+            crate::sources::sql::common::SqlDialect::Postgres,
+        ))
     }
 }
 
@@ -45,7 +51,7 @@ impl SQLExecutor for PostgresExecutor {
 
     fn compute_context(&self) -> Option<String> {
         // Same connection string = same PostgreSQL instance = can push down joins
-        Some(self.connection_string.clone())
+        Some(self.connection_string.expose_secret().to_string())
     }
 
     fn dialect(&self) -> Arc<dyn datafusion::sql::unparser::dialect::Dialect> {
@@ -76,7 +82,7 @@ impl SQLExecutor for PostgresExecutor {
 
         let batch_stream = futures::stream::once(async move {
             let (client, connection) =
-                tokio_postgres::connect(&connection_string, tokio_postgres::NoTls)
+                tokio_postgres::connect(connection_string.expose_secret(), tokio_postgres::NoTls)
                     .await
                     .map_err(|e| {
                         tracing::error!(target: "federation", error = %e, "Failed to connect to PostgreSQL");
@@ -153,10 +159,12 @@ impl SQLExecutor for PostgresExecutor {
     }
 
     async fn table_names(&self) -> datafusion::error::Result<Vec<String>> {
-        let (client, connection) =
-            tokio_postgres::connect(&self.connection_string, tokio_postgres::NoTls)
-                .await
-                .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+        let (client, connection) = tokio_postgres::connect(
+            self.connection_string.expose_secret(),
+            tokio_postgres::NoTls,
+        )
+        .await
+        .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {
@@ -177,10 +185,12 @@ impl SQLExecutor for PostgresExecutor {
     }
 
     async fn get_table_schema(&self, table_name: &str) -> datafusion::error::Result<SchemaRef> {
-        let (client, connection) =
-            tokio_postgres::connect(&self.connection_string, tokio_postgres::NoTls)
-                .await
-                .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+        let (client, connection) = tokio_postgres::connect(
+            self.connection_string.expose_secret(),
+            tokio_postgres::NoTls,
+        )
+        .await
+        .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {
@@ -391,7 +401,7 @@ mod tests {
 
     #[test]
     fn test_executor_compute_context() {
-        let executor = PostgresExecutor::new("host=localhost dbname=test".to_string());
+        let executor = PostgresExecutor::new("host=localhost dbname=test".to_string().into());
         assert_eq!(
             executor.compute_context(),
             Some("host=localhost dbname=test".to_string())

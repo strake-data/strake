@@ -77,7 +77,7 @@ pub fn route_dialect(source_type: &str) -> DialectPath {
         ),
         "sqlite" => DialectPath::Native(
             Arc::new(SqliteDialect {}),
-            Arc::new(DefaultDialectCapabilities),
+            Arc::new(crate::sql_generator::dialect::SqliteCapabilities),
             Arc::new(DefaultTypeMapper),
         ),
 

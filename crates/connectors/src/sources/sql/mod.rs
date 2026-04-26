@@ -18,6 +18,7 @@ pub mod postgres_federation;
 pub mod sqlite;
 pub mod sqlite_federation;
 pub mod sqlite_introspect;
+pub mod strake_federation;
 pub mod wrappers;
 
 pub use common::SqlDialect;
@@ -28,9 +29,11 @@ pub mod clickhouse;
 pub mod duckdb;
 pub mod duckdb_federation;
 pub mod duckdb_introspect;
+pub mod oracle;
 pub mod postgres_introspect;
 use clickhouse::register_clickhouse;
 use duckdb::register_duckdb;
+use oracle::register_oracle;
 
 pub struct SqlSourceProvider {
     pub global_retry: RetrySettings,
@@ -107,7 +110,7 @@ pub async fn register_sql_source(options: common::SqlRegistrationOptions) -> Res
         context: options.context,
         catalog_name: options.catalog_name,
         name: options.name,
-        connection_string: options.connection_string,
+        connection_string: options.connection_string.into(),
         pool_size: options.pool_size,
         cb,
         explicit_tables: options.explicit_tables,
@@ -121,5 +124,6 @@ pub async fn register_sql_source(options: common::SqlRegistrationOptions) -> Res
         SqlDialect::Sqlite => register_sqlite(params).await,
         SqlDialect::Clickhouse => register_clickhouse(params).await,
         SqlDialect::DuckDB => register_duckdb(params).await,
+        SqlDialect::Oracle => register_oracle(params).await,
     }
 }

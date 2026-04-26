@@ -148,12 +148,14 @@ impl GenericSqlConnector {
                             target_schema,
                             table_name
                         ),
-                        Err(e) => tracing::warn!(
-                            "Failed to register table {}.{}: {}",
-                            target_schema,
-                            table_name,
-                            e
-                        ),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to register table {}.{}: {}",
+                                target_schema,
+                                table_name,
+                                e
+                            );
+                        }
                     }
                 }
                 Err(e) => {

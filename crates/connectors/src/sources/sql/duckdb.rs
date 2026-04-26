@@ -29,6 +29,7 @@ use datafusion::prelude::Expr;
 use datafusion::sql::TableReference;
 use duckdb::DuckdbConnectionManager;
 use r2d2::Pool;
+use secrecy::ExposeSecret;
 use secrecy::SecretString;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -66,6 +67,15 @@ impl DuckDBPath {
         {
             return Self(s.to_string());
         }
+
+        // If canonicalization fails, we still want a consistent representation.
+        // We use absolute path as a fallback.
+        if let Ok(absolute) = std::path::Path::new(&path_str).to_path_buf().canonicalize()
+            && let Some(s) = absolute.to_str()
+        {
+            return Self(s.to_string());
+        }
+
         Self(path_str)
     }
 
@@ -130,8 +140,6 @@ use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSe
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, Partitioning, PlanProperties};
 use std::any::Any;
-
-use crate::sources::predicate_caching::DynamicFilterSource;
 
 /// DuckDB connection pool type.
 ///
@@ -578,13 +586,6 @@ impl TableProvider for DuckDBTableProvider {
     }
 }
 
-impl DynamicFilterSource for DuckDBTableProvider {
-    fn supports_dynamic_filter(&self) -> bool {
-        // We support dynamic filtering signals for coordination.
-        true
-    }
-}
-
 // Manual conversion functions removed in favor of duckdb's native query_arrow
 
 /// Factory for creating DuckDB table providers.
@@ -707,7 +708,7 @@ impl datafusion_federation::FederatedTableSource for DuckDBTableSource {
 
 pub async fn register_duckdb(params: SqlSourceParams) -> Result<()> {
     let connection_string = params.connection_string.clone();
-    let db_path_str = connection_string.clone();
+    let db_path_str = connection_string.expose_secret().to_string();
     let db_path = tokio::task::spawn_blocking(move || DuckDBPath::new(db_path_str))
         .await
         .context("Blocking task panicked")?;

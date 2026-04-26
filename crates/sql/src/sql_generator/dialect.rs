@@ -199,6 +199,20 @@ impl DialectCapabilities for PostgreSqlCapabilities {
     }
 }
 
+/// SQLite-specific capabilities including catalog/schema stripping.
+pub struct SqliteCapabilities;
+impl DialectCapabilities for SqliteCapabilities {
+    fn strip_catalog_qualifier(&self) -> bool {
+        true
+    }
+    fn strip_schema_qualifier(&self) -> bool {
+        true
+    }
+    fn normalize_function_name(&self, name: &str) -> String {
+        name.to_uppercase()
+    }
+}
+
 /// DuckDB-specific capabilities including catalog/schema stripping.
 pub struct DuckDBCapabilities;
 impl DialectCapabilities for DuckDBCapabilities {

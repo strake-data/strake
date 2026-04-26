@@ -125,7 +125,13 @@ impl SourceRegistry {
         catalog_name: &str,
         config: &SourceConfig,
     ) -> Result<()> {
-        let type_name = match config.source_type.as_str() {
+        let raw_type = config.source_type.as_str();
+        tracing::error!(
+            "Registry: registering source {} of type {}",
+            config.name,
+            raw_type
+        );
+        let type_name = match raw_type {
             "parquet" | "csv" | "json" => "file",
             // #[cfg(feature = "iceberg")]
             // "iceberg" => "iceberg_rest",
@@ -139,8 +145,10 @@ impl SourceRegistry {
         };
 
         if let Some(provider) = self.providers.get(type_name) {
+            tracing::error!("Registry: found provider for type {}", type_name);
             provider.register(context, catalog_name, config).await
         } else {
+            tracing::error!("Registry: NO provider found for type {}", type_name);
             anyhow::bail!("No provider found for source type: {}", type_name)
         }
     }

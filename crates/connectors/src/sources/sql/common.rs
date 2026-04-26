@@ -9,7 +9,6 @@ use datafusion::datasource::TableProvider;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
 use datafusion_federation::FederatedTableProviderAdaptor;
-use datafusion_federation::sql::{SQLFederationProvider, SQLTableSource};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -58,7 +57,7 @@ pub struct GenericFederatedTableFactory<F> {
     /// The inner factory creating the dialect-specific provider.
     pub inner_factory: F,
     /// The federation provider shared across all tables in the source.
-    pub federation_provider: Arc<SQLFederationProvider>,
+    pub federation_provider: Arc<super::strake_federation::StrakeFederationProvider>,
     /// Whether to enable schema drift detection.
     pub schema_drift: bool,
 }
@@ -79,9 +78,9 @@ impl<F: TableFactory + Send + Sync> SqlProviderFactory for GenericFederatedTable
 
         let wrapped = super::wrappers::wrap_provider(inner, cb, metadata, self.schema_drift);
 
-        let sql_source = SQLTableSource::new_with_schema(
+        let sql_source = super::strake_federation::StrakeTableSource::new(
             self.federation_provider.clone(),
-            table_ref.into(),
+            table_ref,
             wrapped.schema(),
         );
         let adaptor =
@@ -104,7 +103,7 @@ impl SchemaMappingRule {
     pub fn map_schema<'a>(&self, schema: &'a str, source_name: &str) -> std::borrow::Cow<'a, str> {
         match self {
             SchemaMappingRule::Standard => {
-                if schema.is_empty() || schema == "public" {
+                if schema.is_empty() || schema == "public" || schema == "main" {
                     std::borrow::Cow::Owned(source_name.to_string())
                 } else {
                     std::borrow::Cow::Borrowed(schema)
@@ -131,6 +130,20 @@ pub enum SqlDialect {
     Clickhouse,
     #[serde(alias = "duckdb")]
     DuckDB,
+    Oracle,
+}
+
+impl SqlDialect {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SqlDialect::Postgres => "postgres",
+            SqlDialect::MySql => "mysql",
+            SqlDialect::Sqlite => "sqlite",
+            SqlDialect::Clickhouse => "clickhouse",
+            SqlDialect::DuckDB => "duckdb",
+            SqlDialect::Oracle => "oracle",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -138,7 +151,7 @@ pub struct SqlSourceParams {
     pub context: Arc<SessionContext>,
     pub catalog_name: String,
     pub name: String,
-    pub connection_string: String,
+    pub connection_string: secrecy::SecretString,
     pub pool_size: usize,
     pub cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
     pub explicit_tables: Arc<Option<Vec<strake_common::config::TableConfig>>>,

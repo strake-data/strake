@@ -46,7 +46,7 @@ pub async fn register_postgres(params: SqlSourceParams) -> Result<()> {
     let connection_string = params.connection_string.clone();
     let pool_size = params.pool_size;
 
-    let pool = create_pg_pool(&connection_string, pool_size).await?;
+    let pool = create_pg_pool(connection_string.expose_secret(), pool_size).await?;
     let inner_factory = PostgresTableFactory::new(pool);
 
     let executor = super::postgres_federation::PostgresExecutor::new(connection_string.clone());
@@ -122,9 +122,23 @@ async fn create_pg_pool(
         "max_pool_size".to_string(),
         SecretString::from(pool_size.to_string()),
     );
+    let mut ssl_mode = match config.get_ssl_mode() {
+        tokio_postgres::config::SslMode::Disable => "disable",
+        tokio_postgres::config::SslMode::Prefer => "prefer",
+        tokio_postgres::config::SslMode::Require => "require",
+        _ => "require",
+    };
+
+    // If tokio-postgres doesn't expose the strict modes in its enum yet,
+    // we check the connection string to avoid silent downgrades.
+    if connection_string.contains("sslmode=verify-ca") {
+        ssl_mode = "verify-ca";
+    } else if connection_string.contains("sslmode=verify-full") {
+        ssl_mode = "verify-full";
+    }
     params.insert(
         "sslmode".to_string(),
-        SecretString::from("disable".to_string()),
+        SecretString::from(ssl_mode.to_string()),
     );
 
     let pool = PostgresConnectionPool::new(params)

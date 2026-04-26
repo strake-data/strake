@@ -46,35 +46,6 @@ pub(crate) fn handle_table_scan(
     }
 
     let alias_arc: Arc<str> = alias.clone().into();
-    let columns_vec: Vec<ColumnEntry> = table_schema
-        .fields()
-        .iter()
-        .map(|f| {
-            // Arrow fields don't have qualifiers, so we use the table's qualifiers.
-            let provenance = qualifiers.clone();
-
-            // Normalize and lowercase for registration
-            let name_str = f.name();
-            let stable_name = super::derive_bare_name(name_str);
-            let stable_name_lower = Arc::from(stable_name.to_lowercase().as_str());
-
-            ColumnEntry {
-                name: stable_name,
-                name_lower: stable_name_lower,
-                data_type: f.data_type().clone(),
-                source_alias: alias_arc.clone(),
-                provenance,
-                unique_id: generator.context.next_column_id(),
-            }
-        })
-        .collect();
-    let columns = Arc::<[ColumnEntry]>::from(columns_vec.into_boxed_slice());
-
-    generator
-        .context
-        .enter_scope(alias.clone(), columns.clone(), qualifiers)
-        .commit();
-
     let mut parts = Vec::new();
     if let Some(catalog) = table_ref.catalog()
         && !generator.dialect.capabilities.strip_catalog_qualifier()
@@ -105,11 +76,90 @@ pub(crate) fn handle_table_scan(
         index_hints: vec![],
     };
 
-    // KEY FIX: Project ALL columns from the full table schema, using derive_bare_name
-    // for the column identifiers. This ensures:
-    // 1. All columns are available for parent nodes (fixes Binder Error)
-    // 2. Column names in SQL match the scope registration (fixes ScopeViolation)
-    let projection = columns
+    // 1. Resolve filters against the FULL table schema
+    let full_columns_vec: Vec<ColumnEntry> = table_schema
+        .fields()
+        .iter()
+        .map(|f| {
+            let provenance = qualifiers.clone();
+            let name_str = f.name();
+            let stable_name = super::derive_bare_name(name_str);
+            let stable_name_lower = Arc::from(stable_name.to_lowercase().as_str());
+
+            ColumnEntry {
+                name: stable_name,
+                name_lower: stable_name_lower,
+                data_type: f.data_type().clone(),
+                source_alias: alias_arc.clone(),
+                provenance,
+                unique_id: generator.context.next_column_id(),
+            }
+        })
+        .collect();
+    let full_columns = Arc::<[ColumnEntry]>::from(full_columns_vec.into_boxed_slice());
+
+    // Temporarily push full scope for filter translation
+    let checkpoint = generator.context.checkpoint();
+    generator
+        .context
+        .push_scope(alias.clone(), full_columns, qualifiers.clone());
+
+    let selection = if !scan.filters.is_empty() {
+        let (ctx, dial) = (&mut generator.context, &generator.dialect);
+        let mut translator = ExprTranslator::new(ctx, dial);
+        let mut selection: Option<SqlExpr> = None;
+
+        for f in &scan.filters {
+            let f_sql = translator.expr_to_sql(f)?;
+            selection = match selection {
+                Some(e) => Some(SqlExpr::BinaryOp {
+                    left: Box::new(e),
+                    op: BinaryOperator::And,
+                    right: Box::new(f_sql),
+                }),
+                None => Some(f_sql),
+            };
+        }
+        selection
+    } else {
+        None
+    };
+
+    // Roll back to previous state (removes full scope)
+    generator.context.rollback(checkpoint);
+
+    // 2. Push the FINAL PROJECTED scope for parent nodes
+    let projection_indices = scan.projection.as_ref();
+    let projected_columns_vec: Vec<ColumnEntry> = table_schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| projection_indices.is_none_or(|indices| indices.contains(i)))
+        .map(|(_, f)| {
+            let provenance = qualifiers.clone();
+            let name_str = f.name();
+            let stable_name = super::derive_bare_name(name_str);
+            let stable_name_lower = Arc::from(stable_name.to_lowercase().as_str());
+
+            ColumnEntry {
+                name: stable_name,
+                name_lower: stable_name_lower,
+                data_type: f.data_type().clone(),
+                source_alias: alias_arc.clone(),
+                provenance,
+                unique_id: generator.context.next_column_id(),
+            }
+        })
+        .collect();
+    let projected_columns = Arc::<[ColumnEntry]>::from(projected_columns_vec.into_boxed_slice());
+
+    generator
+        .context
+        .enter_scope(alias.clone(), projected_columns.clone(), qualifiers)
+        .commit();
+
+    // 3. Generate the SELECT query with ONLY projected columns
+    let projection = projected_columns
         .iter()
         .map(|c| {
             Ok(sqlparser::ast::SelectItem::UnnamedExpr(
@@ -127,25 +177,7 @@ pub(crate) fn handle_table_scan(
         joins: vec![],
     }];
     select.projection = projection;
-
-    if !scan.filters.is_empty() {
-        let (ctx, dial) = (&mut generator.context, &generator.dialect);
-        let mut translator = ExprTranslator::new(ctx, dial);
-        let mut selection: Option<SqlExpr> = None;
-
-        for f in &scan.filters {
-            let f_sql = translator.expr_to_sql(f)?;
-            selection = match selection {
-                Some(e) => Some(SqlExpr::BinaryOp {
-                    left: Box::new(e),
-                    op: BinaryOperator::And,
-                    right: Box::new(f_sql),
-                }),
-                None => Some(f_sql),
-            };
-        }
-        select.selection = selection;
-    }
+    select.selection = selection;
 
     let mut query = generator.create_skeleton_query();
     query.body = Box::new(sqlparser::ast::SetExpr::Select(Box::new(select)));

@@ -8,23 +8,29 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion_federation::sql::{SQLExecutor, SQLFederationProvider};
+use datafusion_federation::sql::SQLExecutor;
+
+use super::strake_federation::StrakeFederationProvider;
 use rusqlite::types::ValueRef;
+use secrecy::ExposeSecret;
 use std::sync::Arc;
 
 /// SQLite Executor
 #[derive(Debug, Clone)]
 pub struct SqliteExecutor {
-    connection_string: String,
+    connection_string: secrecy::SecretString,
 }
 
 impl SqliteExecutor {
-    pub fn new(connection_string: String) -> Self {
+    pub fn new(connection_string: secrecy::SecretString) -> Self {
         Self { connection_string }
     }
 
-    pub fn create_federation_provider(self) -> Arc<SQLFederationProvider> {
-        Arc::new(SQLFederationProvider::new(Arc::new(self)))
+    pub fn create_federation_provider(self) -> Arc<StrakeFederationProvider> {
+        Arc::new(StrakeFederationProvider::new(
+            Arc::new(self),
+            crate::sources::sql::common::SqlDialect::Sqlite,
+        ))
     }
 }
 
@@ -35,7 +41,7 @@ impl SQLExecutor for SqliteExecutor {
     }
 
     fn compute_context(&self) -> Option<String> {
-        Some(self.connection_string.clone())
+        Some(self.connection_string.expose_secret().to_string())
     }
 
     fn dialect(&self) -> Arc<dyn datafusion::sql::unparser::dialect::Dialect> {
@@ -60,7 +66,7 @@ impl SQLExecutor for SqliteExecutor {
 
         let batch_stream = futures::stream::once(async move {
             tokio::task::spawn_blocking(move || {
-                let conn = rusqlite::Connection::open(&connection_string)
+                let conn = rusqlite::Connection::open(connection_string.expose_secret())
                     .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
 
                 let mut stmt = conn
@@ -182,7 +188,7 @@ impl SQLExecutor for SqliteExecutor {
     async fn table_names(&self) -> datafusion::error::Result<Vec<String>> {
         let connection_string = self.connection_string.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&connection_string)
+            let conn = rusqlite::Connection::open(connection_string.expose_secret())
                 .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
 
             let mut stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
@@ -203,7 +209,7 @@ impl SQLExecutor for SqliteExecutor {
         let table_name = table_name.to_string();
 
         tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&connection_string)
+            let conn = rusqlite::Connection::open(connection_string.expose_secret())
                 .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
 
             let mut stmt = conn

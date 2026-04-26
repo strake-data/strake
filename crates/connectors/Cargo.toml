@@ -58,6 +58,9 @@ tower = { workspace = true }
 prost-reflect = { version = "0.16", features = ["serde"] }
 moka = { version = "0.12", features = ["future"] }
 chrono = "0.4"
+rust-oracle = { workspace = true }
+bb8 = { workspace = true }
+bb8-oracle = { workspace = true }
 # Apache Iceberg integration (Disabled for DF 53 compatibility)
 # iceberg = { version = "0.9", optional = true }
 # iceberg-catalog-rest = { version = "0.9", optional = true }

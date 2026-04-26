@@ -13,9 +13,12 @@ async fn inspect_plan() -> datafusion::error::Result<()> {
     ctx.sql("CREATE TABLE orders (id INT, user_id INT, amount DOUBLE)")
         .await?;
 
-    let plan = ctx.sql("SELECT u.name, SUM(o.amount) FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.name").await?.into_optimized_plan()?;
+    let plan = ctx
+        .sql("SELECT SUM(amount) FROM orders")
+        .await?
+        .into_optimized_plan()?;
 
-    println!("Original Plan Schema:");
+    println!("Original Plan:\n{}", plan.display_indent());
     for (qualifier, field) in plan.schema().iter() {
         println!("Field name: '{}', qualifier: {:?}", field.name(), qualifier);
     }
@@ -49,6 +52,10 @@ async fn inspect_plan() -> datafusion::error::Result<()> {
         let name: &str = field.name();
         println!("Field name: '{}', qualifier: {:?}", name, qualifier);
     }
+
+    let sql = strake_sql::sql_gen::get_sql_for_plan(&normalized_plan, "sqlite")
+        .map_err(|e| datafusion::error::DataFusionError::External(e.into()))?;
+    println!("\nGenerated SQL: {:?}", sql);
 
     Ok(())
 }
