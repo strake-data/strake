@@ -29,4 +29,5 @@ Strake solves this by **bringing the compute to the data**:
 *   [**Installation**](./install.md): Get Strake running on your machine.
 *   [**Quickstart**](./quickstart.md): Run your first federated query in 5 minutes.
 *   [**Core Concepts**](./concepts.md): Understand how Strake optimizes your queries.
+*   [**Authentication**](./authentication.md): Secure your Strake deployment.
 *   [**Python API**](./python-api.md): Detailed reference for the Python client.

@@ -14,7 +14,8 @@ nav = [
     { "Guide" = [
         { "Quickstart" = "quickstart.md" },
         { "Installation" = "install.md" },
-        { "Concepts" = "concepts.md" }
+        { "Concepts" = "concepts.md" },
+        { "Authentication" = "authentication.md" }
     ] },
     { "Connectors" = "connectors.md" },
     { "Architecture" = "architecture.md" },

@@ -115,5 +115,7 @@ The Strake Server can be configured via environment variables or a `.env` file. 
 | `OPENAI_API_KEY` | `None` | API key for OpenAI provider |
 | `STRAKE_AUTH__ENABLED` | `false` | Enable/Disable authentication checks |
 | `STRAKE_AUTH__API_KEY` | *(empty)* | Static API key for auth (required if enabled) |
+
+For detailed instructions on setting up database-backed authentication and generating keys, see the [Authentication Guide](./authentication.md).
 | `STRAKE_RETRY__MAX_ATTEMPTS` | `5` | Max retries for establishing upstream connections |
 | `STRAKE_QUERY_LIMITS__MAX_OUTPUT_ROWS` | `None` | Hard limit on rows returned by a query |
