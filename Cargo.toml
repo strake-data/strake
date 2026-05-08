@@ -15,7 +15,7 @@ description = "High-performance data federation and query acceleration."
 
 [workspace.dependencies]
 # Pin exact versions to avoid dependency hell
-openssl = { version = "0.10", features = ["vendored"] }
+openssl = { version = "0.10.79", features = ["vendored"] }
 arrow = "58.0.0"
 datafusion = "53.0.0"
 datafusion-python = "53.0.0"
