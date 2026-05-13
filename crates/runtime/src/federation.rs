@@ -1,34 +1,42 @@
 //! Core query orchestration engine.
 //!
 //! The `FederationEngine` is the central entry point for executing distributed queries.
-//! It manages:
+//! It manages session state, planning, and delegates execution to the `ExecutionOrchestrator`.
 //!
-//! 1. **Session State**: DataFusion `SessionContext` with custom configuration.
-//! 2. **Query Planning**: Parsing SQL, logical planning, and optimization.
-//! 3. **Resource Management**: Concurrency limits (`Semaphore`) and memory pools.
-//! 4. **Caching**: Integration with the `QueryCache` for result reuse.
-//!
-//! # Query Lifecycle
-//!
-//! 1. `execute_query(sql)` called.
-//! 2. **Authentication**: User context applied to session.
-//! 3. **Planning**: SQL -> Logical Plan.
-//! 4. **Optimization**:
-//!    - `FederationOptimizerRule` routes subqueries to sources.
-//!    - `DefensiveLimitRule` ensures fetch limits.
-//! 5. **Caching Check**: Compute cache key, heck if cached.
-//! 6. **Execution**: Run physical plan if cache miss.
-//! 7. **Validation**: `CostBasedValidator` checks result size.
-//!
-//! # Example
+//! # Usage
 //!
 //! ```rust
-//! // See `FederationEngine::new` for initialization
+//! # use std::sync::Arc;
+//! # use strake_runtime::federation::{FederationEngine, FederationEngineOptions};
+//! # use strake_common::config::Config;
+//! # async fn example() -> anyhow::Result<()> {
+//! // Initialization requires context, cache, and configuration
+//! // let options = FederationEngineOptions { ... };
+//! // let engine = FederationEngine::new(options).await?;
+//! # Ok(())
+//! # }
 //! ```
+//!
+//! # Performance Characteristics
+//!
+//! Query planning is relatively fast but can be impacted by the number of
+//! registered sources and the complexity of the SQL query. Distributed join
+//! planning uses cost estimates to optimize data movement.
+//!
+//! # Safety
+//!
+//! The `FederationEngine` uses atomic counters to track active queries and
+//! ensures resources are correctly released even on early query termination.
+//!
+//! # Errors
+//!
+//! Returns errors if:
+//! - Source registration fails during initialization.
+//! - SQL parsing or logical planning fails.
+//! - The underlying execution orchestrator returns an error.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 use anyhow::{Context, Result};
 use datafusion::catalog::CatalogProvider;
@@ -40,7 +48,7 @@ use datafusion::optimizer::OptimizerRule;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 
 use datafusion_federation::FederationOptimizerRule;
-use tracing::{debug, info};
+use tracing::debug;
 
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::RecordBatchStream;
@@ -58,14 +66,65 @@ use std::path::PathBuf;
 use strake_common::config::{Config, ResourceConfig, SourceConfig};
 use strake_common::models::SourceName;
 use strake_connectors::sources::{self, SourceProvider, SourceRegistry};
+
+/// Pure logic for cache determination, extracted for testability.
+///
+/// Returns true if the plan is allowed to be cached based on global and source-level configs.
+pub(crate) fn should_cache_plan(
+    plan: &LogicalPlan,
+    global_enabled: bool,
+    source_configs: &HashMap<SourceName, SourceConfig>,
+) -> bool {
+    // If global cache is disabled, we cannot cache (system not active)
+    if !global_enabled {
+        return false;
+    }
+
+    let mut explicit_disable = false;
+
+    // Traverse plan to check for source-specific overrides
+    // If ANY source explicitly disables caching, we respect that (safety/freshness priority)
+    let _ = plan.apply(|node| {
+        if let LogicalPlan::TableScan(scan) = node {
+            // In Strake, the source name could be in the 'schema' part OR the 'table' part
+            // typically depending on the connector type (e.g. database vs file).
+            let names_to_check = match &scan.table_name {
+                datafusion::sql::TableReference::Full { schema, table, .. } => {
+                    vec![schema.as_ref(), table.as_ref()]
+                }
+                datafusion::sql::TableReference::Partial { schema, table } => {
+                    vec![schema.as_ref(), table.as_ref()]
+                }
+                datafusion::sql::TableReference::Bare { table } => vec![table.as_ref()],
+            };
+
+            for name in names_to_check {
+                let sn = SourceName::from(name);
+                if let Some(source_config) = source_configs.get(&sn)
+                    && let Some(cache_override) = &source_config.cache
+                    && !cache_override.enabled
+                {
+                    explicit_disable = true;
+                    return Ok(TreeNodeRecursion::Stop);
+                }
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+
+    !explicit_disable
+}
 use strake_sql::optimizer::defensive_trace::DefensiveLimitRule;
 
+use crate::query::orchestrator::{BudgetPolicy, CachePolicy, ExecutionPolicy};
 use tokio::sync::Semaphore;
 
+/// The main engine for executing federated queries.
 pub struct FederationEngine {
     context: SessionContext,
     active_queries: Arc<AtomicUsize>,
     _registry: SourceRegistry,
+    /// Name of the federated catalog.
     pub catalog_name: String,
     connection_budget: Arc<Semaphore>,
     cache: QueryCache,
@@ -77,28 +136,41 @@ pub struct FederationEngine {
     query_limits: strake_common::config::QueryLimits,
 }
 
+/// Configuration options for initializing the `FederationEngine`.
 pub struct FederationEngineOptions {
+    /// The global system configuration.
     pub config: Config,
+    /// The name of the catalog managed by this engine.
     pub catalog_name: String,
+    /// Thresholds for rejecting expensive queries.
     pub query_limits: strake_common::config::QueryLimits,
+    /// Configuration for system resources (CPU, Memory).
     pub resource_config: ResourceConfig,
+    /// Custom DataFusion configuration options.
     pub datafusion_config: HashMap<String, String>,
+    /// The global concurrency permit budget.
     pub global_budget: usize,
+    /// Additional logical optimizer rules to apply.
     pub extra_optimizer_rules:
         Vec<Arc<dyn datafusion::optimizer::optimizer::OptimizerRule + Send + Sync>>,
+    /// Additional data source providers to register.
     pub extra_sources: Vec<Box<dyn SourceProvider>>,
+    /// Retry settings for federated queries.
     pub retry: strake_common::config::RetrySettings,
 }
 
 impl FederationEngine {
+    /// Access the underlying DataFusion `SessionContext`.
     pub fn context(&self) -> &SessionContext {
         &self.context
     }
 
+    /// Get the current number of active queries.
     pub fn active_queries(&self) -> usize {
-        self.active_queries.load(Ordering::Relaxed)
+        self.active_queries.load(AtomicOrdering::Relaxed)
     }
 
+    /// Create a new `FederationEngine` with the given options.
     pub async fn new(options: FederationEngineOptions) -> Result<Self> {
         let context = Self::build_session_context(
             &options.query_limits,
@@ -155,10 +227,12 @@ impl FederationEngine {
         })
     }
 
+    /// Get the configuration for a specific data source.
     pub fn get_source_config(&self, name: &SourceName) -> Option<&SourceConfig> {
         self.source_configs.get(name)
     }
 
+    /// List all registered data sources.
     pub fn list_sources(&self) -> Vec<SourceConfig> {
         self.source_configs.values().cloned().collect()
     }
@@ -231,8 +305,7 @@ impl FederationEngine {
         let state = context.state();
 
         // Build optimizer pipeline: inherit defaults, append custom rules in order
-        let mut rules: Vec<Arc<dyn OptimizerRule + Send + Sync>> =
-            datafusion::optimizer::optimizer::Optimizer::new().rules;
+        let mut rules: Vec<Arc<dyn OptimizerRule + Send + Sync>> = state.optimizers().to_vec();
         for rule in extra_optimizer_rules {
             rules.push(rule);
         }
@@ -249,7 +322,7 @@ impl FederationEngine {
 
         debug!("Optimizer rules registered:");
         for (i, rule) in rules.iter().enumerate() {
-            let name = OptimizerRule::name(rule.as_ref());
+            let name = datafusion::optimizer::optimizer::OptimizerRule::name(rule.as_ref());
             debug!("  {}: {}", i, name);
         }
 
@@ -303,46 +376,10 @@ impl FederationEngine {
 
     /// Determine if query should be cached based on configuration
     fn should_cache_query(&self, plan: &LogicalPlan) -> bool {
-        // If global cache is disabled, we cannot cache (system not active)
-        if !self.global_cache_config.enabled {
-            return false;
-        }
-
-        let mut explicit_disable = false;
-
-        // Traverse plan to check for source-specific overrides
-        // If ANY source explicitly disables caching, we respect that (safety/freshness priority)
-        let _ = plan.apply(|node| {
-            if let LogicalPlan::TableScan(scan) = node {
-                // In Strake, the source name could be in the 'schema' part OR the 'table' part
-                // typically depending on the connector type (e.g. database vs file).
-                let names_to_check = match &scan.table_name {
-                    datafusion::sql::TableReference::Full { schema, table, .. } => {
-                        vec![schema.as_ref(), table.as_ref()]
-                    }
-                    datafusion::sql::TableReference::Partial { schema, table } => {
-                        vec![schema.as_ref(), table.as_ref()]
-                    }
-                    datafusion::sql::TableReference::Bare { table } => vec![table.as_ref()],
-                };
-
-                for name in names_to_check {
-                    let sn = name.parse::<SourceName>().unwrap();
-                    if let Some(source_config) = self.source_configs.get(&sn)
-                        && let Some(cache_override) = &source_config.cache
-                        && !cache_override.enabled
-                    {
-                        explicit_disable = true;
-                        return Ok(TreeNodeRecursion::Stop);
-                    }
-                }
-            }
-            Ok(TreeNodeRecursion::Continue)
-        });
-
-        !explicit_disable
+        should_cache_plan(plan, self.global_cache_config.enabled, &self.source_configs)
     }
 
+    /// Execute a SQL query and return all results as record batches.
     pub async fn execute_query(
         &self,
         sql: &str,
@@ -375,6 +412,7 @@ impl FederationEngine {
         Ok((schema, batches, collector.take_all()))
     }
 
+    /// Execute a SQL query and return a stream of record batches.
     pub async fn execute_query_stream(
         &self,
         sql: &str,
@@ -384,8 +422,70 @@ impl FederationEngine {
         SendableRecordBatchStream,
         strake_common::warnings::WarningCollector,
     )> {
-        self.active_queries.fetch_add(1, Ordering::Relaxed);
-        match self.execute_with_cache_stream(sql, user).await {
+        self.active_queries.fetch_add(1, AtomicOrdering::Relaxed);
+
+        let outcome = async {
+            let collector = strake_common::warnings::WarningCollector::new();
+            let session_manager = crate::query::session::SessionManager::new(self.context.clone());
+            let context = session_manager.context_for_user(user.clone(), collector.clone());
+
+            // 1. Planning (Engine Level)
+            let state = context.state();
+            {
+                let catalog = state.catalog_list().catalog("strake");
+                tracing::debug!(
+                    has_strake_catalog = catalog.is_some(),
+                    "Checking catalog registration"
+                );
+                if let Some(cat) = catalog {
+                    let schema = cat.schema("public");
+                    tracing::debug!(
+                        has_public_schema = schema.is_some(),
+                        "Checking schema registration"
+                    );
+                    if let Some(sch) = schema {
+                        let tables = sch.table_names();
+                        tracing::debug!(
+                            available_tables = ?tables,
+                            "Checking table registration"
+                        );
+                    }
+                }
+            }
+
+            let plan = state
+                .create_logical_plan(sql)
+                .await
+                .context("Failed to create logical plan")?;
+
+            // 2. Orchestration
+            let pipeline = Arc::new(crate::query::pipeline::QueryPipeline::new(context));
+
+            let policies: Vec<Arc<dyn ExecutionPolicy>> = vec![
+                Arc::new(CachePolicy::new(self.cache.clone())) as Arc<dyn ExecutionPolicy>,
+                Arc::new(BudgetPolicy::new(self.connection_budget.clone()))
+                    as Arc<dyn ExecutionPolicy>,
+            ];
+
+            let orchestrator =
+                crate::query::orchestrator::ExecutionOrchestrator::new(pipeline, policies);
+
+            let timeout_seconds = self.query_limits.query_timeout_seconds.unwrap_or(300);
+            let should_cache = self.should_cache_query(&plan);
+            let options = crate::query::orchestrator::ExecutionOptions {
+                should_cache,
+                user,
+                timeout: std::time::Duration::from_secs(timeout_seconds),
+            };
+
+            orchestrator
+                .execute(sql, plan, options, collector.clone())
+                .await
+                .map(|(schema, stream)| (schema, stream, collector))
+        }
+        .await;
+
+        match outcome {
             Ok((schema, stream, collector)) => {
                 let wrapped_stream = Box::pin(ActiveLimitStream {
                     input: stream,
@@ -394,172 +494,13 @@ impl FederationEngine {
                 Ok((schema, wrapped_stream, collector))
             }
             Err(e) => {
-                self.active_queries.fetch_sub(1, Ordering::Relaxed);
+                self.active_queries.fetch_sub(1, AtomicOrdering::Relaxed);
                 Err(e)
             }
         }
     }
 
-    /// Internal execution engine with streaming cache support
-    async fn execute_with_cache_stream(
-        &self,
-        sql: &str,
-        user: Option<strake_common::auth::AuthenticatedUser>,
-    ) -> Result<(
-        arrow::datatypes::SchemaRef,
-        SendableRecordBatchStream,
-        strake_common::warnings::WarningCollector,
-    )> {
-        let start = Instant::now();
-
-        let state = self.context.state();
-        let mut config = state.config().clone();
-
-        if let Some(user_opt) = user.clone() {
-            config
-                .options_mut()
-                .extensions
-                .insert(crate::extensions::auth_config::AuthExtension { user: user_opt });
-        }
-
-        let collector = strake_common::warnings::WarningCollector::new();
-        config.options_mut().extensions.insert(
-            strake_connectors::extensions::warnings::WarningExtension {
-                collector: collector.clone(),
-            },
-        );
-
-        // Re-construct state to ensure QueryPlanner is present and config is updated.
-        let state = SessionStateBuilder::new_from_existing(state)
-            .with_config(config)
-            .with_query_planner(Arc::new(crate::query::planner::QueryPlanner::new()))
-            .build();
-
-        // Create a temporary context for plan creation and execution
-        let context = SessionContext::new_with_state(state);
-
-        let _permit = self
-            .connection_budget
-            .clone()
-            .acquire_owned()
-            .await
-            .context("Failed to acquire connection permit")?;
-
-        let plan = context
-            .state()
-            .create_logical_plan(sql)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create logical plan: {}", e))?;
-
-        // --- Cache Lookup START ---
-        // Resolve effective cache configuration
-        let should_cache = self.should_cache_query(&plan);
-        let cache_key = crate::query::cache::CacheKey::from_plan(&plan, user.as_ref());
-
-        if should_cache && let Some(stream) = self.cache.get_stream(&cache_key).await {
-            let duration = start.elapsed();
-            let user_id = user.as_ref().map(|u| u.id.as_ref()).unwrap_or("anonymous");
-            let schema = stream.schema();
-
-            info!(
-                target: "queries",
-                user_id = %user_id,
-                query = sql,
-                duration_ms = duration.as_millis() as u64,
-                cache_hit = true,
-                success = true
-            );
-
-            collector.add("x-strake-cache: hit".to_string());
-            return Ok((schema, stream, collector));
-        }
-        // --- Cache Lookup END ---
-
-        let timeout_seconds = self.query_limits.query_timeout_seconds.unwrap_or(300);
-        let timeout_duration = std::time::Duration::from_secs(timeout_seconds);
-
-        let result = strake_common::warnings::QUERY_WARNINGS
-            .scope(collector.inner(), async {
-                tokio::time::timeout(timeout_duration, async {
-                    let df = context
-                        .execute_logical_plan(plan.clone())
-                        .await
-                        .context("Failed to execute logical plan")?;
-
-                    let df_stream = df.execute_stream().await?;
-                    let schema = df_stream.schema();
-
-                    Ok::<(arrow::datatypes::SchemaRef, SendableRecordBatchStream), anyhow::Error>((
-                        schema, df_stream,
-                    ))
-                })
-                .await
-            })
-            .await;
-
-        let (schema, df_stream) = match result {
-            Ok(Ok((s, b))) => (s, b),
-            Ok(Err(e)) => {
-                tracing::error!("Detailed execution error: {:#}", e);
-                return Err(anyhow::anyhow!(e));
-            }
-            Err(_) => {
-                return Err(strake_error::StrakeError::new(
-                    strake_error::ErrorCode::QueryCancelled,
-                    format!("Query timed out after {} seconds", timeout_seconds),
-                )
-                .with_hint("Simplify query or increase 'query_timeout_seconds' in config")
-                .into());
-            }
-        };
-
-        // --- Cache Store (Recording) START ---
-        let final_stream: SendableRecordBatchStream = if should_cache {
-            // We use a channel of Result to allow signaling errors (like buffer full)
-            // to the background cache writer.
-            let (tx, rx) = tokio::sync::mpsc::channel(100);
-            let cache = self.cache.clone();
-            let key = cache_key.clone();
-            let schema_clone = schema.clone();
-
-            // Background task to consume the recorded batches and write to Parquet
-            tokio::spawn(async move {
-                use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-                // The stream now yields Result<RecordBatch, DataFusionError>
-                let recording_stream = RecordBatchStreamAdapter::new(
-                    schema_clone,
-                    futures::stream::unfold(rx, |mut rx| async move {
-                        rx.recv().await.map(|res| (res, rx))
-                    }),
-                );
-                if let Err(e) = cache.put_stream(key, Box::pin(recording_stream)).await {
-                    tracing::warn!("Failed to background cache query result: {}", e);
-                }
-            });
-
-            collector.add("x-strake-cache: miss".to_string());
-            Box::pin(TeeStream {
-                input: df_stream,
-                tx: Some(tx),
-            })
-        } else {
-            df_stream
-        };
-        // --- Cache Store (Recording) END ---
-
-        let user_id = user.as_ref().map(|u| u.id.as_ref()).unwrap_or("anonymous");
-        info!(
-            target: "queries",
-            user_id = %user_id,
-            query = sql,
-            duration_ms = start.elapsed().as_millis() as u64,
-            cache_hit = false,
-            success = true
-        );
-
-        Ok((schema, final_stream, collector))
-    }
-
+    /// Execute a SQL query and return a trace of the execution plan.
     pub async fn execute_query_with_trace(&self, sql: &str) -> Result<String> {
         // Validate first
         let _plan = self
@@ -599,65 +540,14 @@ impl FederationEngine {
     }
 }
 
-/// A stream that sends batches to a channel while they are being produced.
-struct TeeStream {
-    input: SendableRecordBatchStream,
-    tx: Option<
-        tokio::sync::mpsc::Sender<
-            Result<arrow::array::RecordBatch, datafusion::error::DataFusionError>,
-        >,
-    >,
-}
-
-impl Stream for TeeStream {
-    type Item = Result<arrow::array::RecordBatch, datafusion::error::DataFusionError>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
-        match self.input.poll_next_unpin(cx) {
-            Poll::Ready(Some(Ok(batch))) => {
-                if let Some(tx) = self.tx.as_ref() {
-                    // We use try_send here to avoid blocking the main execution stream.
-                    // If the cache writer is too slow, we signal an error to the background task
-                    // so it can abort the cache recording and avoid storing partial data.
-                    if tx.try_send(Ok(batch.clone())).is_err() {
-                        tracing::debug!("Cache recording buffer full, aborting recording");
-                        // Try to send an error to explicitly abort the cache writer
-                        let _ = tx.try_send(Err(datafusion::error::DataFusionError::External(
-                            anyhow::anyhow!("Cache recording buffer full").into(),
-                        )));
-                        self.tx = None;
-                    }
-                }
-                Poll::Ready(Some(Ok(batch)))
-            }
-            Poll::Ready(Some(Err(e))) => {
-                if let Some(tx) = self.tx.as_ref() {
-                    let _ = tx.try_send(Err(datafusion::error::DataFusionError::Execution(
-                        e.to_string(),
-                    )));
-                    self.tx = None;
-                }
-                Poll::Ready(Some(Err(e)))
-            }
-            Poll::Ready(None) => {
-                // End of stream, drop the transmitter to close the background task's receiver
-                self.tx = None;
-                Poll::Ready(None)
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-impl RecordBatchStream for TeeStream {
-    fn schema(&self) -> arrow::datatypes::SchemaRef {
-        self.input.schema()
-    }
-}
-
 /// A stream that decrements the active query counter when dropped.
+///
+/// NOTE: This is a pass-through wrapper. If this is ever promoted to a full
+/// ExecutionPlan node, it must implement `BaselineMetrics` (including `output_bytes`).
 struct ActiveLimitStream {
+    /// The inner stream to wrap.
     input: SendableRecordBatchStream,
+    /// The atomic counter to decrement on drop.
     counter: Arc<AtomicUsize>,
 }
 
@@ -677,116 +567,9 @@ impl RecordBatchStream for ActiveLimitStream {
 
 impl Drop for ActiveLimitStream {
     fn drop(&mut self) {
-        self.counter.fetch_sub(1, Ordering::Relaxed);
+        self.counter.fetch_sub(1, AtomicOrdering::Relaxed);
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use strake_common::auth::AuthenticatedUser;
-    use strake_common::config::QueryLimits;
-
-    #[tokio::test]
-    async fn test_engine_init() -> Result<()> {
-        let mut config = Config::default();
-        config.sources = vec![];
-        let limits = QueryLimits::default();
-        let engine = FederationEngine::new(FederationEngineOptions {
-            config,
-            catalog_name: "strake".to_string(),
-            query_limits: limits,
-            resource_config: strake_common::config::ResourceConfig::default(),
-            datafusion_config: std::collections::HashMap::new(),
-            global_budget: 10,
-            extra_optimizer_rules: vec![],
-            extra_sources: vec![],
-            retry: Default::default(),
-        })
-        .await?;
-
-        assert_eq!(engine.catalog_name, "strake");
-        assert_eq!(engine.active_queries(), 0);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_engine_execute_simple() -> Result<()> {
-        let mut config = Config::default();
-        config.sources = vec![];
-        let engine = FederationEngine::new(FederationEngineOptions {
-            config,
-            catalog_name: "strake".to_string(),
-            query_limits: QueryLimits::default(),
-            resource_config: strake_common::config::ResourceConfig::default(),
-            datafusion_config: std::collections::HashMap::new(),
-            global_budget: 10,
-            extra_optimizer_rules: vec![],
-            extra_sources: vec![],
-            retry: Default::default(),
-        })
-        .await?;
-
-        let sql = "SELECT 1 as val";
-        let (schema, batches, _warnings) = engine.execute_query(sql, None).await?;
-
-        assert_eq!(schema.fields().len(), 1);
-        assert_eq!(schema.field(0).name(), "val");
-        assert_eq!(batches.len(), 1);
-        assert_eq!(batches[0].num_rows(), 1);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_engine_user_propagation() -> Result<()> {
-        let mut config = Config::default();
-        config.sources = vec![];
-        let engine = FederationEngine::new(FederationEngineOptions {
-            config,
-            catalog_name: "strake".to_string(),
-            query_limits: QueryLimits::default(),
-            resource_config: strake_common::config::ResourceConfig::default(),
-            datafusion_config: std::collections::HashMap::new(),
-            global_budget: 10,
-            extra_optimizer_rules: vec![],
-            extra_sources: vec![],
-            retry: Default::default(),
-        })
-        .await?;
-
-        let mut user = AuthenticatedUser::default();
-        user.id = "test_user".into();
-        user.permissions = vec!["admin".to_string()].into();
-
-        // This just verifies it doesn't crash when user is present
-        let sql = "SELECT 1";
-        let (_schema, _batches, _warnings) = engine.execute_query(sql, Some(user)).await?;
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_engine_trace() -> Result<()> {
-        let mut config = Config::default();
-        config.sources = vec![];
-        config.cache = Default::default();
-        let engine = FederationEngine::new(FederationEngineOptions {
-            config,
-            catalog_name: "strake".to_string(),
-            query_limits: QueryLimits::default(),
-            resource_config: strake_common::config::ResourceConfig::default(),
-            datafusion_config: std::collections::HashMap::new(),
-            global_budget: 10,
-            extra_optimizer_rules: vec![],
-            extra_sources: vec![],
-            retry: Default::default(),
-        })
-        .await?;
-
-        let sql = "SELECT 1";
-        let trace = engine.execute_query_with_trace(sql).await?;
-        assert!(trace.contains("STRAKE QUERY REPORT"));
-        Ok(())
-    }
-}
+mod prop_tests;

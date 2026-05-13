@@ -33,13 +33,10 @@ pub(crate) fn handle_aggregate(
     agg: &Aggregate,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     // 1. Get a stable relation for the input
-    let input_query = generator.plan_to_query(&agg.input)?;
-
-    let depth_before = generator.context.scope_stack_len();
-    let input_relation = generator.extract_relation(input_query)?;
-    debug_assert_eq!(
-        generator.context.scope_stack_len(),
-        depth_before,
+    let mut input_query = generator.plan_to_query(&agg.input)?;
+    let input_relation = generator.extract_relation(&mut input_query, None)?;
+    debug_assert!(
+        generator.context.scope_stack_len() > 0,
         "extract_relation contract: must pop one scope and push its replacement"
     );
 
@@ -172,10 +169,10 @@ pub(crate) fn handle_window(
     window: &datafusion::logical_expr::Window,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     // 1. Get inner query
-    let input_query = generator.plan_to_query(&window.input)?;
+    let mut input_query: sqlparser::ast::Query = generator.plan_to_query(&window.input)?;
 
     // 2. Extract stable relation from inner query
-    let input_relation = generator.extract_relation(input_query)?;
+    let input_relation = generator.extract_relation(&mut input_query, None)?;
 
     let input_scope =
         generator

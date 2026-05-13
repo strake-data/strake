@@ -15,7 +15,7 @@ use crate::sql_generator::error::SqlGenError;
 use crate::sql_generator::expr::ExprTranslator;
 use datafusion::logical_expr::{Distinct, Expr};
 use sqlparser::ast::{
-    Expr as SqlExpr, Ident, LimitClause, ObjectName, ObjectNamePart, Offset, SetExpr, TableAlias,
+    Expr as SqlExpr, Ident, ObjectName, ObjectNamePart, Offset, SetExpr, TableAlias,
     TableWithJoins, Value, WildcardAdditionalOptions,
 };
 use std::sync::Arc;
@@ -150,11 +150,7 @@ pub(crate) fn handle_limit(
     };
 
     if limit_expr.is_some() || offset_expr.is_some() {
-        query.limit_clause = Some(LimitClause::LimitOffset {
-            limit: limit_expr,
-            offset: offset_expr,
-            limit_by: vec![],
-        });
+        generator.apply_limit_offset(&mut query, limit_expr, offset_expr);
     }
 
     Ok(query)
@@ -352,8 +348,8 @@ fn rewrite_distinct_on_to_row_number(
     on: &datafusion::logical_expr::DistinctOn,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     // 1. Get input query
-    let input_query = generator.plan_to_query(&on.input)?;
-    let input_relation = generator.extract_relation(input_query)?;
+    let mut input_query = generator.plan_to_query(&on.input)?;
+    let input_relation = generator.extract_relation(&mut input_query, None)?;
     let input_scope =
         generator
             .context
@@ -475,7 +471,10 @@ fn rewrite_distinct_on_to_row_number(
             alias: Some(TableAlias {
                 name: Ident::new(inner_alias.clone()),
                 columns: vec![],
-                explicit: true,
+                explicit: generator
+                    .dialect
+                    .capabilities
+                    .supports_as_alias_for_tables(),
             }),
             sample: None,
         },
@@ -539,7 +538,10 @@ pub(crate) fn handle_recursive_query(
         alias: TableAlias {
             name: Ident::new(cte_name.clone()),
             columns: vec![],
-            explicit: true,
+            explicit: generator
+                .dialect
+                .capabilities
+                .supports_as_alias_for_tables(),
         },
         query: Box::new(sqlparser::ast::Query {
             with: None,

@@ -93,14 +93,20 @@ impl<'a> SqlGenerator<'a> {
     /// Generates a SQL string from a DataFusion [`LogicalPlan`].
     #[must_use = "SQL generation produces the primary output and should not be ignored"]
     pub fn generate(&mut self, plan: &LogicalPlan) -> Result<String, StrakeError> {
-        tracing::debug!(target: "sql_generator", plan = %plan.display(), "Generating SQL from plan");
+        tracing::debug!(
+            target: "sql_generator",
+            plan = %plan.display(),
+            supports_limit = %self.dialect.capabilities.supports_limit_clause(),
+            supports_fetch = %self.dialect.capabilities.supports_fetch_clause(),
+            "Generating SQL from plan"
+        );
         self.plan_to_query(plan)
             .map(|q| {
                 let sql = q.to_string();
                 tracing::debug!(target: "sql_generator", sql = %sql, "Generated SQL");
                 sql
             })
-            .map_err(|e| e.to_strake_error(self.dialect.dialect_name))
+            .map_err(|e: SqlGenError| e.to_strake_error(self.dialect.dialect_name))
     }
 
     /// Returns a skeleton SQL [`Query`] structure (equivalent to `SELECT *`).
@@ -158,13 +164,6 @@ impl<'a> SqlGenerator<'a> {
                     .downcast_ref::<crate::optimizer::join_flattener::NaryJoinNode>()
                 {
                     join::handle_nary_join(self, nary)
-                } else if let Some(adapter) = ext
-                    .node
-                    .as_any()
-                    .downcast_ref::<crate::schema_adapter::SchemaAdapter>()
-                {
-                    // Adapt to projection or handle via new API
-                    self.plan_to_query(&adapter.to_projection()?)
                 } else {
                     Err(SqlGenError::UnsupportedPlan {
                         message: format!("Unsupported extension node: {}", ext.node.name()),
@@ -179,11 +178,45 @@ impl<'a> SqlGenerator<'a> {
         }
     }
 
+    pub(crate) fn apply_limit_offset(
+        &self,
+        query: &mut Query,
+        limit: Option<sqlparser::ast::Expr>,
+        offset: Option<sqlparser::ast::Offset>,
+    ) {
+        if self.dialect.capabilities.supports_limit_clause() {
+            tracing::debug!(target: "sql_generator", "Applying LIMIT clause");
+            query.limit_clause = Some(sqlparser::ast::LimitClause::LimitOffset {
+                limit,
+                offset,
+                limit_by: vec![],
+            });
+        } else if self.dialect.capabilities.supports_fetch_clause() {
+            tracing::debug!(target: "sql_generator", "Applying FETCH FIRST clause");
+            if let Some(o) = offset {
+                query.limit_clause = Some(sqlparser::ast::LimitClause::LimitOffset {
+                    limit: None,
+                    offset: Some(o),
+                    limit_by: vec![],
+                });
+            } else {
+                query.limit_clause = None;
+            }
+            if let Some(l) = limit {
+                query.fetch = Some(sqlparser::ast::Fetch {
+                    with_ties: false,
+                    percent: false,
+                    quantity: Some(l),
+                });
+            }
+        }
+    }
+
     pub(crate) fn plan_to_stable_query(
         &mut self,
         plan: &LogicalPlan,
     ) -> Result<Query, SqlGenError> {
-        let query = self.plan_to_query(plan)?;
+        let mut query = self.plan_to_query(plan)?;
 
         let is_complex = match &*query.body {
             SetExpr::Select(select) => {
@@ -203,10 +236,14 @@ impl<'a> SqlGenerator<'a> {
         // nodes (like Filter or Sort) apply to the results of this query rather
         // than its internal components. Simple SELECTs from TableScan are already
         // stable and aliased, so they don't need wrapping.
-        let should_wrap = is_complex || query.limit_clause.is_some();
+        let should_wrap = is_complex
+            || query.limit_clause.is_some()
+            || query.fetch.is_some()
+            || self.dialect.capabilities.always_wrap_subqueries();
 
         if should_wrap {
-            let relation = self.extract_relation(query)?;
+            let wrapper_alias = self.context.next_alias();
+            let relation = self.extract_relation(&mut query, Some(wrapper_alias.to_string()))?;
             let mut select = self.create_skeleton_select();
             select.from = vec![TableWithJoins {
                 relation,
@@ -225,15 +262,35 @@ impl<'a> SqlGenerator<'a> {
                 .columns
                 .iter()
                 .map(|c| {
-                    Ok(SelectItem::UnnamedExpr(SqlExpr::CompoundIdentifier(vec![
-                        safe_ident(c.source_alias.as_ref())?,
-                        safe_ident(c.name.as_ref())?,
-                    ])))
+                    Ok(SelectItem::ExprWithAlias {
+                        expr: SqlExpr::CompoundIdentifier(vec![
+                            safe_ident(c.source_alias.as_ref())?,
+                            safe_ident(c.name.as_ref())?,
+                        ]),
+                        alias: safe_ident(c.name.as_ref())?,
+                    })
                 })
                 .collect::<Result<Vec<_>, SqlGenError>>()?;
 
             let mut out_query = self.create_skeleton_query();
             out_query.body = Box::new(SetExpr::Select(Box::new(select)));
+
+            // Move limit/fetch to out_query if present
+            let limit_clause = query.limit_clause.take();
+            let fetch = query.fetch.take();
+
+            if let Some(lc) = limit_clause {
+                match lc {
+                    sqlparser::ast::LimitClause::LimitOffset { limit, offset, .. } => {
+                        self.apply_limit_offset(&mut out_query, limit, offset);
+                    }
+                    _ => {
+                        out_query.limit_clause = Some(lc);
+                    }
+                }
+            } else if fetch.is_some() {
+                self.apply_limit_offset(&mut out_query, fetch.and_then(|f| f.quantity), None);
+            }
             Ok(out_query)
         } else {
             Ok(query)
@@ -250,7 +307,8 @@ impl<'a> SqlGenerator<'a> {
     /// Callers relying on this invariant (e.g., `handle_aggregate`) assert it.
     pub(crate) fn extract_relation(
         &mut self,
-        mut query: Query,
+        query: &mut Query,
+        alias: Option<String>,
     ) -> Result<TableFactor, SqlGenError> {
         let inner_scope =
             self.context
@@ -260,7 +318,8 @@ impl<'a> SqlGenerator<'a> {
                     message: "Missing scope".to_string(),
                     node_type: "ExtractRelation".to_string(),
                 })?;
-        let sub_alias = inner_scope.alias.clone();
+        let sub_alias = alias.unwrap_or_else(|| inner_scope.alias.to_string());
+        tracing::debug!(target: "sql_generator", sub_alias = %sub_alias, col_count = inner_scope.columns.len(), "Extracting relation");
 
         let column_names: Vec<Arc<str>> = inner_scope
             .columns
@@ -274,17 +333,12 @@ impl<'a> SqlGenerator<'a> {
                     let expr = match item {
                         SelectItem::UnnamedExpr(e) => e.clone(),
                         SelectItem::ExprWithAlias { expr, .. } => expr.clone(),
-                        _ => {
-                            // If we can't extract an expression (e.g. Wildcard),
-                            // we should shouldn't re-alias but we might have a name mismatch.
-                            // For federated queries, we generally always have UnnamedExpr or ExprWithAlias.
-                            continue;
-                        }
+                        _ => continue,
                     };
-                    *item = SelectItem::ExprWithAlias {
-                        expr,
-                        alias: safe_ident(&column_names[i])?,
-                    };
+                    let alias_str = column_names[i].to_string();
+                    let alias = safe_ident(&alias_str)?;
+                    tracing::debug!(target: "sql_generator", index = i, alias = %alias, "Aliasing projection item");
+                    *item = SelectItem::ExprWithAlias { expr, alias };
                 }
             }
         }
@@ -315,11 +369,11 @@ impl<'a> SqlGenerator<'a> {
 
         let derived = TableFactor::Derived {
             lateral: false,
-            subquery: Box::new(query),
+            subquery: Box::new(query.clone()),
             alias: Some(TableAlias {
                 name: safe_ident(&sub_alias)?,
                 columns: vec![],
-                explicit: true,
+                explicit: self.dialect.capabilities.supports_as_alias_for_tables(),
             }),
             sample: None,
         };
@@ -355,16 +409,19 @@ impl<'a> SqlGenerator<'a> {
 pub fn derive_bare_name(name: &str) -> Arc<str> {
     // If it contains parentheses, it's a function expression.
     // Strip all qualifiers inside to ensure stable, bare names.
-    if name.contains('(') && name.ends_with(')') {
-        return strip_qualifiers_in_function(name).to_lowercase().into();
-    }
-
-    let base = if let Some(idx) = name.rfind('.') {
-        &name[idx + 1..]
+    let base = if name.contains('(') && name.ends_with(')') {
+        strip_qualifiers_in_function(name)
+    } else if let Some(idx) = name.rfind('.') {
+        name[idx + 1..].to_string()
     } else {
-        name
+        name.to_string()
     };
-    base.to_lowercase().into()
+
+    // Sanitize the name for SQL identifiers (prevent STRAKE-2001)
+    // Replace double-quotes with single-quotes, and other forbidden characters with underscores.
+    let sanitized = base.replace('"', "'").replace([';', '\\', '`', '\0'], "_");
+
+    sanitized.into()
 }
 
 /// Strips all qualifiers (single or multi-part) from inside function call expressions.

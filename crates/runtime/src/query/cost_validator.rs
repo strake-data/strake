@@ -10,6 +10,22 @@
 //! // use strake_runtime::query::cost_validator::CostBasedValidator;
 //! // let validator = CostBasedValidator::new(Some(1_000_000), Some(100_000_000));
 //! ```
+//!
+//! # Performance Characteristics
+//!
+//! Cost validation is a lightweight pass over the physical plan tree. It
+//! uses existing statistics provided by DataFusion and does not perform
+//! any additional I/O.
+//!
+//! # Safety
+//!
+//! This module uses no unsafe code. It protects against resource exhaustion
+//! by rejecting queries that exceed configured limits.
+//!
+//! # Errors
+//!
+//! Returns a `BudgetExceeded` error if the estimated row count or byte size
+//! of the query exceeds the configured maximums.
 
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::{DataFusionError, Result};
@@ -25,6 +41,7 @@ pub struct CostBasedValidator {
 }
 
 impl CostBasedValidator {
+    /// Create a new cost-based validator with the given thresholds.
     pub fn new(max_rows: Option<usize>, max_bytes: Option<usize>) -> Self {
         Self {
             max_rows,

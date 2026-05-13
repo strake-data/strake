@@ -120,6 +120,15 @@ impl Catalog for CachedRestCatalog {
         self.inner.drop_table(identifier).await
     }
 
+    async fn purge_table(&self, identifier: &TableIdent) -> iceberg::Result<()> {
+        self.table_cache.invalidate(identifier).await;
+        // Remove from reverse mapping
+        if let Some(mut tables) = self.namespace_to_tables.get_mut(identifier.namespace()) {
+            let _ = tables.remove(identifier);
+        }
+        self.inner.purge_table(identifier).await
+    }
+
     async fn load_table(&self, identifier: &TableIdent) -> iceberg::Result<Table> {
         // Use try_get_with to prevent cache stampede
         self.table_cache

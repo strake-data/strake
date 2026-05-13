@@ -234,7 +234,7 @@ async fn try_register_iceberg_rest(
                 retries: 0,
                 source: anyhow::anyhow!(e),
             })?;
-        let schema = dummy_provider.schema();
+        let schema = TableProvider::schema(&dummy_provider);
 
         let lazy_provider = LazyIcebergTableProvider::new(
             iceberg_catalog.clone(),
@@ -259,8 +259,12 @@ async fn try_register_iceberg_rest(
             Arc::new(lazy_provider),
         ));
 
-        let enriched_provider =
-            wrap_provider(federated_provider, cb.clone(), FetchedMetadata::default());
+        let enriched_provider = wrap_provider(
+            federated_provider,
+            cb.clone(),
+            Arc::new(FetchedMetadata::default()),
+            false,
+        );
         let limited_provider = wrap_concurrent(enriched_provider, max_concurrency);
         let qualified =
             TableReference::full(catalog_name.clone(), schema_name, table_cfg.name.as_str());

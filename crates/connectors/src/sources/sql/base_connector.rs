@@ -13,7 +13,7 @@ use super::common::{
 };
 use super::wrappers::wrap_concurrent;
 use crate::introspect::{IntrospectError, SchemaIntrospector};
-use datafusion::catalog::MemorySchemaProvider;
+use crate::sources::sql::case_insensitive_schema::CaseInsensitiveSchemaProvider;
 
 /// A generic connector for SQL data sources.
 ///
@@ -62,7 +62,7 @@ impl GenericSqlConnector {
                         .schema_mapping
                         .map_schema(&t.schema, &params.name)
                         .into_owned();
-                    (t.name.clone(), target_schema)
+                    (t.name.clone(), target_schema, t.schema.clone())
                 })
                 .collect()
         } else {
@@ -89,7 +89,7 @@ impl GenericSqlConnector {
                         .schema_mapping
                         .map_schema(&t.schema, &params.name)
                         .into_owned();
-                    (t.table, target_schema)
+                    (t.table, target_schema, t.schema)
                 })
                 .collect::<Vec<_>>()
         };
@@ -99,9 +99,17 @@ impl GenericSqlConnector {
             .catalog(&params.catalog_name)
             .ok_or_else(|| anyhow::anyhow!("Catalog '{}' not found", params.catalog_name))?;
 
-        for (table_name, target_schema) in tables_to_register {
+        for (table_name, target_schema, original_schema) in tables_to_register {
+            tracing::debug!(
+                catalog = %params.catalog_name,
+                schema = %target_schema,
+                original_schema = %original_schema,
+                table = %table_name,
+                "Registering table into schema"
+            );
+
             let metadata = if let Some(fetcher) = &self.metadata_fetcher {
-                match fetcher.fetch_metadata(&target_schema, &table_name).await {
+                match fetcher.fetch_metadata(&original_schema, &table_name).await {
                     Ok(m) => Arc::new(m),
                     Err(e) => {
                         tracing::warn!(
@@ -132,7 +140,7 @@ impl GenericSqlConnector {
                     if catalog.schema(target_schema_ref).is_none() {
                         catalog.register_schema(
                             target_schema_ref,
-                            Arc::new(MemorySchemaProvider::new()),
+                            Arc::new(CaseInsensitiveSchemaProvider::new()),
                         )?;
                     }
 

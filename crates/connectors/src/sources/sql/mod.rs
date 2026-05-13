@@ -25,6 +25,7 @@ pub use common::SqlDialect;
 use mysql::register_mysql;
 use postgres::register_postgres;
 use sqlite::register_sqlite;
+pub mod case_insensitive_schema;
 pub mod clickhouse;
 pub mod duckdb;
 pub mod duckdb_federation;

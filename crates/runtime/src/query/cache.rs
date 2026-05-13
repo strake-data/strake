@@ -11,39 +11,74 @@
 //! # Usage
 //!
 //! ```rust
-//! // let cache = QueryCache::new(config).await?;
-//! // if let Some(batches) = cache.get(&key).await { ... }
+//! # use std::sync::Arc;
+//! # use strake_runtime::query::cache::{QueryCache, CacheConfig, CacheKey};
+//! # use datafusion::logical_expr::LogicalPlan;
+//! # async fn example() -> anyhow::Result<()> {
+//! let config = CacheConfig::default();
+//! let cache = QueryCache::new(config).await?;
+//! let plan = LogicalPlan::EmptyRelation(datafusion::logical_expr::EmptyRelation { produce_one_row: true, schema: Arc::new(datafusion::common::DFSchema::empty()) });
+//! let key = CacheKey::from_plan(&plan, None);
+//!     
+//! if let Some(stream) = cache.get_stream(&key).await {
+//!     // Consume stream...
+//! }
+//! # Ok(())
+//! # }
 //! ```
+//!
+//! # Performance Characteristics
+//!
+//! The cache uses a `moka`-based LRU index for fast O(1) lookups. Result data
+//! is stored in Parquet format, providing excellent compression and fast
+//! scan performance for cached results. Background tasks handle cache writes
+//! to avoid blocking the main query execution path.
+//!
+//! # Safety
+//!
+//! Cache keys include user context and permissions to ensure results are
+//! never leaked across RBAC boundaries (RLS isolation). Filesystem operations
+//! are performed asynchronously using `tokio::fs`.
+//!
+//! # Errors
+//!
+//! Returns errors if:
+//! - The cache directory cannot be created or read.
+//! - Hydration from disk fails due to IO issues.
+//! - Parquet serialization/deserialization fails.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+
 use arrow::record_batch::RecordBatch;
+use datafusion::error::DataFusionError;
+use datafusion::execution::SendableRecordBatchStream;
 use datafusion::logical_expr::LogicalPlan;
+use futures::StreamExt;
 use moka::future::Cache;
 use sha2::{Digest, Sha256};
 use strake_common::auth::AuthenticatedUser;
 use strake_common::models::ActorName;
 use tracing::{debug, info, warn};
 
-use arrow::datatypes::SchemaRef;
-use datafusion::error::DataFusionError;
-use datafusion::execution::SendableRecordBatchStream;
-use datafusion::physical_plan::RecordBatchStream;
-use futures::Stream;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::properties::WriterProperties;
-use std::pin::Pin;
-use std::task::{Context as TaskContext, Poll};
 
 /// Configuration for the query result cache
 #[derive(Debug, Clone)]
 pub struct CacheConfig {
+    /// Whether the cache is enabled.
     pub enabled: bool,
+    /// The directory where cache files are stored.
     pub directory: PathBuf,
+    /// Maximum size of the cache on disk in megabytes.
     pub max_size_mb: u64,
+    /// Time-to-live for cache entries in seconds.
     pub ttl_seconds: u64,
 }
 
@@ -73,9 +108,7 @@ impl CacheKey {
     /// Generate a cache key from a logical plan and user context
     pub fn from_plan(plan: &LogicalPlan, user: Option<&AuthenticatedUser>) -> Self {
         // Generate STABLE hash of logical plan
-        // Use deterministic serialization to avoid regressions from display_indent()
-        // For now, we use a more robust representation but long-term Substrait is preferred.
-        let plan_str = format!("{:?}", plan);
+        let plan_str = format!("{}", plan.display_indent());
 
         let mut hasher = Sha256::new();
         hasher.update(plan_str.as_bytes());
@@ -143,26 +176,17 @@ impl QueryCache {
                 .with_context(|| {
                     format!("Failed to create cache directory: {:?}", config.directory)
                 })?;
-
-            info!(
-                target: "cache",
-                directory = ?config.directory,
-                max_size_mb = config.max_size_mb,
-                ttl_seconds = config.ttl_seconds,
-                "Initializing query cache"
-            );
         }
 
         // Build moka cache with size and TTL limits
         let cache = Cache::builder()
-            .max_capacity(config.max_size_mb * 1024 * 1024) // Convert MB to bytes
+            .max_capacity(config.max_size_mb.saturating_mul(1024 * 1024)) // Convert MB to bytes
             .time_to_live(Duration::from_secs(config.ttl_seconds))
             .weigher(|_key: &String, entry: &CacheEntry| -> u32 {
                 // Weight by file size for accurate size-based eviction
                 entry.size_bytes.try_into().unwrap_or(u32::MAX)
             })
             .eviction_listener(|key, entry: CacheEntry, cause| {
-                // Async cleanup: delete file when evicted
                 debug!(
                     target: "cache",
                     key = %key,
@@ -185,7 +209,6 @@ impl QueryCache {
             })
             .build();
 
-        // Hydrate cache from existing files on disk
         let instance = Self {
             config: config.clone(),
             cache,
@@ -214,12 +237,10 @@ impl QueryCache {
         while let Some(entry) = read_dir.next_entry().await? {
             let path = entry.path();
 
-            // Only process .parquet files (skip .tmp files)
             if path.extension().and_then(|s| s.to_str()) != Some("parquet") {
                 continue;
             }
 
-            // Get file metadata
             if let Ok(metadata) = entry.metadata().await {
                 let size_bytes = metadata.len();
                 let filename = path
@@ -228,7 +249,6 @@ impl QueryCache {
                     .unwrap_or("")
                     .to_string();
 
-                // Create cache entry
                 let cache_entry = CacheEntry {
                     file_path: path.clone(),
                     size_bytes,
@@ -240,7 +260,6 @@ impl QueryCache {
             }
         }
 
-        // Clean up orphaned .tmp files
         self.cleanup_temp_files().await?;
 
         info!(
@@ -323,8 +342,6 @@ impl QueryCache {
         }
 
         let filename = key.to_filename();
-
-        // Check moka cache
         let entry = self.cache.get(&filename).await?;
 
         debug!(
@@ -334,7 +351,6 @@ impl QueryCache {
             "Cache hit"
         );
 
-        // Read from disk (defensive: catch all errors)
         match self.read_parquet(&entry.file_path).await {
             Ok(batches) => Some(batches),
             Err(e) => {
@@ -344,7 +360,6 @@ impl QueryCache {
                     error = %e,
                     "Failed to read cache file, invalidating entry"
                 );
-                // Remove corrupted entry
                 self.cache.invalidate(&filename).await;
                 None
             }
@@ -356,6 +371,7 @@ impl QueryCache {
         &self,
         key: CacheKey,
         mut stream: SendableRecordBatchStream,
+        completed: Arc<AtomicBool>,
     ) -> Result<()> {
         if !self.config.enabled {
             return Ok(());
@@ -369,13 +385,11 @@ impl QueryCache {
         let mut row_count = 0;
         let mut success = true;
 
-        // Use a channel with a reasonable buffer for high-throughput streaming
         let (tx, mut rx) = tokio::sync::mpsc::channel::<RecordBatch>(100);
 
         let tmp_path_buf = tmp_path.clone();
         let schema_clone = schema.clone();
 
-        // Spawn blocking task for Parquet I/O. Note: we do NOT rename here anymore.
         let write_task = tokio::task::spawn_blocking(move || -> Result<u64, anyhow::Error> {
             let file = std::fs::File::create(&tmp_path_buf)?;
             let props = WriterProperties::builder().build();
@@ -390,18 +404,15 @@ impl QueryCache {
             Ok::<u64, anyhow::Error>(metadata.len())
         });
 
-        use futures::StreamExt;
         while let Some(batch_res) = stream.next().await {
             match batch_res {
                 Ok(batch) => {
                     row_count += batch.num_rows();
-                    // If we can't keep up with the stream, we must abort the cache write
-                    // to prevent storing a partial result.
                     if tx.try_send(batch).is_err() {
                         warn!(
                             target: "cache",
                             key = %filename,
-                            "Cache writer lagging, aborting recording to prevent data corruption"
+                            "Cache writer lagging, aborting recording"
                         );
                         success = false;
                         break;
@@ -420,15 +431,12 @@ impl QueryCache {
             }
         }
 
-        // Explicitly drop transmitter to close the receiver in the blocking task
         drop(tx);
 
-        // Wait for the writing task to finish
         let write_result = write_task.await.context("Parquet write task panicked")?;
 
-        if success && row_count > 0 {
+        if success && row_count > 0 && completed.load(Ordering::Acquire) {
             if let Ok(size_bytes) = write_result {
-                // Finalize the cache file atomically
                 if let Err(e) = tokio::fs::rename(&tmp_path, &file_path).await {
                     warn!(target: "cache", error = %e, "Failed to finalize cache file");
                     let _ = tokio::fs::remove_file(&tmp_path).await;
@@ -449,7 +457,6 @@ impl QueryCache {
                 );
             }
         } else {
-            // Clean up temporary file on failure or empty result
             let _ = tokio::fs::remove_file(&tmp_path).await;
             if let Err(e) = write_result {
                 warn!(target: "cache", error = %e, "Cache write task failed");
@@ -465,10 +472,8 @@ impl QueryCache {
             return Ok(());
         }
 
-        // Calculate size
         let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
 
-        // Don't cache empty results
         if row_count == 0 {
             return Ok(());
         }
@@ -476,10 +481,8 @@ impl QueryCache {
         let filename = key.to_filename();
         let file_path = self.config.directory.join(&filename);
 
-        // Write to disk (defensive: catch all errors)
         match self.write_parquet(&file_path, batches).await {
             Ok(size_bytes) => {
-                // Add to moka cache
                 let entry = CacheEntry {
                     file_path: file_path.clone(),
                     size_bytes,
@@ -503,29 +506,22 @@ impl QueryCache {
                     error = %e,
                     "Failed to write cache file"
                 );
-                Ok(()) // Don't propagate cache write errors
+                Ok(())
             }
         }
     }
 
-    /// Read RecordBatches from Parquet file (async, non-blocking)
     async fn read_parquet(&self, path: &Path) -> Result<Vec<RecordBatch>> {
-        // Clone path for move into blocking task
         let path_buf = path.to_path_buf();
 
-        // Run blocking Parquet I/O in dedicated thread pool
         tokio::task::spawn_blocking(move || -> Result<Vec<RecordBatch>, anyhow::Error> {
-            let file = std::fs::File::open(&path_buf)
-                .with_context(|| format!("Failed to open cache file: {:?}", path_buf))?;
-
-            let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-                .context("Failed to create Parquet reader builder")?;
-
-            let reader = builder.build().context("Failed to build Parquet reader")?;
+            let file = std::fs::File::open(&path_buf)?;
+            let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+            let reader = builder.build()?;
 
             let mut batches = Vec::new();
             for batch_result in reader {
-                batches.push(batch_result.context("Failed to read record batch")?);
+                batches.push(batch_result?);
             }
 
             Ok(batches)
@@ -534,41 +530,29 @@ impl QueryCache {
         .context("Parquet read task panicked")?
     }
 
-    /// Write RecordBatches to Parquet file (async, atomic)
     async fn write_parquet(&self, path: &Path, batches: &[RecordBatch]) -> Result<u64> {
         if batches.is_empty() {
             return Ok(0);
         }
 
-        // Clone data for move into blocking task
         let path_buf = path.to_path_buf();
         let tmp_path = path.with_extension("tmp");
         let batches_owned: Vec<RecordBatch> = batches.to_vec();
 
-        // Run blocking Parquet I/O in dedicated thread pool
         let size = tokio::task::spawn_blocking(move || -> Result<u64, anyhow::Error> {
-            // Write to temporary file first (atomic write pattern)
-            let file = std::fs::File::create(&tmp_path)
-                .with_context(|| format!("Failed to create temp cache file: {:?}", tmp_path))?;
-
+            let file = std::fs::File::create(&tmp_path)?;
             let props = WriterProperties::builder().build();
-            let mut writer = ArrowWriter::try_new(file, batches_owned[0].schema(), Some(props))
-                .context("Failed to create Parquet writer")?;
+            let mut writer = ArrowWriter::try_new(file, batches_owned[0].schema(), Some(props))?;
 
             for batch in &batches_owned {
-                writer.write(batch).context("Failed to write batch")?;
+                writer.write(batch)?;
             }
 
-            writer.close().context("Failed to close Parquet writer")?;
-
-            // Get file size before rename
-            let metadata =
-                std::fs::metadata(&tmp_path).context("Failed to get temp file metadata")?;
+            writer.close()?;
+            let metadata = std::fs::metadata(&tmp_path)?;
             let size = metadata.len();
 
-            // Atomic rename (crash-safe)
-            std::fs::rename(&tmp_path, &path_buf)
-                .with_context(|| format!("Failed to rename {:?} to {:?}", tmp_path, path_buf))?;
+            std::fs::rename(&tmp_path, &path_buf)?;
 
             Ok::<u64, anyhow::Error>(size)
         })
@@ -578,49 +562,33 @@ impl QueryCache {
         Ok(size)
     }
 
-    /// Internal helper to open a Parquet file as a stream
     async fn open_parquet_stream(&self, path: &Path) -> Result<SendableRecordBatchStream> {
-        let path_buf = path.to_path_buf();
+        use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+        use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
 
-        tokio::task::spawn_blocking(
-            move || -> Result<SendableRecordBatchStream, anyhow::Error> {
-                let file = std::fs::File::open(&path_buf)?;
-                let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                let schema = builder.schema().clone();
-                let reader = builder.build()?;
+        let file = tokio::fs::File::open(path)
+            .await
+            .with_context(|| format!("Failed to open cache file: {:?}", path))?;
 
-                let stream = ParquetStream {
-                    reader: Box::new(reader),
-                    schema,
-                };
+        let builder = ParquetRecordBatchStreamBuilder::new(file)
+            .await
+            .context("Failed to create async Parquet reader builder")?;
 
-                Ok::<SendableRecordBatchStream, anyhow::Error>(Box::pin(stream))
-            },
-        )
-        .await?
-    }
-}
+        let schema = builder.schema().clone();
+        let stream = builder
+            .build()
+            .context("Failed to build async Parquet stream")?;
 
-struct ParquetStream {
-    reader: Box<dyn datafusion::arrow::record_batch::RecordBatchReader + Send>,
-    schema: SchemaRef,
-}
+        let adapter = RecordBatchStreamAdapter::new(
+            schema,
+            stream.map(
+                |res: std::result::Result<RecordBatch, parquet::errors::ParquetError>| {
+                    res.map_err(|e| DataFusionError::ArrowError(Box::new(e.into()), None))
+                },
+            ),
+        );
 
-impl Stream for ParquetStream {
-    type Item = Result<RecordBatch, DataFusionError>;
-
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
-        match self.reader.next() {
-            Some(Ok(batch)) => Poll::Ready(Some(Ok(batch))),
-            Some(Err(e)) => Poll::Ready(Some(Err(DataFusionError::ArrowError(Box::new(e), None)))),
-            None => Poll::Ready(None),
-        }
-    }
-}
-
-impl RecordBatchStream for ParquetStream {
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        Ok(Box::pin(adapter))
     }
 }
 
@@ -638,7 +606,10 @@ impl QueryCache {
 /// Cache statistics
 #[derive(Debug, Clone)]
 pub struct CacheStats {
+    /// Whether the cache is enabled.
     pub enabled: bool,
+    /// Number of entries currently in the cache.
     pub entry_count: u64,
+    /// Total weighted size of all entries (bytes).
     pub weighted_size: u64,
 }

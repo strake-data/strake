@@ -30,8 +30,8 @@ pub(crate) fn handle_projection(
     proj: &datafusion::logical_expr::Projection,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     // 1. Get a stable relation for the input
-    let input_query = generator.plan_to_query(&proj.input)?;
-    let input_relation = generator.extract_relation(input_query)?;
+    let mut input_query = generator.plan_to_query(&proj.input)?;
+    let input_relation = generator.extract_relation(&mut input_query, None)?;
     let input_scope =
         generator
             .context
@@ -133,7 +133,10 @@ pub(crate) fn handle_filter(
             alias: Some(TableAlias {
                 name: safe_ident(&sub_alias)?,
                 columns: vec![],
-                explicit: true,
+                explicit: generator
+                    .dialect
+                    .capabilities
+                    .supports_as_alias_for_tables(),
             }),
             sample: None,
         };
@@ -218,7 +221,10 @@ pub(crate) fn handle_subquery_alias(
         alias: Some(TableAlias {
             name: safe_ident(&subquery_alias)?,
             columns: vec![],
-            explicit: true,
+            explicit: generator
+                .dialect
+                .capabilities
+                .supports_as_alias_for_tables(),
         }),
         sample: None,
     };

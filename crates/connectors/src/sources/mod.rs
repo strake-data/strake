@@ -133,6 +133,7 @@ impl SourceRegistry {
         );
         let type_name = match raw_type {
             "parquet" | "csv" | "json" => "file",
+            "postgres" | "mysql" | "sqlite" | "duckdb" | "clickhouse" | "oracle" => "sql",
             // #[cfg(feature = "iceberg")]
             // "iceberg" => "iceberg_rest",
             // #[cfg(not(feature = "iceberg"))]

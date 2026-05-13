@@ -108,9 +108,6 @@ impl OracleConnectionPool {
         let pool = bb8::Pool::builder()
             .max_size(pool_size as u32)
             .connection_timeout(std::time::Duration::from_secs(30))
-            .connection_customizer(Box::new(SetTimezoneCustomizer {
-                timezone: "UTC".into(),
-            }))
             .build(manager)
             .await
             .map_err(OraclePoolError::PoolCreationError)?;

@@ -298,6 +298,21 @@ impl crate::sql_generator::dialect::DialectCapabilities for OracleDialect {
     fn supports_distinct_on(&self) -> bool {
         false
     }
+    fn strip_catalog_qualifier(&self) -> bool {
+        true
+    }
+    fn supports_as_alias_for_tables(&self) -> bool {
+        false
+    }
+    fn always_wrap_subqueries(&self) -> bool {
+        true
+    }
+    fn supports_limit_clause(&self) -> bool {
+        false
+    }
+    fn supports_fetch_clause(&self) -> bool {
+        true
+    }
     fn supports_values_clause(&self) -> bool {
         false // Oracle uses SELECT ... FROM DUAL UNION ALL ...
     }

@@ -139,6 +139,32 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
                 Ok(sqlparser::ast::Expr::IsNull(Box::new(sql_inner)))
             }
 
+            Expr::Between(between) => {
+                let expr = self.expr_to_sql(&between.expr)?;
+                let low = self.expr_to_sql(&between.low)?;
+                let high = self.expr_to_sql(&between.high)?;
+                Ok(sqlparser::ast::Expr::Between {
+                    expr: Box::new(expr),
+                    negated: between.negated,
+                    low: Box::new(low),
+                    high: Box::new(high),
+                })
+            }
+
+            Expr::InList(in_list) => {
+                let expr = self.expr_to_sql(&in_list.expr)?;
+                let list = in_list
+                    .list
+                    .iter()
+                    .map(|e| self.expr_to_sql(e))
+                    .collect::<Result<Vec<_>, SqlGenError>>()?;
+                Ok(sqlparser::ast::Expr::InList {
+                    expr: Box::new(expr),
+                    list,
+                    negated: in_list.negated,
+                })
+            }
+
             Expr::Cast(cast) => {
                 let sql_inner = self.expr_to_sql(&cast.expr)?;
                 let sql_type = self.dialect.type_mapper.map_type(&cast.data_type)?;
@@ -149,6 +175,99 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
                     kind: sqlparser::ast::CastKind::Cast,
                     array: false,
                 })
+            }
+
+            Expr::TryCast(cast) => {
+                let sql_inner = self.expr_to_sql(&cast.expr)?;
+                let sql_type = self.dialect.type_mapper.map_type(&cast.data_type)?;
+                Ok(sqlparser::ast::Expr::Cast {
+                    expr: Box::new(sql_inner),
+                    data_type: sql_type,
+                    format: None,
+                    kind: sqlparser::ast::CastKind::TryCast,
+                    array: false,
+                })
+            }
+
+            Expr::Case(case) => {
+                let operand = case
+                    .expr
+                    .as_ref()
+                    .map(|e| self.expr_to_sql(e))
+                    .transpose()?
+                    .map(Box::new);
+                let conditions = case
+                    .when_then_expr
+                    .iter()
+                    .map(|(w, t)| {
+                        Ok(sqlparser::ast::CaseWhen {
+                            condition: self.expr_to_sql(w)?,
+                            result: self.expr_to_sql(t)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, SqlGenError>>()?;
+                let else_result = case
+                    .else_expr
+                    .as_ref()
+                    .map(|e| self.expr_to_sql(e))
+                    .transpose()?
+                    .map(Box::new);
+                Ok(sqlparser::ast::Expr::Case {
+                    operand,
+                    conditions,
+                    else_result,
+                    case_token: sqlparser::ast::helpers::attached_token::AttachedToken::empty(),
+                    end_token: sqlparser::ast::helpers::attached_token::AttachedToken::empty(),
+                })
+            }
+
+            Expr::Like(like) => {
+                let expr = self.expr_to_sql(&like.expr)?;
+                let pattern = self.expr_to_sql(&like.pattern)?;
+                let escape_char = like
+                    .escape_char
+                    .map(|c| sqlparser::ast::Value::SingleQuotedString(c.to_string()));
+
+                if like.case_insensitive {
+                    Ok(sqlparser::ast::Expr::ILike {
+                        negated: like.negated,
+                        expr: Box::new(expr),
+                        pattern: Box::new(pattern),
+                        escape_char,
+                        any: false,
+                    })
+                } else {
+                    Ok(sqlparser::ast::Expr::Like {
+                        negated: like.negated,
+                        expr: Box::new(expr),
+                        pattern: Box::new(pattern),
+                        escape_char,
+                        any: false,
+                    })
+                }
+            }
+
+            Expr::Negative(e) => {
+                let sql_inner = self.expr_to_sql(e)?;
+                Ok(sqlparser::ast::Expr::UnaryOp {
+                    op: sqlparser::ast::UnaryOperator::Minus,
+                    expr: Box::new(sql_inner),
+                })
+            }
+
+            Expr::IsTrue(e) => {
+                let sql_inner = self.expr_to_sql(e)?;
+                Ok(sqlparser::ast::Expr::IsTrue(Box::new(sql_inner)))
+            }
+
+            Expr::IsFalse(e) => {
+                let sql_inner = self.expr_to_sql(e)?;
+                Ok(sqlparser::ast::Expr::IsFalse(Box::new(sql_inner)))
+            }
+
+            Expr::IsUnknown(e) => {
+                let sql_inner = self.expr_to_sql(e)?;
+                Ok(sqlparser::ast::Expr::IsUnknown(Box::new(sql_inner)))
             }
 
             _ => {
@@ -316,6 +435,12 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
             Operator::Modulo => Ok(sqlparser::ast::BinaryOperator::Modulo),
             Operator::And => Ok(sqlparser::ast::BinaryOperator::And),
             Operator::Or => Ok(sqlparser::ast::BinaryOperator::Or),
+            Operator::StringConcat => Ok(sqlparser::ast::BinaryOperator::StringConcat),
+            Operator::BitwiseAnd => Ok(sqlparser::ast::BinaryOperator::BitwiseAnd),
+            Operator::BitwiseOr => Ok(sqlparser::ast::BinaryOperator::BitwiseOr),
+            Operator::BitwiseXor => Ok(sqlparser::ast::BinaryOperator::BitwiseXor),
+            Operator::BitwiseShiftLeft => Ok(sqlparser::ast::BinaryOperator::PGBitwiseShiftLeft),
+            Operator::BitwiseShiftRight => Ok(sqlparser::ast::BinaryOperator::PGBitwiseShiftRight),
             _ => Err(SqlGenError::UnsupportedPlan {
                 message: format!("Binary operator: {:?}", op),
                 node_type: "BinaryExpr".to_string(),
@@ -363,6 +488,28 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
                 sqlparser::ast::Value::SingleQuotedString(v.clone()).into()
             }
             ScalarValue::Boolean(Some(v)) => sqlparser::ast::Value::Boolean(*v).into(),
+            ScalarValue::Decimal128(val, _p, s) => {
+                if let Some(v) = val {
+                    let s = *s as usize;
+                    let v_str = v.abs().to_string();
+                    let mut formatted = if s > 0 {
+                        if v_str.len() > s {
+                            let split_at = v_str.len() - s;
+                            format!("{}.{}", &v_str[..split_at], &v_str[split_at..])
+                        } else {
+                            format!("0.{:0>width$}", v_str, width = s)
+                        }
+                    } else {
+                        v_str
+                    };
+                    if *v < 0 {
+                        formatted.insert(0, '-');
+                    }
+                    sqlparser::ast::Value::Number(formatted, false).into()
+                } else {
+                    sqlparser::ast::Value::Null.into()
+                }
+            }
             ScalarValue::Null => sqlparser::ast::Value::Null.into(),
             _ => {
                 return Err(SqlGenError::UnsupportedPlan {

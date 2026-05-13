@@ -332,6 +332,22 @@ fn append_value(
                 ts_builder.append_null();
             }
         }
+        DataType::Binary => {
+            let v: Option<Vec<u8>> = row.get(i)?;
+            builder
+                .as_any_mut()
+                .downcast_mut::<BinaryBuilder>()
+                .ok_or_else(|| ArrowError::FailedToDowncastBuilder(i))?
+                .append_option(v);
+        }
+        DataType::LargeBinary => {
+            let v: Option<Vec<u8>> = row.get(i)?;
+            builder
+                .as_any_mut()
+                .downcast_mut::<LargeBinaryBuilder>()
+                .ok_or_else(|| ArrowError::FailedToDowncastBuilder(i))?
+                .append_option(v);
+        }
         _ => {
             if let Some(b) = builder.as_any_mut().downcast_mut::<StringBuilder>() {
                 let v: Option<String> = row.get(i).ok().flatten();

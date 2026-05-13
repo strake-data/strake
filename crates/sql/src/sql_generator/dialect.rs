@@ -58,6 +58,22 @@ pub trait DialectCapabilities: Send + Sync {
     fn strip_schema_qualifier(&self) -> bool {
         false
     }
+    /// Returns true if the dialect supports the `AS` keyword for table aliases.
+    fn supports_as_alias_for_tables(&self) -> bool {
+        true
+    }
+    /// Returns true if subqueries should always be wrapped to ensure stable aliasing.
+    fn always_wrap_subqueries(&self) -> bool {
+        false
+    }
+    /// Returns true if the dialect supports the `LIMIT` clause.
+    fn supports_limit_clause(&self) -> bool {
+        true
+    }
+    /// Returns true if the dialect supports the `FETCH FIRST` clause.
+    fn supports_fetch_clause(&self) -> bool {
+        false
+    }
 
     /// Maps a DataFusion [`Operator`] to a SQL [`BinaryOperator`].
     fn map_operator(&self, _op: &Operator) -> Option<BinaryOperator> {
@@ -179,6 +195,14 @@ impl DialectCapabilities for PostgreSqlCapabilities {
         true
     }
 
+    fn strip_catalog_qualifier(&self) -> bool {
+        true
+    }
+
+    fn strip_schema_qualifier(&self) -> bool {
+        true
+    }
+
     fn format_interval(&self, months: i32, days: i32, nanos: i64) -> Option<sqlparser::ast::Expr> {
         // Postgres format: 'X MONTHS Y DAYS Z NANOSECONDS' (as currently implemented)
         // Actually Postgres uses ::interval syntax normally, but the verbose string works too
@@ -261,7 +285,10 @@ impl TypeMapper for DefaultTypeMapper {
             DfDataType::UInt64 => Ok(SqlDataType::UInt64),
             DfDataType::Float32 => Ok(SqlDataType::Float(sqlparser::ast::ExactNumberInfo::None)),
             DfDataType::Float64 => Ok(SqlDataType::Double(sqlparser::ast::ExactNumberInfo::None)),
-            DfDataType::Utf8 | DfDataType::LargeUtf8 => Ok(SqlDataType::Varchar(None)),
+            DfDataType::Utf8 | DfDataType::LargeUtf8 | DfDataType::Utf8View => {
+                Ok(SqlDataType::Varchar(None))
+            }
+
             DfDataType::Boolean => Ok(SqlDataType::Boolean),
             DfDataType::Date32 => Ok(SqlDataType::Date),
             DfDataType::Timestamp(_, _) => Ok(SqlDataType::Timestamp(None, TimezoneInfo::None)),

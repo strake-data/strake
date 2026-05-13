@@ -4,7 +4,6 @@
 //! to select the appropriate rendering strategy per source type.
 
 use anyhow::Result;
-use datafusion::common::tree_node::TreeNode;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 
@@ -40,30 +39,13 @@ pub fn get_sql_for_plan(plan: &LogicalPlan, source_type: &str) -> Result<Option<
         }
     };
 
-    // Recursively replace SchemaAdapter extension nodes with Projections
-    // so that we deal with standard LogicalPlan nodes.
-    let plan = plan
-        .clone()
-        .transform(|node| {
-            if let LogicalPlan::Extension(ext) = &node
-                && let Some(adapter) = ext
-                    .node
-                    .as_any()
-                    .downcast_ref::<crate::schema_adapter::SchemaAdapter>()
-            {
-                return Ok(datafusion::common::tree_node::Transformed::yes(
-                    adapter.to_projection()?,
-                ));
-            }
-            Ok(datafusion::common::tree_node::Transformed::no(node))
-        })
-        .map(|t| t.data)?;
-
     // Flatten join trees for cleaner SQL generation
     use crate::optimizer::join_flattener::JoinTreeFlattener;
     use datafusion::optimizer::optimizer::{OptimizerContext, OptimizerRule};
     let config = OptimizerContext::default();
-    let plan = JoinTreeFlattener::new().rewrite(plan, &config)?.data;
+    let plan = JoinTreeFlattener::new()
+        .rewrite(plan.clone(), &config)?
+        .data;
 
     let generator_dialect = crate::sql_generator::dialect::GeneratorDialect::new(
         dialect_arc.as_ref(),

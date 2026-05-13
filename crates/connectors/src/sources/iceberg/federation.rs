@@ -8,7 +8,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::prelude::SessionContext;
 
-use datafusion_catalog::table::TableProvider;
+use datafusion::datasource::TableProvider;
 
 use datafusion_federation::sql::{SQLExecutor, SQLFederationProvider};
 use std::sync::Arc;
@@ -60,6 +60,7 @@ impl SQLExecutor for IcebergExecutor {
         &self,
         query: &str,
         _schema: SchemaRef,
+        _predicates: &[Arc<dyn datafusion::physical_expr::PhysicalExpr>],
     ) -> datafusion::error::Result<SendableRecordBatchStream> {
         tracing::debug!(target: "federation", warehouse = %self.warehouse, "Executing Iceberg federated query: {}", query);
 
@@ -145,6 +146,6 @@ impl SQLExecutor for IcebergExecutor {
         let provider = IcebergStaticTableProvider::try_new_from_table(table)
             .await
             .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
-        Ok(provider.schema())
+        Ok(TableProvider::schema(&provider))
     }
 }

@@ -26,7 +26,7 @@ use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use futures::Stream;
 use prost::Message;
-use strake_common::error::StrakeError;
+use strake_common::error::{ErrorCode, StrakeError};
 use strake_runtime::federation::FederationEngine;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -67,12 +67,15 @@ impl StrakeFlightSqlService {
 
     /// Convert an anyhow error to a tonic Status with JSON metadata.
     fn to_status_with_metadata(e: anyhow::Error) -> Status {
-        let strake_error = StrakeError::from(datafusion::error::DataFusionError::Execution(
-            format!("{:#}", e).replace('\n', " || "),
-        ));
+        let strake_error = StrakeError::from(e);
         let json_error = serde_json::to_string(&strake_error).unwrap_or_default();
 
-        let mut status = Status::internal(strake_error.to_string());
+        let mut status = if strake_error.code == ErrorCode::BudgetExceeded {
+            Status::permission_denied(strake_error.to_string())
+        } else {
+            Status::internal(strake_error.to_string())
+        };
+
         if let Ok(metadata_value) = tonic::metadata::MetadataValue::try_from(json_error.as_str()) {
             status
                 .metadata_mut()
@@ -83,17 +86,13 @@ impl StrakeFlightSqlService {
 
     /// Simpler conversion for planning errors
     fn to_plan_error(e: datafusion::error::DataFusionError) -> Status {
-        // Detect Enterprise errors via prefix to avoid circular dependencies
-        // (strake-enterprise depends on strake-server).
+        let strake_error = StrakeError::from(e);
+        tracing::error!(code = %strake_error.code, message = %strake_error.message, "Plan error converted to StrakeError");
 
-        let msg = e.to_string();
-        if msg.contains("[ERR_CONTRACT_VIOLATION]") {
-            return Status::permission_denied(msg);
+        if strake_error.code == ErrorCode::BudgetExceeded {
+            return Status::permission_denied(strake_error.to_string());
         }
 
-        let strake_error = StrakeError::from(datafusion::error::DataFusionError::Execution(
-            format!("{:#}", e).replace('\n', " || "),
-        ));
         Status::internal(strake_error.to_string())
     }
 
@@ -218,9 +217,7 @@ impl StrakeFlightSqlService {
                     duration_ms = start.elapsed().as_millis() as u64,
                     timestamp = %chrono::Utc::now().to_rfc3339(),
                 );
-                Err(Self::to_status_with_metadata(anyhow::anyhow!(
-                    e.to_string()
-                )))
+                Err(Self::to_status_with_metadata(e))
             }
         }
     }

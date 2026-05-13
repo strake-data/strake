@@ -13,7 +13,7 @@ use datafusion::physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner, Phy
 use datafusion_federation::FederatedPlanner;
 use std::fmt;
 use std::sync::Arc;
-use strake_sql::schema_adapter::SchemaAdapterPlanner;
+// use strake_sql::schema_adapter::SchemaAdapterPlanner;
 
 /// Custom QueryPlanner that integrates Strake's federation capabilities.
 ///
@@ -21,7 +21,8 @@ use strake_sql::schema_adapter::SchemaAdapterPlanner;
 /// 1. FederatedPlanner: Handles execution of remote plan fragments
 /// 2. SchemaAdapterPlanner: Adapts remote schemas to local expectations
 pub struct QueryPlanner {
-    physical_planner: Arc<dyn PhysicalPlanner>,
+    /// The underlying physical planner with Strake extensions.
+    pub physical_planner: Arc<dyn PhysicalPlanner>,
 }
 
 // Manual Debug implementation because Arc<dyn PhysicalPlanner> does not implement Debug
@@ -40,11 +41,10 @@ impl Default for QueryPlanner {
 }
 
 impl QueryPlanner {
+    /// Create a new query planner.
     pub fn new() -> Self {
-        let extensions: Vec<Arc<dyn ExtensionPlanner + Send + Sync>> = vec![
-            Arc::new(FederatedPlanner::new()),
-            Arc::new(SchemaAdapterPlanner),
-        ];
+        let extensions: Vec<Arc<dyn ExtensionPlanner + Send + Sync>> =
+            vec![Arc::new(FederatedPlanner::new())];
 
         Self {
             physical_planner: Arc::new(DefaultPhysicalPlanner::with_extension_planners(extensions)),

@@ -40,6 +40,7 @@ impl Default for PlanTreeFormatter {
 }
 
 impl PlanTreeFormatter {
+    /// Create a new node visitor.
     pub fn new() -> Self {
         Self::default()
     }
@@ -110,10 +111,10 @@ impl PlanTreeFormatter {
     }
 
     fn get_node_name(&self, plan: &Arc<dyn ExecutionPlan>) -> String {
-        let name = plan.name().to_string();
+        let name = plan.name();
 
         // Clean up common suffixes for readability
-        name.replace("Exec", "")
+        name.strip_suffix("Exec").unwrap_or(name).to_string()
     }
 
     fn get_federation_marker(&self, plan: &Arc<dyn ExecutionPlan>) -> String {

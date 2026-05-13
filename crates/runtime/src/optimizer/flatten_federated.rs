@@ -6,13 +6,14 @@ use datafusion_federation::FederatedPlanNode;
 
 /// Optimizer rule to flatten nested `FederatedPlanNode`s.
 ///
-/// This rule detects if a `Federated` node contains other `Federated` or `SchemaAdapter` nodes
+/// This rule detects if a `Federated` node contains other `Federated` nodes
 /// within its subtree. If so, it unwraps the outer `Federated` node. This prevents failures in
 /// `Unparser` which cannot handle Extension nodes when generating SQL for the outer Federated node.
 #[derive(Default, Debug)]
 pub struct FlattenFederatedNodesRule {}
 
 impl FlattenFederatedNodesRule {
+    /// Create a new flattening rule.
     pub fn new() -> Self {
         Self {}
     }
@@ -32,10 +33,14 @@ impl OptimizerRule for FlattenFederatedNodesRule {
 
                 // Check deep nesting
                 let node_check = inner.exists(|n| {
-                    if let LogicalPlan::Extension(e) = n
-                        && (e.node.name() == "Federated" || e.node.name() == "SchemaAdapter")
-                    {
-                        return Ok(true);
+                    if let LogicalPlan::Extension(e) = n {
+                        // Use downcast_ref instead of name matching for better type safety
+                        if e.node
+                            .as_any()
+                            .is::<datafusion_federation::FederatedPlanNode>()
+                        {
+                            return Ok(true);
+                        }
                     }
                     Ok(false)
                 });

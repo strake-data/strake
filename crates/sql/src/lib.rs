@@ -12,8 +12,6 @@ pub mod dialect_router;
 pub mod dialects;
 /// Custom query optimization rules for SQL generation.
 pub mod optimizer;
-/// Bridge for adapting schemas between DataFusion and remote sources.
-pub mod schema_adapter;
 /// High-level entry points for SQL generation.
 pub mod sql_gen;
 /// Core SQL AST translation logic.

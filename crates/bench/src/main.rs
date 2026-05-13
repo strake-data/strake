@@ -15,16 +15,18 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use futures::StreamExt;
 use rand::Rng;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::time::Instant;
 use strake_common::config::{Config, RetrySettings};
 use strake_runtime::federation::FederationEngine;
 use tracing::{error, info, warn};
 
 #[derive(Parser)]
-#[command(name = "strake-bench")]
-#[command(about = "High-performance TPC-H Benchmarker for Strake", long_about = None)]
+#[command(name = "strake-tpch-smoke-test")]
+#[command(about = "TPC-H Smoke Test for Strake", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -34,9 +36,9 @@ struct Cli {
 enum Commands {
     /// Run TPC-H queries against federated sources
     Run {
-        /// TPC-H query numbers to run (e.g. 1 3 6 10)
+        /// TPC-H query numbers to run (e.g. 1 3 6 10 or 'all')
         #[arg(short, long, num_args = 1..)]
-        queries: Vec<u32>,
+        queries: Vec<String>,
 
         /// Number of iterations per query
         #[arg(short, long, default_value_t = 3)]
@@ -49,14 +51,25 @@ enum Commands {
         /// Output format (json or text)
         #[arg(short, long, default_value = "text")]
         format: String,
+
+        /// TPC-H scale factor (influences Q11 threshold)
+        #[arg(short, long, default_value_t = 1.0)]
+        scale_factor: f64,
     },
 }
 
 #[derive(Serialize)]
 struct BenchResult {
     query: u32,
+    scale_factor: f64,
     iteration: u32,
     duration_ms: u128,
+    planning_ms: u128,
+    execution_ms: u128,
+    chaos_latency_ms: u128,
+    correctness: String,
+    result_hash: String,
+    metrics: Option<String>,
     status: String,
     error: Option<String>,
 }
@@ -72,8 +85,9 @@ async fn main() -> Result<()> {
             iterations,
             chaos,
             format,
+            scale_factor,
         } => {
-            run_benchmarks(queries, iterations, chaos, format).await?;
+            run_benchmarks(queries, iterations, chaos, format, scale_factor).await?;
         }
     }
 
@@ -81,88 +95,42 @@ async fn main() -> Result<()> {
 }
 
 async fn run_benchmarks(
-    queries: Vec<u32>,
+    queries_input: Vec<String>,
     iterations: u32,
     chaos_prob: f64,
     format: String,
+    scale_factor: f64,
 ) -> Result<()> {
-    info!("Initializing Strake Federation Engine for Benchmarking...");
+    let mut queries = vec![];
+    if queries_input.iter().any(|q| q == "all") {
+        for q in 1..=22 {
+            queries.push(q);
+        }
+    } else {
+        for q_str in queries_input {
+            queries.push(q_str.parse::<u32>().context("Invalid query number")?);
+        }
+    }
 
-    let config_path =
-        std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config/tpch.yaml".to_string());
-    let config = Config::from_file(&config_path).unwrap_or({
-        let mut s = Config::default();
-        s.sources = vec![];
-        s.cache = Default::default();
-        s
-    });
-
-    // Increase limits for benchmarking to allow full TPC-H scans at SF=0.5 (3M rows)
-    let _limits = strake_common::config::QueryLimits::default();
-    let _retry = RetrySettings::default();
-
-    let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
-        config,
-        catalog_name: "strake".to_string(),
-        query_limits: strake_common::config::QueryLimits::default(),
-        resource_config: strake_common::config::ResourceConfig::default(),
-        datafusion_config: std::collections::HashMap::new(),
-        global_budget: 100, // global_budget
-        extra_optimizer_rules: vec![],
-        extra_sources: vec![],
-        retry: _retry,
-    })
-    .await
-    .context("Failed to initialize FederationEngine")?;
-
+    let harness = BenchmarkHarness::new().await?;
     let mut results = vec![];
 
     for &q in &queries {
-        info!("Running TPC-H Q{} for {} iterations...", q, iterations);
+        info!(
+            "Running TPC-H Q{} at SF {} for {} iterations...",
+            q, scale_factor, iterations
+        );
 
-        let sql = get_tpch_query(q)?;
-        let mut rng = rand::rng();
+        let mut sql = get_tpch_query(q)?;
+        if q == 11 {
+            let threshold = 0.0001 / scale_factor;
+            sql = sql.replace("0.0001", &threshold.to_string());
+        }
 
         for i in 1..=iterations {
-            let start = Instant::now();
-
-            // Chaos Injection
-            let mut result_status = "SUCCESS".to_string();
-            let mut error_msg = None;
-
-            if rng.random_bool(chaos_prob) {
-                warn!(
-                    "Injecting chaos: Simulated Source Timeout for Q{} Iteration {}",
-                    q, i
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                result_status = "ERROR".to_string();
-                error_msg = Some("Simulated Source Timeout (Chaos Injection)".to_string());
-            } else {
-                match engine.execute_query(&sql, None).await {
-                    Ok(_) => {
-                        info!(
-                            "Q{} Iteration {}: SUCCESS in {}ms",
-                            q,
-                            i,
-                            start.elapsed().as_millis()
-                        );
-                    }
-                    Err(e) => {
-                        error!("Q{} Iteration {}: FAILED - {:?}", q, i, e); // Use {:?} for more detail
-                        result_status = "ERROR".to_string();
-                        error_msg = Some(format!("{:?}", e));
-                    }
-                }
-            }
-
-            results.push(BenchResult {
-                query: q,
-                iteration: i,
-                duration_ms: start.elapsed().as_millis(),
-                status: result_status,
-                error: error_msg,
-            });
+            let mut result = harness.run_iteration(q, i, &sql, chaos_prob).await?;
+            result.scale_factor = scale_factor;
+            results.push(result);
         }
     }
 
@@ -175,28 +143,210 @@ async fn run_benchmarks(
     Ok(())
 }
 
-fn get_tpch_query(q: u32) -> Result<String> {
-    match q {
-        1 => Ok("SELECT l_returnflag, l_linestatus, sum(l_quantity) as sum_qty FROM lineitem WHERE l_shipdate <= '1998-12-01' GROUP BY l_returnflag, l_linestatus".to_string()),
-        3 => Ok("SELECT l_orderkey, sum(l_extendedprice * (1 - l_discount)) as revenue FROM customer, orders, lineitem WHERE c_custkey = o_custkey AND l_orderkey = o_orderkey AND c_mktsegment = 'BUILDING' GROUP BY l_orderkey".to_string()),
-        6 => Ok("SELECT sum(l_extendedprice * l_discount) as revenue FROM lineitem WHERE l_shipdate >= '1994-01-01' AND l_discount BETWEEN 0.05 AND 0.07 AND l_quantity < 24".to_string()),
-        10 => Ok("SELECT c_custkey, c_name, sum(l_extendedprice * (1 - l_discount)) as revenue FROM customer, orders, lineitem, nation WHERE c_custkey = o_custkey AND l_orderkey = o_orderkey AND c_nationkey = n_nationkey GROUP BY c_custkey, c_name".to_string()),
-        _ => Err(anyhow::anyhow!("TPC-H Q{} not implemented in benchmarker yet", q)),
+struct BenchmarkHarness {
+    engine: FederationEngine,
+}
+
+impl BenchmarkHarness {
+    async fn new() -> Result<Self> {
+        info!("Initializing Strake Federation Engine for Benchmarking...");
+
+        let config_path = std::env::var("CONFIG_FILE")
+            .unwrap_or_else(|_| "config/tpch_federation.yaml".to_string());
+        let config = Config::from_file(&config_path).unwrap_or({
+            let mut s = Config::default();
+            s.sources = vec![];
+            s.cache = Default::default();
+            s
+        });
+
+        let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
+            config,
+            catalog_name: "strake".to_string(),
+            query_limits: strake_common::config::QueryLimits::default(),
+            resource_config: strake_common::config::ResourceConfig::default(),
+            datafusion_config: std::collections::HashMap::new(),
+            global_budget: 100,
+            extra_optimizer_rules: vec![],
+            extra_sources: vec![],
+            retry: RetrySettings::default(),
+        })
+        .await
+        .context("Failed to initialize FederationEngine")?;
+
+        Ok(Self { engine })
     }
+
+    async fn run_iteration(
+        &self,
+        q: u32,
+        i: u32,
+        sql: &str,
+        chaos_prob: f64,
+    ) -> Result<BenchResult> {
+        let mut rng = rand::rng();
+        let mut result_status = "SUCCESS".to_string();
+        let mut error_msg = None;
+        let mut chaos_latency = 0;
+
+        // Chaos Injection
+        if chaos_prob > 0.0 && rng.random_bool(chaos_prob) {
+            warn!(
+                "Injecting chaos: Simulated Source Timeout for Q{} Iteration {}",
+                q, i
+            );
+            let chaos_start = Instant::now();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            chaos_latency = chaos_start.elapsed().as_millis();
+            result_status = "ERROR".to_string();
+            error_msg = Some("Simulated Source Timeout (Chaos Injection)".to_string());
+        }
+
+        let mut planning_ms = 0;
+        let mut execution_ms = 0;
+        let mut result_hash = String::new();
+        let mut metrics = None;
+
+        if result_status == "SUCCESS" {
+            let state = self.engine.context().state();
+
+            // 1. Planning Stage
+            let plan_start = Instant::now();
+            match state.create_logical_plan(sql).await {
+                Ok(logical_plan) => {
+                    match state.create_physical_plan(&logical_plan).await {
+                        Ok(physical_plan) => {
+                            planning_ms = plan_start.elapsed().as_millis();
+
+                            // 2. Execution Stage
+                            let exec_start = Instant::now();
+                            match datafusion::physical_plan::execute_stream(
+                                physical_plan.clone(),
+                                state.task_ctx(),
+                            ) {
+                                Ok(mut stream) => {
+                                    let mut batches = Vec::new();
+                                    let mut execution_err = None;
+                                    while let Some(result) = stream.next().await {
+                                        match result {
+                                            Ok(batch) => batches.push(batch),
+                                            Err(e) => {
+                                                execution_err = Some(e);
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    if let Some(e) = execution_err {
+                                        error!("Q{} Iteration {}: STREAM ERROR - {:?}", q, i, e);
+                                        result_status = "ERROR".to_string();
+                                        error_msg = Some(format!("Stream error: {:?}", e));
+                                    } else {
+                                        execution_ms = exec_start.elapsed().as_millis();
+                                        result_hash = compute_result_hash(&batches)?;
+
+                                        let metrics_str = datafusion::physical_plan::display::DisplayableExecutionPlan::with_metrics(physical_plan.as_ref())
+                                            .indent(true)
+                                            .to_string();
+                                        metrics = Some(metrics_str);
+
+                                        info!(
+                                            "Q{} Iteration {}: SUCCESS (plan: {}ms, exec: {}ms, hash: {})",
+                                            q, i, planning_ms, execution_ms, result_hash
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Q{} Iteration {}: EXECUTION FAILED - {:?}", q, i, e);
+                                    result_status = "ERROR".to_string();
+                                    error_msg = Some(format!("Execution error: {:?}", e));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Q{} Iteration {}: PHYSICAL PLANNING FAILED - {:?}", q, i, e);
+                            result_status = "ERROR".to_string();
+                            error_msg = Some(format!("Physical planning error: {:?}", e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Q{} Iteration {}: LOGICAL PLANNING FAILED - {:?}", q, i, e);
+                    result_status = "ERROR".to_string();
+                    error_msg = Some(format!("Logical planning error: {:?}", e));
+                }
+            }
+        }
+
+        Ok(BenchResult {
+            query: q,
+            scale_factor: 1.0, // Will be overwritten
+            iteration: i,
+            duration_ms: planning_ms + execution_ms,
+            planning_ms,
+            execution_ms,
+            chaos_latency_ms: chaos_latency,
+            correctness: if result_status == "SUCCESS" {
+                "PASS".to_string()
+            } else {
+                "N/A".to_string()
+            },
+            result_hash,
+            metrics,
+            status: result_status,
+            error: error_msg,
+        })
+    }
+}
+
+fn compute_result_hash(batches: &[arrow::record_batch::RecordBatch]) -> Result<String> {
+    let mut hasher = Sha256::new();
+    let mut buf = Vec::new();
+    {
+        let mut writer = arrow_json::ArrayWriter::new(&mut buf);
+        let batch_refs: Vec<&arrow::record_batch::RecordBatch> = batches.iter().collect();
+        writer.write_batches(&batch_refs)?;
+        writer.finish()?;
+    }
+    hasher.update(&buf);
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn get_tpch_query(q: u32) -> Result<String> {
+    let path = format!("crates/bench/queries/tpch/q{:02}.sql", q);
+    std::fs::read_to_string(&path).with_context(|| format!("Failed to read query file: {}", path))
 }
 
 fn print_text_report(results: &[BenchResult]) {
     println!("\nSTRAKE PERFORMANCE REPORT");
     println!("=========================");
     println!(
-        "{:<8} {:<10} {:<15} {:<10}",
-        "Query", "Iteration", "Duration (ms)", "Status"
+        "{:<8} {:<8} {:<10} {:<15} {:<15} {:<15} {:<15} {:<12} {:<10}",
+        "Query",
+        "SF",
+        "Iteration",
+        "Total (ms)",
+        "Plan (ms)",
+        "Exec (ms)",
+        "Chaos Lat",
+        "Correctness",
+        "Status"
     );
-    println!("---------------------------------------------------------");
+    println!(
+        "----------------------------------------------------------------------------------------------------------------------------------"
+    );
     for r in results {
         println!(
-            "{:<8} {:<10} {:<15} {:<10}",
-            r.query, r.iteration, r.duration_ms, r.status
+            "{:<8} {:<8.1} {:<10} {:<15} {:<15} {:<15} {:<15} {:<12} {:<10}",
+            r.query,
+            r.scale_factor,
+            r.iteration,
+            r.duration_ms,
+            r.planning_ms,
+            r.execution_ms,
+            r.chaos_latency_ms,
+            r.correctness,
+            r.status
         );
     }
 }

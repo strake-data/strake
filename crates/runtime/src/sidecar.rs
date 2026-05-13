@@ -20,14 +20,19 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::{Instrument, info_span};
 
+/// Errors encountered during sidecar process management.
 #[derive(Error, Debug)]
 pub enum SidecarError {
+    /// The Python executable was not found.
     #[error("Python binary not found: {0}")]
     PythonNotFound(String),
+    /// Error determining the executable path.
     #[error("Failed to get current executable path: {0}")]
     ExecutablePathError(#[from] std::io::Error),
+    /// The Python source directory was not found.
     #[error("Could not locate 'python' directory (searched relative to binary and CWD)")]
     PythonDirNotFound,
+    /// Error joining paths for Python environment.
     #[error("Failed to join PYTHONPATH: {0}")]
     PythonPathJoinError(#[from] std::env::JoinPathsError),
 }

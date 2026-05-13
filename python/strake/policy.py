@@ -363,9 +363,11 @@ class SandboxPolicy:
             ]
 
         class LandlockPathBeneathAttr(ctypes.Structure):
+            _pack_ = 8
             _fields_ = [
                 ("allowed_access", ctypes.c_uint64),
                 ("parent_fd", ctypes.c_int32),
+                ("_padding", ctypes.c_int32),  # Explicit padding for 64-bit alignment
             ]
 
         # ── Create ruleset ──

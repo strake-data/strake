@@ -304,7 +304,12 @@ impl datafusion::physical_plan::DisplayAs for StrakeFederationExec {
         _t: datafusion::physical_plan::DisplayFormatType,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
-        write!(f, "StrakeFederationExec: sql={}", self.sql)
+        write!(
+            f,
+            "StrakeFederationExec({}): sql={}",
+            self.executor.name().to_lowercase(),
+            self.sql
+        )
     }
 }
 

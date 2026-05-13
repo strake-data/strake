@@ -36,6 +36,7 @@ class FirecrackerSandboxManager(SandboxManager):
         fc_bin: Optional[str] = None,
         kernel_path: Optional[str] = None,
         rootfs_path: Optional[str] = None,
+        enable_background_tasks: bool = True,
     ):
         super().__init__(connection, config_path)
         self.fc_bin = fc_bin or os.environ.get("FIRECRACKER_BIN", "firecracker")
@@ -71,18 +72,19 @@ class FirecrackerSandboxManager(SandboxManager):
         # Safe in Python 3.10+: asyncio.Lock() does not require a running event loop at construction.
         self._snapshot_lock = asyncio.Lock()
 
-        try:
-            # Kick off snapshot creation when constructed inside an active event loop.
-            # If no loop is running (sync construction), defer snapshot creation to run().
+        if enable_background_tasks:
             try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-            if loop is not None:
-                self._snapshot_task = loop.create_task(self._ensure_snapshot())
-        except Exception as e:
-            logger.error(f"Failed to create Firecracker snapshot: {e}")
-            # Fallback to cold boot if snapshot fails
+                # Kick off snapshot creation when constructed inside an active event loop.
+                # If no loop is running (sync construction), defer snapshot creation to run().
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+                if loop is not None:
+                    self._snapshot_task = loop.create_task(self._ensure_snapshot())
+            except Exception as e:
+                logger.error(f"Failed to create Firecracker snapshot: {e}")
+                # Fallback to cold boot if snapshot fails
 
     async def shutdown(self) -> None:
         """Explicitly cleans up resources including snapshots and background tasks."""

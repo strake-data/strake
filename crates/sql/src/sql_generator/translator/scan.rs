@@ -18,8 +18,8 @@ use crate::sql_generator::error::SqlGenError;
 use crate::sql_generator::expr::ExprTranslator;
 use crate::sql_generator::sanitize::safe_ident;
 use sqlparser::ast::{
-    BinaryOperator, Expr as SqlExpr, LimitClause, ObjectName, ObjectNamePart, TableAlias,
-    TableFactor, TableWithJoins,
+    BinaryOperator, Expr as SqlExpr, ObjectName, ObjectNamePart, TableAlias, TableFactor,
+    TableWithJoins,
 };
 use std::sync::Arc;
 
@@ -64,7 +64,10 @@ pub(crate) fn handle_table_scan(
         alias: Some(TableAlias {
             name: safe_ident(&alias)?,
             columns: vec![],
-            explicit: true,
+            explicit: generator
+                .dialect
+                .capabilities
+                .supports_as_alias_for_tables(),
         }),
         args: None,
         with_hints: vec![],
@@ -185,11 +188,7 @@ pub(crate) fn handle_table_scan(
     if let Some(fetch) = scan.fetch {
         let limit_expr =
             SqlExpr::Value(sqlparser::ast::Value::Number(fetch.to_string(), false).into());
-        query.limit_clause = Some(LimitClause::LimitOffset {
-            limit: Some(limit_expr),
-            offset: None,
-            limit_by: vec![],
-        });
+        generator.apply_limit_offset(&mut query, Some(limit_expr), None);
     }
 
     Ok(query)

@@ -35,9 +35,40 @@ impl From<DataFusionError> for StrakeError {
                 }
                 _ => StrakeError::new(ErrorCode::DataFusionInternal, schema_err.to_string()),
             },
-            DataFusionError::Plan(msg) => StrakeError::new(ErrorCode::SyntaxError, msg.clone()),
+            DataFusionError::Plan(msg) => {
+                if msg.contains("[ERR_CONTRACT_VIOLATION]")
+                    || msg.contains("Strict contract violation")
+                {
+                    StrakeError::new(ErrorCode::BudgetExceeded, msg.clone())
+                } else {
+                    StrakeError::new(ErrorCode::SyntaxError, msg.clone())
+                }
+            }
             DataFusionError::SQL(parse_err, _) => {
                 StrakeError::new(ErrorCode::SyntaxError, parse_err.to_string())
+            }
+            DataFusionError::Execution(msg) => {
+                if msg.contains("[ERR_CONTRACT_VIOLATION]")
+                    || msg.contains("Strict contract violation")
+                {
+                    StrakeError::new(ErrorCode::BudgetExceeded, msg.clone())
+                } else {
+                    StrakeError::new(ErrorCode::DataFusionInternal, msg.clone())
+                }
+            }
+            DataFusionError::External(e) => {
+                if let Some(strake_err) = e.downcast_ref::<StrakeError>() {
+                    strake_err.clone()
+                } else {
+                    let msg = format!("{:#}", e);
+                    if msg.contains("[ERR_CONTRACT_VIOLATION]")
+                        || msg.contains("Strict contract violation")
+                    {
+                        StrakeError::new(ErrorCode::BudgetExceeded, msg)
+                    } else {
+                        StrakeError::new(ErrorCode::DataFusionInternal, msg)
+                    }
+                }
             }
             _ => StrakeError::new(ErrorCode::DataFusionInternal, err.to_string()),
         }
@@ -49,7 +80,16 @@ impl From<anyhow::Error> for StrakeError {
         // Attempt to downcast to a StrakeError if it's already one
         match err.downcast::<StrakeError>() {
             Ok(strake_err) => strake_err,
-            Err(err) => StrakeError::new(ErrorCode::DataFusionInternal, err.to_string()),
+            Err(err) => {
+                let msg = format!("{:#}", err);
+                if msg.contains("[ERR_CONTRACT_VIOLATION]")
+                    || msg.contains("Strict contract violation")
+                {
+                    StrakeError::new(ErrorCode::BudgetExceeded, msg)
+                } else {
+                    StrakeError::new(ErrorCode::DataFusionInternal, msg)
+                }
+            }
         }
     }
 }
