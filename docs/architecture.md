@@ -50,9 +50,10 @@ The Python bindings.
 
 1.  **Submission**: Client sends a SQL query string via `CommandStatementQuery`.
 2.  **Planning**: `FederationEngine` uses DataFusion's SQL parser and planner.
-3.  **Optimization**:
-    *   **Logical Optimizer**: Applies specific rules, including Pushdown.
-    *   **Physical Planner**: Converts the plan into an execution graph.
+3.  **Optimization & Hygiene**:
+    *   **Logical Optimizer**: Applies standard rules (Pushdown, Projection) and Strake-specific **Federation Hygiene** (e.g., flattening nested nodes to ensure SQL unparser compatibility).
+    *   **Physical Planner**: Converts the plan into an execution graph using custom extension planners for remote sources.
+    *   **Defensive Validation**: A final cost-based safety pass (`CostBasedValidator`) rejects the plan if estimated row counts or bytes exceed user-defined budgets.
 4.  **Execution**:
     *   Scan nodes read data from sources (Postgres, S3, etc.).
     *   Data flows through the graph (Filter, Project, Join, Aggregate) as Arrow RecordBatches.

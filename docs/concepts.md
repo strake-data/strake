@@ -11,11 +11,9 @@ Strake does **not** copy data into a central repository. Instead, it queries dat
 *   **S3**: Strake reads Parquet, CSV, and JSON files directly from object storage using the S3 API.
 *   **REST/gRPC**: Strake can map API responses to tables.
 
-## Pushdown Optimization
-
 The key to high performance in a federated system is **Pushdown Optimization**.
 
-Strake analyzes your SQL query and "pushes down" as much work as possible to the source system.
+Strake analyzes your SQL query and "pushes down" as much work as possible to the source system. This is a rule-based process that ensures we only fetch the data we absolutely need.
 
 Example:
 ```sql
@@ -78,10 +76,8 @@ To re-generate descriptions for an existing table, use the `--overwrite` flag:
 strake-cli add <source> <table_name> --ai-descriptions --overwrite
 ```
 
-## Resource Governance
-
-To protect both the Strake engine and your upstream data sources, Strake enforces multi-layer resource limits:
+To protect both the Strake engine and your upstream data sources, Strake enforces multi-layer resource limits and defensive validation:
 
 1.  **Global Query Timeout**: A hard limit on the total execution time of any query (e.g., 30s). If exceeded, the query is cancelled to free up resources.
-2.  **Per-Source Concurrency Limits**: Each data source (e.g., "Production DB") can be configured with a maximum number of concurrent queries (e.g., `max_concurrent_queries: 5`). This acts as a bulk-head pattern, preventing a flood of analytical queries from overwhelming a transactional database. Queries exceeding this limit are queued or rejected.
-3.  **Defensive Rows Limit**: (Planned) Strake can enforce a maximum number of rows returned to prevent OOM errors.
+2.  **Per-Source Concurrency Limits**: Each data source (e.g., "Production DB") can be configured with a maximum number of concurrent queries. This acts as a bulk-head pattern, preventing analytical queries from overwhelming a transactional database.
+3.  **Cost-Based Validation**: Strake uses a post-planning safety pass to estimate the total rows and bytes a query will process. If the estimate exceeds configured limits, the query is rejected **before execution starts**, protecting your infrastructure from "billion-row" accidents.

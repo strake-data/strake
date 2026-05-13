@@ -17,11 +17,10 @@
 //! # }
 //! ```
 //!
-//! # Performance Characteristics
-//!
 //! Query planning is relatively fast but can be impacted by the number of
-//! registered sources and the complexity of the SQL query. Distributed join
-//! planning uses cost estimates to optimize data movement.
+//! registered sources and the complexity of the SQL query. The engine applies
+//! defensive validation to prevent execution of queries that exceed
+//! resource budgets.
 //!
 //! # Safety
 //!
@@ -242,8 +241,9 @@ impl FederationEngine {
     /// The optimizer pipeline order matters:
     /// 1. User-provided rules (for custom rewrites)
     /// 2. FederationOptimizerRule (routes subqueries to appropriate sources)
-    /// 3. DefensiveLimitRule (safety net for unbounded queries)
-    /// 4. CostBasedValidator (rejects plans exceeding resource limits)
+    /// 3. FlattenFederatedNodesRule (Hygiene: ensures nested nodes are flattened)
+    /// 4. DefensiveLimitRule (safety net for unbounded queries)
+    /// 5. CostBasedValidator (Safety: rejects plans exceeding resource limits)
     fn build_session_context(
         limits: &strake_common::config::QueryLimits,
         catalog_name: &str,
