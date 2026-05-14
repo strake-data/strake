@@ -44,6 +44,9 @@ curl -sSfL https://strakedata.com/install.sh | sh -s -- --cli --server
 
 # Install a specific version
 curl -sSfL https://strakedata.com/install.sh | sh -s -- --cli --version v0.1.0
+
+# Force static (musl) binary on Linux (better for older distros/GCP)
+curl -sSfL https://strakedata.com/install.sh | sh -s -- --musl
 ```
 
 ### Options
@@ -55,6 +58,7 @@ curl -sSfL https://strakedata.com/install.sh | sh -s -- --cli --version v0.1.0
 | `--server` | Install `strake-server` only |
 | `--enterprise` | Install `strake-enterprise` only |
 | `--version`, `-v` | Install a specific version (e.g., `v0.1.0`) |
+| `--musl` | Force installation of the statically-linked `musl` binary (Linux only) |
 
 ### Environment Variables
 
@@ -63,6 +67,8 @@ curl -sSfL https://strakedata.com/install.sh | sh -s -- --cli --version v0.1.0
 | `STRAKE_INSTALL_DIR` | `~/.local/bin` | Installation directory |
 
 > **Note:** Make sure `~/.local/bin` is in your `PATH`. The script will remind you if it's not.
+>
+> **Linux Compatibility:** Our standard binaries are built against **GLIBC 2.31**, making them compatible with most modern and legacy Linux distributions (including Debian 10/11, Ubuntu 20.04+, and common GCP/AWS images). If you encounter `GLIBC` version errors, use the `--musl` flag to install a fully static binary.
 
 ## 3. Building from Source
 To build the Python bindings locally:
@@ -115,7 +121,7 @@ The Strake Server can be configured via environment variables or a `.env` file. 
 | `OPENAI_API_KEY` | `None` | API key for OpenAI provider |
 | `STRAKE_AUTH__ENABLED` | `false` | Enable/Disable authentication checks |
 | `STRAKE_AUTH__API_KEY` | *(empty)* | Static API key for auth (required if enabled) |
-
-For detailed instructions on setting up database-backed authentication and generating keys, see the [Authentication Guide](./authentication.md).
 | `STRAKE_RETRY__MAX_ATTEMPTS` | `5` | Max retries for establishing upstream connections |
 | `STRAKE_QUERY_LIMITS__MAX_OUTPUT_ROWS` | `None` | Hard limit on rows returned by a query |
+
+For detailed instructions on setting up database-backed authentication and generating keys, see the [Authentication Guide](./authentication.md).

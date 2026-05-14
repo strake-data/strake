@@ -1,12 +1,12 @@
 # Welcome to Strake
 
-**Strake** is the AI Data Layer. It's the sandboxed execution environment where agents meet your data and return answers, not rows. It acts as an secure layer, enabling you to query and join data across disparate sources—PostgreSQL, S3 (Parquet/JSON/CSV), REST APIs, and more—using a single standard SQL interface without the need for data movement or ETL.
+**Strake** is the AI Data Layer. It's the sandboxed execution environment where agents meet your data and return answers, not rows. It acts as a secure layer, enabling you to query and join data across disparate sources: PostgreSQL, S3 (Parquet/JSON/CSV), REST APIs, and more, using a single standard SQL interface without the need for data movement or ETL.
 
 ---
 
 ## Why Strake?
 
-Modern data stacks are fragmented. You have transactional data in Postgres, historical logs in S3 Parquet files, and SaaS data in REST APIs. operationalizing analysis across these often requires fragile ETL pipelines or expensive data warehousing.
+Modern data stacks are fragmented. You have transactional data in Postgres, historical logs in S3 Parquet files, and SaaS data in REST APIs. Operationalizing analysis across these often requires fragile ETL pipelines or expensive data warehousing.
 
 Strake solves this by **bringing the compute to the data**:
 
