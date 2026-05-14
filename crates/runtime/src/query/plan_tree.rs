@@ -24,7 +24,7 @@
 //! # use strake_runtime::query::plan_tree::PlanTreeFormatter;
 //! # fn example(plan: Arc<dyn ExecutionPlan>) {
 //! let formatter = PlanTreeFormatter::default();
-//! let ascii_tree = formatter.format_plan_tree(&plan);
+//! let ascii_tree = formatter.format(&plan);
 //! # }
 //! ```
 
