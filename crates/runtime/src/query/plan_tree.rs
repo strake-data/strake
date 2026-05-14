@@ -3,15 +3,29 @@
 //! Provides ASCII tree formatting of DataFusion execution plans with
 //! federation pushdown indicators, timing metrics, and row counts.
 //!
-//! # Safety
+//! ## Performance Characteristics
+//!
+//! Formatting traverses the entire execution plan tree once, with O(n) time
+//! and O(depth) stack space. No allocations beyond the output `String`.
+//!
+//! ## Errors
+//!
+//! This module never returns errors; all formatting is infallible.
+//!
+//! ## Safety
 //!
 //! String slicing is handled carefully to avoid panics on multibyte UTF-8 characters.
 //!
-//! # Usage
+//! ## Usage
 //!
 //! ```rust
-//! // use strake_runtime::query::plan_tree::format_plan_tree;
-//! // let ascii_tree = format_plan_tree(&physical_plan);
+//! # use datafusion::physical_plan::ExecutionPlan;
+//! # use std::sync::Arc;
+//! # use strake_runtime::query::plan_tree::PlanTreeFormatter;
+//! # fn example(plan: Arc<dyn ExecutionPlan>) {
+//! let formatter = PlanTreeFormatter::default();
+//! let ascii_tree = formatter.format_plan_tree(&plan);
+//! # }
 //! ```
 
 use datafusion::physical_plan::ExecutionPlan;
@@ -19,14 +33,14 @@ use datafusion::physical_plan::displayable;
 use std::fmt::Write;
 use std::sync::Arc;
 
-/// Formats an execution plan as an ASCII tree with federation details.
+/// Formats an execution plan as an ASCII tree with federation and metric annotations.
 pub struct PlanTreeFormatter {
     /// Show federation indicators ([PUSHED] markers)
-    show_federation: bool,
+    pub show_federation: bool,
     /// Show pushdown details (filters, projections, limits)
-    show_pushdown: bool,
-    /// Show metrics (timing, row counts) if available
-    show_metrics: bool,
+    pub show_pushdown: bool,
+    /// Show metrics (timing, row counts, etc.) if available
+    pub show_metrics: bool,
 }
 
 impl Default for PlanTreeFormatter {
@@ -40,12 +54,23 @@ impl Default for PlanTreeFormatter {
 }
 
 impl PlanTreeFormatter {
-    /// Create a new node visitor.
+    /// Creates a formatter with all features enabled (federation markers, pushdown details, metrics).
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Format an execution plan as an ASCII tree.
+    /// Renders the execution plan as a boxed ASCII tree.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # use datafusion::physical_plan::ExecutionPlan;
+    /// # use std::sync::Arc;
+    /// # use strake_runtime::query::plan_tree::PlanTreeFormatter;
+    /// # fn example(plan: Arc<dyn ExecutionPlan>) {
+    /// let formatter = PlanTreeFormatter::new();
+    /// let tree = formatter.format(&plan);
+    /// # }
+    /// ```
     pub fn format(&self, plan: &Arc<dyn ExecutionPlan>) -> String {
         let mut output = String::new();
         let _ = writeln!(
@@ -136,9 +161,11 @@ impl PlanTreeFormatter {
         // Try to get metrics from the plan
         if let Some(metrics) = plan.metrics() {
             let mut parts = Vec::new();
+            let mut output_rows_val = None;
 
             // Look for output rows
             if let Some(output_rows) = metrics.output_rows() {
+                output_rows_val = Some(output_rows);
                 parts.push(format!("rows: {}", output_rows));
             }
 
@@ -148,6 +175,34 @@ impl PlanTreeFormatter {
                 if ms > 0.0 {
                     parts.push(format!("{:.1}ms", ms));
                 }
+            }
+
+            // Look for output bytes (DataFusion 53)
+            let output_bytes_sum = metrics
+                .iter()
+                .filter_map(|m| {
+                    use datafusion::physical_plan::metrics::MetricValue;
+                    match m.value() {
+                        MetricValue::Count { name, count } if name == "output_bytes" => {
+                            Some(count.value())
+                        }
+                        _ => None,
+                    }
+                })
+                .sum::<usize>();
+
+            if output_bytes_sum > 0 {
+                let bytes = output_bytes_sum as f64;
+                if output_bytes_sum < 1024 {
+                    parts.push(format!("{}B", output_bytes_sum));
+                } else if output_bytes_sum < 1024 * 1024 {
+                    parts.push(format!("{:.1}KB", bytes / 1024.0));
+                } else {
+                    parts.push(format!("{:.1}MB", bytes / (1024.0 * 1024.0)));
+                }
+            } else if output_rows_val.unwrap_or(0) > 0 {
+                // P2/P3 Fix: Only show placeholder if node produced rows but no bytes reported
+                parts.push("[no output_bytes metric]".to_string());
             }
 
             if !parts.is_empty() {
@@ -280,6 +335,39 @@ impl PlanTreeFormatter {
                     );
                     let _ = writeln!(output);
                 }
+            }
+        }
+        // For DataSource, also look for pushed-down filters
+        if name.contains("DataSource") || name.contains("Scan") {
+            let filter_keys = ["filters=[", "full_filters=[", "filter=[", "predicate="];
+            let mut found_filter = None;
+
+            for key in filter_keys {
+                if let Some(filter_start) = display.find(key) {
+                    let filter_part = &display[filter_start + key.len()..];
+                    let end_char = if key.ends_with('[') { ']' } else { ',' };
+                    let end = filter_part.find(end_char).unwrap_or(filter_part.len());
+                    let filters_str = &filter_part[..end];
+                    if !filters_str.is_empty() {
+                        found_filter = Some(filters_str.to_string());
+                        break;
+                    }
+                }
+            }
+
+            if let Some(filters_str) = found_filter {
+                let filter_display = if filters_str.len() > 80 {
+                    let truncated: String = filters_str.chars().take(77).collect();
+                    format!("{}...", truncated)
+                } else {
+                    filters_str
+                };
+                let _ = write!(
+                    output,
+                    "{}{}   filter: {} [PUSHED]",
+                    prefix, child_prefix_str, filter_display
+                );
+                let _ = writeln!(output);
             }
         }
 

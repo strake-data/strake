@@ -23,6 +23,7 @@ url = { workspace = true }
 secrecy = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+sha2 = { workspace = true }
 globset = "0.4"
 parquet = { workspace = true }
 datafusion-datasource = { workspace = true }

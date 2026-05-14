@@ -116,17 +116,17 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    /// Get the numeric code value
+    /// Get the numeric code value.
     pub fn as_u16(&self) -> u16 {
         *self as u16
     }
 
-    /// Get the formatted code string (e.g., "STRAKE-2002")
+    /// Get the formatted code string (e.g., "STRAKE-2002").
     pub fn as_str(&self) -> String {
         format!("STRAKE-{:04}", self.as_u16())
     }
 
-    /// Get the error category
+    /// Get the high-level category of this error code.
     pub fn category(&self) -> ErrorCategory {
         match self.as_u16() {
             1000..=1999 => ErrorCategory::Connection,
@@ -209,14 +209,19 @@ impl TryFrom<u16> for ErrorCode {
     }
 }
 
-/// High-level error category for Python exception mapping
+/// High-level error category for Python exception mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ErrorCategory {
+    /// Connection-related errors (network, timeouts, catalog lookups).
     Connection,
+    /// Query-related errors (syntax, plan validation, pushdown failures).
     Query,
+    /// Configuration errors (YAML parsing, schema violations).
     Config,
+    /// Authentication and authorization errors.
     Auth,
+    /// Internal system errors or unimplemented features.
     Internal,
 }
 

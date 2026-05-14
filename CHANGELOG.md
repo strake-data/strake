@@ -1,5 +1,24 @@
 # Changelog 
 
+## [v0.2.5-rc1]
+
+### Added
+- **Core: Oracle support and federation refactor** — Integrated Oracle as a first-class data source and refactored the federation engine for improved dialect extensibility.
+- **Core: Zensical migration** — Migrated documentation from MkDocs to Zensical for a more streamlined developer experience.
+- **Enterprise: Excel connector update** — Improved schema detection and performance for large Excel workbooks.
+
+### Changed
+- **DataFusion 53.1.0** — Updated core engine to DataFusion 53.1.0 across the entire workspace.
+- **OpenSSL version bump** — Updated `openssl` to 0.10.79 for security and compatibility.
+
+### Fixed
+- **Dialect refactoring and fixes** — Resolved several SQL generation and schema mapping issues across multiple dialects.
+- **Enterprise: License fallback** — Fixed fallback logic for local license keys when remote validation is unavailable.
+
+### Docs
+- **CBO comments** — Enhanced documentation for the Cost-Based Optimizer.
+- **Auth guide** — Added a comprehensive guide for authentication configuration.
+
 ## [v0.2.4]
 
 ### Added

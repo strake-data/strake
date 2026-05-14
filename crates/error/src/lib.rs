@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! # strake-error
 //!
 //! Unified error types for the Strake federated query engine.

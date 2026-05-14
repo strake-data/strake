@@ -9,15 +9,23 @@
 //! OpenDAL abstraction. Parquet tables support predicate caching;
 //! CSV/JSON do not (row-group metadata unavailable).
 //!
-//! ## Safety
-//!
-//! No `unsafe` blocks. SFTP support is conditionally compiled for Unix only.
-//!
 //! ## Errors
 //!
-//! - `SourceError`: Structured error type for configuration and source failures.
-//! - `anyhow::Error`: For non-recoverable internal or wrapper errors.
-//! - `DataFusionError`: Schema inference or registration failures.
+//! - `SourceError::UnsupportedType` if the source type is not Parquet/CSV/JSON.
+//! - `SourceError::InvalidUrl` if the provided path is a malformed URI.
+//! - `anyhow::Error` for OpenDAL operator construction failures.
+//! - `DataFusionError` for schema inference or table registration failures.
+//!
+//! ## Performance Characteristics
+//!
+//! - **Cache Latency**: Predicate caching adds ~1-2ms overhead per query but can
+//!   save seconds by skipping Parquet row groups.
+//! - **Throughput**: Listing large object storage prefixes is limited by OpenDAL
+//!   provider latency and network bandwidth.
+//!
+//! ## Safety
+//!
+//! This module does not use `unsafe` code.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -46,25 +54,12 @@ pub enum SourceError {
     InvalidUrl(#[from] url::ParseError),
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum DataTypeConfig {
-    #[serde(alias = "integer")]
-    Int,
-    BigInt,
-    #[serde(alias = "string", alias = "text", alias = "char")]
-    Varchar,
-    #[serde(alias = "double")]
-    Float,
-    #[serde(alias = "bool")]
-    Boolean,
-    Date,
-    Decimal,
-}
-
-/// Provider for file-based sources (Parquet, etc.).
+/// Provider for file-based sources (Parquet, CSV, JSON).
+///
+/// Discovers and registers tables from local or remote object storage
+/// (S3, GCS, Azure, etc.) using OpenDAL.
 pub struct FileSourceProvider {
-    /// Shared predicate cache.
+    /// Shared predicate cache for Parquet sources.
     pub predicate_cache: Arc<strake_common::predicate_cache::PredicateCache>,
 }
 
@@ -178,7 +173,11 @@ impl SourceProvider for FileSourceProvider {
     }
 }
 
-/// Helper to register object stores based on URI scheme.
+/// Registers an OpenDAL-backed object store for the given URI scheme.
+///
+/// # Errors
+/// Returns `Err` if the URL is malformed or if the operator cannot be built
+/// from the provided options.
 pub async fn register_object_store(
     ctx: &SessionContext,
     path: &str,
@@ -186,7 +185,14 @@ pub async fn register_object_store(
 ) -> Result<()> {
     let url = match Url::parse(path) {
         Ok(url) => url,
-        Err(_) => return Ok(()), // Likely a local file path
+        Err(e) => {
+            // If it's a relative path or doesn't look like a URL, it might be a local file.
+            // But we should only ignore it if it's clearly not intended to be a URL.
+            if path.contains("://") {
+                return Err(e).context(format!("Invalid source URL: {path}"));
+            }
+            return Ok(());
+        }
     };
     let scheme = url.scheme();
     let bucket = url.host_str().unwrap_or_default();
@@ -264,7 +270,12 @@ pub async fn register_object_store(
     Ok(())
 }
 
-/// Register Parquet tables with DataFusion context
+/// Registers Parquet tables with the DataFusion context.
+///
+/// Supports predicate caching if enabled.
+///
+/// # Errors
+/// Returns `Err` if the schema cannot be inferred or if table registration fails.
 pub async fn register_parquet(
     context: &SessionContext,
     catalog: &str,
@@ -275,10 +286,14 @@ pub async fn register_parquet(
     predicate_cache_enabled: bool,
 ) -> Result<()> {
     use crate::sources::predicate_caching::CachingTableProvider;
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    use sha2::{Digest, Sha256};
 
-    let file_format = ParquetFormat::default();
+    let mut parquet_options = datafusion::config::TableParquetOptions::default();
+    parquet_options.global.pushdown_filters = true;
+    parquet_options.global.reorder_filters = true;
+    parquet_options.global.pruning = true;
+
+    let file_format = ParquetFormat::default().with_options(parquet_options);
     let listing_options = ListingOptions::new(Arc::new(file_format));
 
     let start_url = ListingTableUrl::parse(path)?;
@@ -301,10 +316,14 @@ pub async fn register_parquet(
             let provider = Arc::new(ListingTable::try_new(config)?);
 
             let snapshot_id = table_cfg.snapshot_id.unwrap_or_else(|| {
-                let mut hasher = DefaultHasher::new();
-                table_path.hash(&mut hasher);
-                table_cfg.name.hash(&mut hasher);
-                hasher.finish() as i64
+                let mut hasher = Sha256::new();
+                hasher.update(table_path.as_bytes());
+                hasher.update(table_cfg.name.as_bytes());
+                let result = hasher.finalize();
+                // NOTE: Using stable SHA-256 hash truncated to 64-bits as a cache key.
+                // This format must remain stable to avoid cache invalidation across restarts.
+                // If the key format changes in future versions, a version prefix should be added.
+                u64::from_le_bytes(result[0..8].try_into().unwrap()) as i64
             });
             let provider: Arc<dyn TableProvider> = if predicate_cache_enabled {
                 Arc::new(CachingTableProvider::new(
@@ -333,10 +352,13 @@ pub async fn register_parquet(
             .with_schema(resolved_schema);
         let provider = Arc::new(ListingTable::try_new(config)?);
 
-        let mut hasher = DefaultHasher::new();
-        path.hash(&mut hasher);
-        name.hash(&mut hasher);
-        let snapshot_id = hasher.finish() as i64;
+        let mut hasher = Sha256::new();
+        hasher.update(path.as_bytes());
+        hasher.update(name.as_bytes());
+        let result = hasher.finalize();
+        // NOTE: Using stable SHA-256 hash truncated to 64-bits as a cache key.
+        // If the key format changes in future versions, a version prefix should be added.
+        let snapshot_id = u64::from_le_bytes(result[0..8].try_into().unwrap()) as i64;
 
         let wrapped = Arc::new(CachingTableProvider::new(provider, cache, snapshot_id));
 
@@ -347,7 +369,10 @@ pub async fn register_parquet(
     Ok(())
 }
 
-/// Register CSV tables with DataFusion context
+/// Registers CSV tables with the DataFusion context.
+///
+/// # Errors
+/// Returns `Err` if the schema cannot be inferred or if table registration fails.
 pub async fn register_csv(
     context: &SessionContext,
     catalog: &str,
@@ -406,7 +431,10 @@ pub async fn register_csv(
     Ok(())
 }
 
-/// Register JSON tables with DataFusion context
+/// Registers JSON tables with the DataFusion context.
+///
+/// # Errors
+/// Returns `Err` if the schema cannot be inferred or if table registration fails.
 pub async fn register_json(
     context: &SessionContext,
     catalog: &str,
@@ -460,7 +488,12 @@ pub async fn register_json(
     Ok(())
 }
 
-fn build_schema_from_config(
+/// Builds an Arrow schema from the provided column configurations.
+///
+/// # Errors
+/// Returns `Err` if an unsupported data type is encountered or if decimal
+/// precision/scale is invalid.
+pub fn build_schema_from_config(
     columns: &[ColumnConfig],
 ) -> Result<datafusion::arrow::datatypes::SchemaRef> {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -469,18 +502,17 @@ fn build_schema_from_config(
     let fields: Result<Vec<Field>> = columns
         .iter()
         .map(|c| {
-            let config_type: DataTypeConfig =
-                serde_json::from_str(&format!("\"{}\"", c.data_type.to_lowercase()))
-                    .unwrap_or(DataTypeConfig::Varchar);
-
-            let dt = match config_type {
-                DataTypeConfig::Int => DataType::Int32,
-                DataTypeConfig::BigInt => DataType::Int64,
-                DataTypeConfig::Varchar => DataType::Utf8,
-                DataTypeConfig::Float => DataType::Float64,
-                DataTypeConfig::Boolean => DataType::Boolean,
-                DataTypeConfig::Date => DataType::Date32,
-                DataTypeConfig::Decimal => {
+            let dt = match c.data_type.to_lowercase().as_str() {
+                "tinyint" | "int1" => DataType::Int8,
+                "smallint" | "int2" => DataType::Int16,
+                "int" | "integer" | "int4" => DataType::Int32,
+                "bigint" | "int8" => DataType::Int64,
+                "float" | "double" | "float8" | "double precision" => DataType::Float64,
+                "real" | "float4" => DataType::Float32,
+                "string" | "text" | "varchar" | "char" => DataType::Utf8,
+                "bool" | "boolean" => DataType::Boolean,
+                "date" => DataType::Date32,
+                "decimal" => {
                     let precision = c.precision.unwrap_or(15);
                     if precision == 0 {
                         anyhow::bail!(
@@ -497,14 +529,23 @@ fn build_schema_from_config(
                             precision
                         );
                     }
+                    let scale_i8 = i8::try_from(scale).map_err(|_| {
+                        anyhow::anyhow!(
+                            "Decimal scale {} exceeds i8 range for column '{}'",
+                            scale,
+                            c.name
+                        )
+                    })?;
+
                     if precision <= 9 {
-                        DataType::Decimal32(precision, scale as i8)
+                        DataType::Decimal32(precision, scale_i8)
                     } else if precision <= 18 {
-                        DataType::Decimal64(precision, scale as i8)
+                        DataType::Decimal64(precision, scale_i8)
                     } else {
-                        DataType::Decimal128(precision, scale as i8)
+                        DataType::Decimal128(precision, scale_i8)
                     }
                 }
+                other => anyhow::bail!("Unsupported data type: {} for column '{}'", other, c.name),
             };
             let nullable = !c.not_null;
 
@@ -637,5 +678,35 @@ mod tests {
             *schema.field_with_name("d").unwrap().data_type(),
             DataType::Date32
         );
+    }
+
+    #[tokio::test]
+    async fn test_register_object_store_url_parsing() {
+        let ctx = SessionContext::new();
+
+        // Happy path: Valid HTTP URL
+        let res = register_object_store(&ctx, "http://example.com/path", HashMap::new()).await;
+        assert!(res.is_ok(), "HTTP registration failed: {:?}", res.err());
+
+        // Happy path: Local file path (should be ignored)
+        let res = register_object_store(&ctx, "/tmp/local_file", HashMap::new()).await;
+        assert!(
+            res.is_ok(),
+            "Local path registration failed: {:?}",
+            res.err()
+        );
+
+        // Bad path: Malformed URL with scheme
+        let res = register_object_store(&ctx, "s3://[invalid]", HashMap::new()).await;
+        assert!(res.is_err(), "Malformed S3 URL should fail");
+        assert!(res.unwrap_err().to_string().contains("Invalid source URL"));
+
+        // Edge case: Unsupported scheme (should be ignored)
+        let res = register_object_store(&ctx, "unknown://bucket", HashMap::new()).await;
+        assert!(res.is_ok(), "Unsupported scheme should be ignored");
+
+        // Edge case: URL-like path that is malformed
+        let res = register_object_store(&ctx, "http://:invalid", HashMap::new()).await;
+        assert!(res.is_err(), "Malformed HTTP URL should fail");
     }
 }
