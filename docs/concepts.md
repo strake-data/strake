@@ -51,7 +51,7 @@ Strake implements a **TTL-based, User-Isolated** caching strategy to ensure perf
 
 *   **User Isolation**: Cache keys include the User ID (or Roles) to prevent cross-user data leakage. A query run by User A will not return cached results for User B unless they share the exact same context permissioning (depending on configuration).
 *   **TTL-Based Expiry**: Cached entries are valid for a configured duration (e.g., 60 seconds). Strake does not actively invalidate cache on source changes; it relies on eventual consistency driven by the TTL.
-*   **Defensive Caching**: If the cache backend (e.g., Redis) fails, Strake fails open and executes the query directly against the source, logging a warning.
+*   **Defensive Caching**: Strake is designed for resilience. If a distributed cache backend (e.g., Redis, planned for future release) fails, Strake fails open and executes the query directly against the source, logging a warning.
 
 ## Metadata Enrichment (AI)
 

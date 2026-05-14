@@ -45,27 +45,40 @@ query = """
 df = conn.sql(query)
 ```
 
-## 2. Using `trace()` for Performance Tuning
+## 2. Performance Tuning: `explain_tree()` vs. `trace()`
 
-If a query feels slow, use `trace()` to see if pushdown is working.
+Strake provides two tools to inspect how your queries are executed. For performance tuning, we recommend using `explain_tree()` in **Embedded Mode**.
+
+### `explain_tree()` (Recommended)
+Returns a detailed ASCII tree visualization of the **Physical Plan**, including pushdown indicators and execution metrics.
+
+> [!NOTE]
+> `explain_tree()` requires direct access to the engine's physical plan and is only available in **Embedded Mode**. For remote connections, it falls back to the logical `trace()` output.
 
 ```python
-conn.trace("SELECT * FROM strake.pg.public.users WHERE id > 1000")
+# Verify if filtering is happening at the source (e.g., S3/Parquet)
+print(conn.explain_tree("SELECT * FROM strake.s3_logs.logs WHERE event_date > '2023-01-01'"))
 ```
 
-**Output Analysis**:
+#### Analysis: Good vs. Bad Plans
 
-Look for `TableScan`.
+*   **✅ Good (Pushdown Active)**: Look for the `[PUSHED]` marker.
+    ```text
+    └─ DataSource (source: parquet) [PUSHED]
+       filter: event_date > '2023-01-01' [PUSHED]
+    ```
+    *Impact: The filter is executed by the source (S3/Postgres). Only matching rows are transferred over the network.*
 
-*   **Good (Pushdown)**:
+*   **❌ Bad (Local Execution)**: Look for the `[NOT PUSHED]` marker.
+    ```text
+    └─ Filter: event_date > '2023-01-01' [NOT PUSHED - Executed Locally]
+       └─ DataSource (source: parquet) [PUSHED]
     ```
-    TableScan: users projection=[id, email], filters=[id > 1000]
-    ```
-    The filter is part of the scan! It's happening inside Postgres.
+    *Impact: Strake fetches **every** row from the source and filters them in memory. This is a common performance bottleneck.*
 
-*   **Bad (No Pushdown)**:
-    ```
-    Filter: id > 1000
-      TableScan: users
-    ```
-    The filter is separate. Strake is scanning *everything* and filtering locally.
+### `trace()`
+Returns the **Logical Plan** of the query as a pretty-printed table. This is useful for understanding the high-level query structure and works across both Embedded and Remote modes.
+
+```python
+print(conn.trace("SELECT * FROM strake.pg.public.users WHERE id > 1000"))
+```

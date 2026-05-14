@@ -29,12 +29,12 @@ graph TD
 ## Key Components
 
 ### 1. `strake-core`
-The brain of the operation. It depends on `datafusion` and implements the `FederationEngine`.
+The core execution engine. It leverages `datafusion` to implement the `FederationEngine`.
 *   **`FederationEngine`**: configuring the DataFusion `SessionContext`.
 *   **`SourceRegistry`**: Dynamically loads and manages `SourceProvider` implementations.
 
 ### 2. `strake-server`
-The "Face" of Strake. It implements the **Apache Arrow Flight SQL** protocol.
+The public interface layer. It implements the **Apache Arrow Flight SQL** protocol to provide standard connectivity.
 *   **Tonic/gRPC**: Handles the network transport.
 *   **AuthLayer**: Middleware for checking API Keys or OIDC Tokens.
 *   **FlightSqlService**: Maps Flight SQL commands (`GetFlightInfo`, `DoGet`) to DataFusion execution plans.
@@ -78,8 +78,8 @@ Strake is designed to scale from a single developer laptop to an enterprise clus
     *   Run `N` replicas of `strake-server` behind a Layer 4/7 Load Balancer.
     *   **Shared State:**
         *   **Metadata:** All replicas read `sources.yaml` or connect to the same Postgres Metadata Store.
-        *   **Auth Cache:** (Enterprise) Use Redis for distributed API key caching instead of local memory.
-        *   **Rate Limits:** (Enterprise) Use Redis-backed "Traffic Control" middleware to enforce global quotas.
+        *   **Auth Cache:** (Enterprise) Distributed API key caching (Redis support planned; currently uses local in-memory caching).
+        *   **Rate Limits:** (Enterprise) Global quota enforcement (Redis support planned; currently uses local in-memory caching).
 *   **Result:** Linearly scale **QPS (Queries Per Second)** by adding more stateless nodes.
 
 ### 3. Hybrid Scaling / Vertical Resilience (Spill-to-Disk)
@@ -89,5 +89,7 @@ Strake is designed to scale from a single developer laptop to an enterprise clus
     *   Strake automatically spills excess data to a mounted scratch disk (SSD) during memory-intensive operations (Hash Joins, Aggregations).
 *   **Result:** Crash resilience for "Big Data" queries without the complexity of a distributed shuffle cluster.
 
-### 4. Distributed Compute (Explicitly Deferred)
-*   *Note: Distributed shuffle clusters (Apache Ballista/Spark/Ray) are explicitly deferred. Strake favors "Defensive Federation" (Pushdown) and "Hybrid Scaling" (Spill-to-Disk) to maintain a single-binary architecture.*
+### 4. Single-Binary Compute Philosophy
+Strake prioritizes a streamlined single-binary architecture to minimize operational overhead. Rather than relying on distributed shuffle clusters (such as Apache Spark or Ray), Strake achieves high-performance through:
+*   **Defensive Federation**: Maximizing pushdown to remote sources to eliminate unnecessary data movement.
+*   **Hybrid Scaling**: Using advanced spill-to-disk capabilities to handle datasets that exceed physical memory.
