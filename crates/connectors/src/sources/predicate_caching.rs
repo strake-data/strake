@@ -2,8 +2,24 @@
 //!
 //! Advanced predicate caching for Parquet and Iceberg data sources.
 //!
-//! Provides `CachingReaderFactory` and `RecordingExec` to enable
-//! row-group level filtering based on previous query results.
+//! Provides `CachingTableProvider` and related infrastructure to enable
+//! row-group level filtering and metadata caching based on previous query results.
+//!
+//! ## Overview
+//!
+//! This module implements a sophisticated caching layer that stores Parquet
+//! metadata and predicate evaluation results. It allows Strake to bypass
+//! expensive metadata fetching and row-group scanning for frequently accessed
+//! data patterns.
+//!
+//! ## Errors
+//!
+//! - `DataFusionError::Execution` if row count overflows or metadata cannot be parsed.
+//!
+//! ## Performance Characteristics
+//!
+//! - Metadata caching uses a capacity-limited LRU-style cache to bound memory usage.
+//! - Predicate results are stored with SHA-256 stable keys for persistence across restarts.
 
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -25,6 +41,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::logical_expr::Expr;
+use moka::future::Cache;
 /// Trait for table providers that support dynamic filtering.
 pub trait DynamicFilterSource: Any + Send + Sync {
     /// Returns true if this source supports dynamic filtering.
@@ -55,6 +72,8 @@ pub enum CacheMode {
     Recording,
     /// Filtering phase: skip row groups based on cached results.
     Filtering,
+    /// Predicate caching is disabled; only metadata caching is active.
+    MetadataOnly,
 }
 
 /// Shared state for one file during a recording scan.
@@ -85,11 +104,9 @@ impl FileRecordingState {
     }
 }
 
-/// A factory for creating `CachingAsyncFileReader`s.
-#[derive(Debug)]
-pub struct CachingReaderFactory {
-    /// Inner reader factory.
-    pub inner: Arc<dyn ParquetFileReaderFactory>,
+/// Context for predicate caching operations.
+#[derive(Debug, Clone)]
+pub struct PredicateCachingContext {
     /// Predicate cache.
     pub cache: Arc<PredicateCache>,
     /// Snapshot ID for cache isolation.
@@ -100,6 +117,17 @@ pub struct CachingReaderFactory {
     pub partition_row_offsets: Arc<DashMap<(String, usize), usize>>,
     /// Current cache mode.
     pub mode: CacheMode,
+    /// Shared metadata cache.
+    pub metadata_cache: Arc<Cache<String, Arc<ParquetMetaData>>>,
+}
+
+/// A factory for creating `CachingAsyncFileReader`s.
+#[derive(Debug)]
+pub struct CachingReaderFactory {
+    /// Inner reader factory.
+    pub inner: Arc<dyn ParquetFileReaderFactory>,
+    /// Caching context.
+    pub context: PredicateCachingContext,
 }
 
 impl ParquetFileReaderFactory for CachingReaderFactory {
@@ -117,7 +145,7 @@ impl ParquetFileReaderFactory for CachingReaderFactory {
             .map(|r| (r.start as u64)..(r.end as u64));
         tracing::info!(
             file_path = %file_path,
-            mode = ?self.mode,
+            mode = ?self.context.mode,
             "CachingReaderFactory::create_reader invoked"
         );
         let reader = self.inner.create_reader(
@@ -129,14 +157,15 @@ impl ParquetFileReaderFactory for CachingReaderFactory {
 
         Ok(Box::new(CachingAsyncFileReader {
             inner: reader,
-            cache: Arc::clone(&self.cache),
-            snapshot_id: self.snapshot_id,
+            cache: Arc::clone(&self.context.cache),
+            snapshot_id: self.context.snapshot_id,
             file_path,
-            recording_states: Arc::clone(&self.recording_states),
-            partition_row_offsets: Arc::clone(&self.partition_row_offsets),
+            recording_states: Arc::clone(&self.context.recording_states),
+            partition_row_offsets: Arc::clone(&self.context.partition_row_offsets),
             partition_index,
-            mode: self.mode,
+            mode: self.context.mode,
             range,
+            metadata_cache: Arc::clone(&self.context.metadata_cache),
         }))
     }
 }
@@ -152,6 +181,7 @@ pub struct CachingAsyncFileReader {
     partition_index: usize,
     mode: CacheMode,
     range: Option<Range<u64>>,
+    metadata_cache: Arc<Cache<String, Arc<ParquetMetaData>>>,
 }
 
 impl CachingAsyncFileReader {
@@ -188,8 +218,19 @@ impl AsyncFileReader for CachingAsyncFileReader {
         options: Option<&'a ArrowReaderOptions>,
     ) -> BoxFuture<'a, parquet::errors::Result<Arc<ParquetMetaData>>> {
         Box::pin(async move {
-            let metadata = self.inner.get_metadata(options).await?;
+            // Fetch or retrieve cached RAW metadata (never filtered)
+            let metadata =
+                if let Some(cached) = self.metadata_cache.get(self.file_path.as_ref()).await {
+                    cached
+                } else {
+                    let metadata = self.inner.get_metadata(options).await?;
+                    self.metadata_cache
+                        .insert(self.file_path.to_string(), Arc::clone(&metadata))
+                        .await;
+                    metadata
+                };
 
+            // ALWAYS apply mode-specific logic, even on cache hits
             if self.mode == CacheMode::Recording {
                 let state = self
                     .recording_states
@@ -202,10 +243,8 @@ impl AsyncFileReader for CachingAsyncFileReader {
                     });
 
                 // Calculate the start row offset for this partition within the file.
-                // This is critical for multi-partition recording.
                 let mut start_row = 0;
                 if let Some(range) = &self.range {
-                    // Find the first row group that overlaps with our byte range
                     for (i, rg) in metadata.row_groups().iter().enumerate() {
                         let rg_offset = rg.file_offset().unwrap_or(0) as u64;
                         if rg_offset >= range.start {
@@ -224,6 +263,7 @@ impl AsyncFileReader for CachingAsyncFileReader {
             match self.mode {
                 CacheMode::Recording => Ok(Arc::clone(&metadata)),
                 CacheMode::Filtering => Ok(self.filtered_metadata(&metadata)),
+                CacheMode::MetadataOnly => Ok(Arc::clone(&metadata)),
             }
         })
     }
@@ -334,7 +374,7 @@ impl ExecutionPlan for RecordingExec {
     ) -> DataFusionResult<SendableRecordBatchStream> {
         let stream = self.inner.execute(partition, context)?;
         let output_rows = MetricBuilder::new(&self.metrics).output_rows(partition);
-        let output_bytes = MetricBuilder::new(&self.metrics).counter("output_bytes", partition);
+        let output_bytes = MetricBuilder::new(&self.metrics).output_bytes(partition);
         let elapsed_compute = MetricBuilder::new(&self.metrics).elapsed_compute(partition);
 
         Ok(Box::pin(RecordingStream {
@@ -373,6 +413,8 @@ pub struct CachingTableProvider {
     inner: Arc<dyn TableProvider>,
     cache: Arc<PredicateCache>,
     snapshot_id: i64,
+    predicate_cache_enabled: bool,
+    metadata_cache: Arc<Cache<String, Arc<ParquetMetaData>>>,
 }
 
 impl CachingTableProvider {
@@ -381,12 +423,27 @@ impl CachingTableProvider {
         inner: Arc<dyn TableProvider>,
         cache: Arc<PredicateCache>,
         snapshot_id: i64,
+        predicate_cache_enabled: bool,
+        metadata_cache_capacity: usize,
     ) -> Self {
         Self {
             inner,
             cache,
             snapshot_id,
+            predicate_cache_enabled,
+            metadata_cache: Arc::new(
+                Cache::builder()
+                    .max_capacity(metadata_cache_capacity as u64)
+                    .time_to_live(std::time::Duration::from_secs(300))
+                    .build(),
+            ),
         }
+    }
+}
+
+impl crate::sources::WrappingTableProvider for CachingTableProvider {
+    fn inner(&self) -> &Arc<dyn TableProvider> {
+        &self.inner
     }
 }
 
@@ -414,9 +471,9 @@ impl TableProvider for CachingTableProvider {
         let inner_plan = self.inner.scan(state, projection, filters, limit).await?;
 
         // Determine cache mode based on whether we are in a recording phase or not.
-        // For simplicity, we default to Filtering if items are in cache, Recording otherwise.
-        // In a real system, this would be driven by a higher-level policy.
-        let mode = if self.cache.has_any_blocks_for_snapshot(self.snapshot_id) {
+        let mode = if !self.predicate_cache_enabled {
+            CacheMode::MetadataOnly
+        } else if self.cache.has_any_blocks_for_snapshot(self.snapshot_id) {
             CacheMode::Filtering
         } else {
             CacheMode::Recording
@@ -425,22 +482,25 @@ impl TableProvider for CachingTableProvider {
         let recording_states = Arc::new(DashMap::new());
         let partition_row_offsets = Arc::new(DashMap::new());
 
-        let new_plan = inject_factory_into_plan(
-            inner_plan,
-            state.runtime_env().clone(),
-            Arc::clone(&self.cache),
-            self.snapshot_id,
-            Arc::clone(&recording_states),
-            Arc::clone(&partition_row_offsets),
+        let context = PredicateCachingContext {
+            cache: Arc::clone(&self.cache),
+            snapshot_id: self.snapshot_id,
+            recording_states: Arc::clone(&recording_states),
+            partition_row_offsets: Arc::clone(&partition_row_offsets),
             mode,
-        )?;
+            metadata_cache: Arc::clone(&self.metadata_cache),
+        };
+
+        let new_plan = inject_factory_into_plan(inner_plan, state.runtime_env().clone(), context)?;
 
         if mode == CacheMode::Recording && !filters.is_empty() {
             // Find a physical predicate to record
-            if let Ok(physical_predicate) = state.create_physical_expr(
-                filters[0].clone(),
-                &datafusion::common::DFSchema::try_from(self.schema()).unwrap(),
-            ) {
+            let df_schema = datafusion::common::DFSchema::try_from(self.schema()).map_err(|e| {
+                DataFusionError::Plan(format!("Failed to convert schema for filter pushdown: {e}"))
+            })?;
+            if let Ok(physical_predicate) =
+                state.create_physical_expr(filters[0].clone(), &df_schema)
+            {
                 return Ok(Arc::new(RecordingExec::new(
                     new_plan,
                     physical_predicate,
@@ -612,10 +672,14 @@ impl futures::Stream for RecordingStream {
                             }
                         }
                     }
-                    self.rows_processed = self
-                        .rows_processed
-                        .checked_add(batch.num_rows())
-                        .expect("row count overflow in predicate cache recording - query exceeds maximum row count");
+                    self.rows_processed = match self.rows_processed.checked_add(batch.num_rows()) {
+                        Some(v) => v,
+                        None => {
+                            return Poll::Ready(Some(Err(DataFusionError::Execution(
+                                "row count overflow in predicate cache recording".into(),
+                            ))));
+                        }
+                    };
                 }
 
                 self.output_rows.add(batch.num_rows());
@@ -666,11 +730,7 @@ impl Drop for RecordingStream {
 pub fn inject_factory_into_plan(
     plan: Arc<dyn ExecutionPlan>,
     runtime_env: Arc<datafusion::execution::runtime_env::RuntimeEnv>,
-    cache: Arc<PredicateCache>,
-    snapshot_id: i64,
-    recording_states: Arc<DashMap<String, Arc<FileRecordingState>>>,
-    partition_row_offsets: Arc<DashMap<(String, usize), usize>>,
-    mode: CacheMode,
+    context: PredicateCachingContext,
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
     if let Some(data_source_exec) = plan.as_any().downcast_ref::<DataSourceExec>() {
         let (base_config, parquet_source) = data_source_exec
@@ -692,33 +752,23 @@ pub fn inject_factory_into_plan(
 
         let factory = Arc::new(CachingReaderFactory {
             inner: inner_factory,
-            cache: Arc::clone(&cache),
-            snapshot_id,
-            recording_states: Arc::clone(&recording_states),
-            partition_row_offsets: Arc::clone(&partition_row_offsets),
-            mode,
+            context,
         });
 
         let new_source = parquet_source
             .clone()
             .with_parquet_file_reader_factory(factory);
+
         let new_config = FileScanConfigBuilder::from(base_config.clone())
             .with_source(Arc::new(new_source))
             .build();
-        return Ok(DataSourceExec::from_data_source(new_config));
+
+        return Ok(Arc::new(DataSourceExec::new(Arc::new(new_config))));
     }
 
     if let Some(projection_exec) = plan.as_any().downcast_ref::<ProjectionExec>() {
         let child = projection_exec.children()[0].clone();
-        let new_child = inject_factory_into_plan(
-            Arc::clone(&child),
-            runtime_env,
-            cache,
-            snapshot_id,
-            recording_states,
-            partition_row_offsets,
-            mode,
-        )?;
+        let new_child = inject_factory_into_plan(Arc::clone(&child), runtime_env, context)?;
         return plan.with_new_children(vec![new_child]);
     }
 
@@ -731,15 +781,7 @@ pub fn inject_factory_into_plan(
     let new_children = children
         .into_iter()
         .map(|child| {
-            inject_factory_into_plan(
-                child.clone(),
-                Arc::clone(&runtime_env),
-                Arc::clone(&cache),
-                snapshot_id,
-                Arc::clone(&recording_states),
-                Arc::clone(&partition_row_offsets),
-                mode,
-            )
+            inject_factory_into_plan(child.clone(), Arc::clone(&runtime_env), context.clone())
         })
         .collect::<DataFusionResult<Vec<_>>>()?;
 
@@ -939,5 +981,227 @@ mod tests {
 
         // Should not panic or underflow
         let _ = stream.next().await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_caching_table_provider_scan_failure_propagation() {
+        use datafusion::datasource::TableType;
+
+        #[derive(Debug)]
+        struct FailingProvider;
+        #[async_trait::async_trait]
+        impl TableProvider for FailingProvider {
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+            fn schema(&self) -> SchemaRef {
+                Arc::new(datafusion::arrow::datatypes::Schema::empty())
+            }
+            fn table_type(&self) -> TableType {
+                TableType::Base
+            }
+            async fn scan(
+                &self,
+                _state: &dyn datafusion::catalog::Session,
+                _projection: Option<&Vec<usize>>,
+                _filters: &[Expr],
+                _limit: Option<usize>,
+            ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+                Err(datafusion::error::DataFusionError::Internal(
+                    "Mock scan failure".to_string(),
+                ))
+            }
+        }
+
+        let provider = Arc::new(FailingProvider);
+        let cache = Arc::new(PredicateCache::new());
+        let caching_provider = CachingTableProvider::new(provider, cache, 1, true, 1000);
+
+        let ctx = SessionContext::new();
+        let res = caching_provider.scan(&ctx.state(), None, &[], None).await;
+
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("Mock scan failure"));
+    }
+
+    #[tokio::test]
+    async fn test_caching_table_provider_predicate_cache_disabled() {
+        use datafusion::datasource::TableType;
+
+        #[derive(Debug)]
+        struct FailingProvider;
+        #[async_trait::async_trait]
+        impl TableProvider for FailingProvider {
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+            fn schema(&self) -> SchemaRef {
+                Arc::new(datafusion::arrow::datatypes::Schema::empty())
+            }
+            fn table_type(&self) -> TableType {
+                TableType::Base
+            }
+            async fn scan(
+                &self,
+                _state: &dyn datafusion::catalog::Session,
+                _projection: Option<&Vec<usize>>,
+                _filters: &[Expr],
+                _limit: Option<usize>,
+            ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+                Err(datafusion::error::DataFusionError::Internal(
+                    "Mock scan failure".to_string(),
+                ))
+            }
+        }
+
+        let provider = Arc::new(FailingProvider);
+        let cache = Arc::new(PredicateCache::new());
+        // predicate_cache_enabled = false
+        let caching_provider = CachingTableProvider::new(provider, cache, 1, false, 1000);
+
+        let ctx = SessionContext::new();
+        let res = caching_provider.scan(&ctx.state(), None, &[], None).await;
+
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("Mock scan failure"));
+    }
+
+    #[tokio::test]
+    async fn test_metadata_cache_consistency_multi_partition() {
+        use moka::future::Cache;
+        use parquet::file::metadata::{ColumnChunkMetaData, RowGroupMetaData};
+
+        let schema = Arc::new(datafusion::arrow::datatypes::Schema::new(vec![
+            datafusion::arrow::datatypes::Field::new(
+                "id",
+                datafusion::arrow::datatypes::DataType::Int32,
+                false,
+            ),
+        ]));
+
+        let schema_descr = Arc::new(
+            parquet::arrow::ArrowSchemaConverter::new()
+                .convert(&schema)
+                .unwrap(),
+        );
+
+        let col_descr = schema_descr.column(0);
+        let col_meta = ColumnChunkMetaData::builder(col_descr.clone())
+            .set_num_values(100)
+            .build()
+            .unwrap();
+
+        // Create mock metadata with 2 row groups
+        let rg1 = RowGroupMetaData::builder(schema_descr.clone())
+            .set_num_rows(100)
+            .add_column_metadata(col_meta.clone())
+            .build()
+            .unwrap();
+        let rg2 = RowGroupMetaData::builder(schema_descr.clone())
+            .set_num_rows(200)
+            .add_column_metadata(col_meta)
+            .build()
+            .unwrap();
+        let raw_metadata = Arc::new(ParquetMetaData::new(
+            parquet::file::metadata::FileMetaData::new(
+                1,
+                300,
+                None,
+                None,
+                schema_descr.clone(),
+                None,
+            ),
+            vec![rg1, rg2],
+        ));
+
+        let metadata_cache = Arc::new(Cache::builder().max_capacity(10).build());
+
+        let file_path: Arc<str> = Arc::from("test.parquet");
+        metadata_cache
+            .insert(file_path.to_string(), Arc::clone(&raw_metadata))
+            .await;
+
+        let predicate_cache = Arc::new(PredicateCache::new());
+        // Mock a predicate result where only the first row group matches
+        let block_key = BlockKey::new(1, Arc::from(file_path.as_ref()), 0);
+        predicate_cache.insert_block(block_key, true);
+        let block_key2 = BlockKey::new(1, Arc::from(file_path.as_ref()), 1);
+        predicate_cache.insert_block(block_key2, false);
+
+        let recording_states = Arc::new(DashMap::new());
+        let partition_row_offsets = Arc::new(DashMap::new());
+
+        // Partition 0
+        let mut reader0 = CachingAsyncFileReader {
+            inner: Box::new(MockAsyncFileReader::new(Arc::clone(&raw_metadata))),
+            file_path: Arc::clone(&file_path),
+            metadata_cache: Arc::clone(&metadata_cache),
+            cache: Arc::clone(&predicate_cache),
+            snapshot_id: 1,
+            recording_states: Arc::clone(&recording_states),
+            partition_row_offsets: Arc::clone(&partition_row_offsets),
+            partition_index: 0,
+            mode: CacheMode::Filtering,
+            range: None,
+        };
+
+        let metadata0 = reader0.get_metadata(None).await.unwrap();
+        assert_eq!(
+            metadata0.num_row_groups(),
+            1,
+            "Partition 0 should have filtered row groups"
+        );
+
+        // Partition 1 - Should hit cache but STILL filter
+        let mut reader1 = CachingAsyncFileReader {
+            inner: Box::new(MockAsyncFileReader::new(Arc::clone(&raw_metadata))),
+            file_path: Arc::clone(&file_path),
+            metadata_cache: Arc::clone(&metadata_cache),
+            cache: Arc::clone(&predicate_cache),
+            snapshot_id: 1,
+            recording_states: Arc::clone(&recording_states),
+            partition_row_offsets: Arc::clone(&partition_row_offsets),
+            partition_index: 1,
+            mode: CacheMode::Filtering,
+            range: None,
+        };
+
+        let metadata1 = reader1.get_metadata(None).await.unwrap();
+        assert_eq!(
+            metadata1.num_row_groups(),
+            1,
+            "Partition 1 should have filtered row groups even on cache hit"
+        );
+    }
+
+    struct MockAsyncFileReader {
+        metadata: Arc<ParquetMetaData>,
+    }
+
+    impl MockAsyncFileReader {
+        fn new(metadata: Arc<ParquetMetaData>) -> Self {
+            Self { metadata }
+        }
+    }
+
+    impl AsyncFileReader for MockAsyncFileReader {
+        fn get_metadata<'a>(
+            &'a mut self,
+            _options: Option<&'a ArrowReaderOptions>,
+        ) -> BoxFuture<'a, parquet::errors::Result<Arc<ParquetMetaData>>> {
+            Box::pin(async move { Ok(Arc::clone(&self.metadata)) })
+        }
+        fn get_bytes(
+            &mut self,
+            _range: Range<u64>,
+        ) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
+            unimplemented!()
+        }
+        fn get_byte_ranges(
+            &mut self,
+            _ranges: Vec<Range<u64>>,
+        ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
+            unimplemented!()
+        }
     }
 }

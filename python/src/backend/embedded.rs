@@ -78,12 +78,7 @@ impl StrakeQueryExecutor for EmbeddedBackend {
     }
 
     async fn trace(&mut self, query: &str) -> anyhow::Result<String> {
-        // Start with simple EXPLAIN (Logical Plan)
-        // Note: we construct the EXPLAIN query text because we want to reuse the engine's parser/plan logic
-        let explain_sql = format!("EXPLAIN {}", query);
-        let (_, batches, _) = self.engine.execute_query(&explain_sql, None).await?;
-        let pretty = arrow::util::pretty::pretty_format_batches(&batches)?.to_string();
-        Ok(pretty)
+        self.engine.execute_query_with_trace(query).await
     }
 
     async fn describe(&mut self, table_name: Option<String>) -> anyhow::Result<String> {

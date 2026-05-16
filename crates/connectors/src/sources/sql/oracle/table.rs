@@ -1,6 +1,25 @@
-//! # Oracle Table Provider
+//! # Oracle SQL Source
 //!
-//! Implements DataFusion `TableProvider` for Oracle database tables.
+//! ## Overview
+//! This module implements a [`TableProvider`] for Oracle databases, enabling high-performance
+//! SQL pushdown and federated execution.
+//!
+//! ## Usage
+//! Register this source via the [`SourceRegistry`] using Oracle-specific connection parameters.
+//! The source will automatically handle schema discovery and SQL generation.
+//!
+//! ## Performance Characteristics
+//! - Uses connection pooling via `OracleConnectionPool`.
+//! - Supports predicate pushdown to reduce data transfer.
+//! - Optimized for large-scale data ingestion via Oracle's native Arrow support.
+//!
+//! ## Safety
+//! - Implements strict connection lifecycle management.
+//! - Uses `as_async()` carefully to ensure compatibility with async runtimes.
+//!
+//! ## Errors
+//! - Returns errors if connection to Oracle fails.
+//! - Errors if schema discovery fails for the requested table.
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -22,6 +41,7 @@ use std::sync::Arc;
 use crate::sources::sql::common::TableFactory;
 use crate::sources::sql::oracle::pool::OracleConnectionPool;
 
+/// A [`TableProvider`] implementation for Oracle databases.
 #[derive(Debug)]
 pub struct OracleTable {
     pub(crate) pool: Arc<OracleConnectionPool>,
@@ -30,13 +50,16 @@ pub struct OracleTable {
 }
 
 impl OracleTable {
+    /// Creates a new `OracleTable` provider.
     pub async fn new(
         pool: Arc<OracleConnectionPool>,
         table_reference: TableReference,
     ) -> anyhow::Result<Self> {
         use datafusion_table_providers::sql::db_connection_pool::DbConnectionPool;
         let conn_box = pool.connect().await.map_err(|e| anyhow::anyhow!(e))?;
-        let conn = conn_box.as_async().unwrap();
+        let conn = conn_box.as_async().ok_or_else(|| {
+            anyhow::anyhow!("Oracle connection pool did not return an async connection")
+        })?;
         let schema = conn
             .get_schema(&table_reference)
             .await
@@ -121,6 +144,7 @@ impl OracleTable {
     }
 }
 
+/// An [`ExecutionPlan`] node that executes a SQL query against an Oracle database.
 pub struct OracleSQLExec {
     #[allow(dead_code)]
     projection: Option<Vec<usize>>,
@@ -139,6 +163,7 @@ impl fmt::Debug for OracleSQLExec {
 }
 
 impl OracleSQLExec {
+    /// Creates a new `OracleSQLExec` execution plan node.
     pub fn new(
         projection: Option<&Vec<usize>>,
         schema: SchemaRef,
@@ -222,7 +247,11 @@ impl ExecutionPlan for OracleSQLExec {
                 .connect()
                 .await
                 .map_err(datafusion::error::DataFusionError::External)?;
-            let conn = conn_box.as_async().unwrap();
+            let conn = conn_box.as_async().ok_or_else(|| {
+                datafusion::error::DataFusionError::Execution(
+                    "Oracle connection pool did not return an async connection".to_string(),
+                )
+            })?;
             conn.query_arrow(&sql, &[], Some(schema_captured))
                 .await
                 .map_err(datafusion::error::DataFusionError::External)
@@ -244,11 +273,19 @@ impl ExecutionPlan for OracleSQLExec {
     }
 }
 
+impl crate::sources::federated::FederatedPlan for OracleSQLExec {
+    fn pushed_sql(&self) -> Option<&str> {
+        Some(&self.sql)
+    }
+}
+
+/// A factory for creating `OracleTable` providers.
 pub struct OracleTableFactory {
     pub(crate) pool: Arc<OracleConnectionPool>,
 }
 
 impl OracleTableFactory {
+    /// Creates a new `OracleTableFactory` with the given connection pool.
     pub fn new(pool: Arc<OracleConnectionPool>) -> Self {
         Self { pool }
     }

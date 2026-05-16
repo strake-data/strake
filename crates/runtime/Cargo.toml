@@ -12,6 +12,7 @@ strake-error = { path = "../error", features = ["datafusion"] }
 
 arrow = { workspace = true }
 datafusion = { workspace = true }
+datafusion-datasource = { workspace = true }
 datafusion-federation = { workspace = true }
 tokio = { version = "1.52", features = ["full"] }
 tonic = { workspace = true }
@@ -35,6 +36,7 @@ nix = { workspace = true, features = ["signal", "process"] }
 parquet = { workspace = true, features = ["async", "tokio"] }  # For cache serialization
 moka = { version = "0.12", features = ["future"] }  # Concurrent LRU cache
 reqwest = { workspace = true }
+unicode-width = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

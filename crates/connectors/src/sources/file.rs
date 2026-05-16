@@ -47,9 +47,12 @@ use thiserror::Error;
 use url::Url;
 
 #[derive(Error, Debug)]
+/// Errors that can occur when discovering or registering file-based sources.
 pub enum SourceError {
+    /// The specified source type (e.g., Avro) is not supported.
     #[error("Unsupported file source type: {0}")]
     UnsupportedType(String),
+    /// The provided path is not a valid URL.
     #[error("Invalid source URL: {0}")]
     InvalidUrl(#[from] url::ParseError),
 }
@@ -104,6 +107,11 @@ impl SourceProvider for FileSourceProvider {
                     &tables,
                     self.predicate_cache.clone(),
                     config.predicate_cache,
+                    config
+                        .cache
+                        .as_ref()
+                        .map(|c| c.metadata_cache_capacity)
+                        .unwrap_or_else(strake_common::models::default_metadata_cache_capacity),
                 )
                 .await
             }
@@ -276,6 +284,7 @@ pub async fn register_object_store(
 ///
 /// # Errors
 /// Returns `Err` if the schema cannot be inferred or if table registration fails.
+#[allow(clippy::too_many_arguments)]
 pub async fn register_parquet(
     context: &SessionContext,
     catalog: &str,
@@ -284,6 +293,7 @@ pub async fn register_parquet(
     tables_config: &Option<Vec<TableConfig>>,
     cache: Arc<strake_common::predicate_cache::PredicateCache>,
     predicate_cache_enabled: bool,
+    metadata_cache_capacity: usize,
 ) -> Result<()> {
     use crate::sources::predicate_caching::CachingTableProvider;
     use sha2::{Digest, Sha256};
@@ -292,6 +302,8 @@ pub async fn register_parquet(
     parquet_options.global.pushdown_filters = true;
     parquet_options.global.reorder_filters = true;
     parquet_options.global.pruning = true;
+    parquet_options.global.enable_page_index = true;
+    parquet_options.global.bloom_filter_on_read = true;
 
     let file_format = ParquetFormat::default().with_options(parquet_options);
     let listing_options = ListingOptions::new(Arc::new(file_format));
@@ -315,7 +327,9 @@ pub async fn register_parquet(
                 .with_schema(resolved_schema);
             let provider = Arc::new(ListingTable::try_new(config)?);
 
-            let snapshot_id = table_cfg.snapshot_id.unwrap_or_else(|| {
+            let snapshot_id = if let Some(id) = table_cfg.snapshot_id {
+                id
+            } else {
                 let mut hasher = Sha256::new();
                 hasher.update(table_path.as_bytes());
                 hasher.update(table_cfg.name.as_bytes());
@@ -323,25 +337,33 @@ pub async fn register_parquet(
                 // NOTE: Using stable SHA-256 hash truncated to 64-bits as a cache key.
                 // This format must remain stable to avoid cache invalidation across restarts.
                 // If the key format changes in future versions, a version prefix should be added.
-                u64::from_le_bytes(result[0..8].try_into().unwrap()) as i64
-            });
-            let provider: Arc<dyn TableProvider> = if predicate_cache_enabled {
-                Arc::new(CachingTableProvider::new(
-                    provider,
-                    cache.clone(),
-                    snapshot_id,
-                ))
-            } else {
-                provider
+                let bytes: [u8; 8] = result[0..8].try_into().map_err(|_| {
+                    anyhow::anyhow!("Failed to truncate SHA-256 hash for snapshot_id")
+                })?;
+                u64::from_le_bytes(bytes) as i64
             };
+            let provider: Arc<dyn TableProvider> = Arc::new(CachingTableProvider::new(
+                provider,
+                cache.clone(),
+                snapshot_id,
+                predicate_cache_enabled,
+                metadata_cache_capacity,
+            ));
 
             let schema_name = if table_cfg.schema.is_empty() {
                 "public"
             } else {
                 &table_cfg.schema
             };
+            tracing::debug!(
+                "Registering table {} in catalog {} schema {}",
+                table_cfg.name,
+                catalog,
+                schema_name
+            );
             let schema_provider = ensure_schema(context, catalog, schema_name)?;
             schema_provider.register_table(table_cfg.name.to_string(), provider)?;
+            tracing::debug!("Successfully registered table {}", table_cfg.name);
         }
     } else {
         let resolved_schema = listing_options
@@ -358,9 +380,18 @@ pub async fn register_parquet(
         let result = hasher.finalize();
         // NOTE: Using stable SHA-256 hash truncated to 64-bits as a cache key.
         // If the key format changes in future versions, a version prefix should be added.
-        let snapshot_id = u64::from_le_bytes(result[0..8].try_into().unwrap()) as i64;
+        let bytes: [u8; 8] = result[0..8]
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Failed to truncate SHA-256 hash for snapshot_id"))?;
+        let snapshot_id = u64::from_le_bytes(bytes) as i64;
 
-        let wrapped = Arc::new(CachingTableProvider::new(provider, cache, snapshot_id));
+        let wrapped = Arc::new(CachingTableProvider::new(
+            provider,
+            cache,
+            snapshot_id,
+            predicate_cache_enabled,
+            metadata_cache_capacity,
+        ));
 
         let schema_provider = ensure_schema(context, catalog, "public")?;
         schema_provider.register_table(name.to_string(), wrapped)?;

@@ -132,6 +132,12 @@ impl TableProvider for MetadataEnrichedTableProvider {
     }
 }
 
+impl crate::sources::WrappingTableProvider for MetadataEnrichedTableProvider {
+    fn inner(&self) -> &Arc<dyn TableProvider> {
+        &self.inner
+    }
+}
+
 /// Wraps a provider with a semaphore to limit concurrent query execution.
 ///
 /// Permits are acquired during [`ExecutionPlan::execute`] and released when the
@@ -195,6 +201,12 @@ impl TableProvider for ConcurrencyLimitedTableProvider {
     ) -> datafusion::common::Result<Vec<datafusion::logical_expr::TableProviderFilterPushDown>>
     {
         self.inner.supports_filters_pushdown(filters)
+    }
+}
+
+impl crate::sources::WrappingTableProvider for ConcurrencyLimitedTableProvider {
+    fn inner(&self) -> &Arc<dyn TableProvider> {
+        &self.inner
     }
 }
 

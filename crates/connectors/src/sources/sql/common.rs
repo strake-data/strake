@@ -90,16 +90,18 @@ impl<F: TableFactory + Send + Sync> SqlProviderFactory for GenericFederatedTable
     }
 }
 
+/// Rules for mapping database schema names to Strake source names.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub enum SchemaMappingRule {
-    /// Map empty or "public" to source name
+    /// Maps empty schemas or the "public" schema to the Strake source name.
     Standard,
-    /// Map empty, "public", or "main" to source name (SQLite)
+    /// Maps empty, "public", or "main" schemas to the Strake source name (specifically for SQLite).
     SQLite,
 }
 
 impl SchemaMappingRule {
+    /// Maps a database schema name to a Strake source name based on the rule.
     pub fn map_schema<'a>(&self, schema: &'a str, source_name: &str) -> std::borrow::Cow<'a, str> {
         match self {
             SchemaMappingRule::Standard => {
@@ -120,20 +122,28 @@ impl SchemaMappingRule {
     }
 }
 
+/// Supported SQL dialects for data sources.
 #[non_exhaustive]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SqlDialect {
+    /// PostgreSQL dialect.
     Postgres,
+    /// MySQL dialect.
     MySql,
+    /// SQLite dialect.
     Sqlite,
+    /// ClickHouse dialect.
     Clickhouse,
+    /// DuckDB dialect.
     #[serde(alias = "duckdb")]
     DuckDB,
+    /// Oracle dialect.
     Oracle,
 }
 
 impl SqlDialect {
+    /// Returns the lowercase string representation of the dialect.
     pub fn as_str(&self) -> &'static str {
         match self {
             SqlDialect::Postgres => "postgres",
@@ -146,27 +156,47 @@ impl SqlDialect {
     }
 }
 
+/// Parameters for creating and registering a SQL-based data source.
 #[derive(Clone)]
 pub struct SqlSourceParams {
+    /// The session context to register the source in.
     pub context: Arc<SessionContext>,
+    /// The name of the catalog.
     pub catalog_name: String,
+    /// The unique name of the source.
     pub name: String,
+    /// The connection string to the database.
     pub connection_string: secrecy::SecretString,
+    /// The maximum size of the connection pool.
     pub pool_size: usize,
+    /// The circuit breaker for the source.
     pub cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
+    /// Explicitly listed tables to register (if any).
     pub explicit_tables: Arc<Option<Vec<strake_common::config::TableConfig>>>,
+    /// Retry settings for the source.
     pub retry: strake_common::config::RetrySettings,
+    /// Maximum number of concurrent queries allowed for this source.
     pub max_concurrent_queries: usize,
 }
 
+/// Options for registering a SQL source.
 pub struct SqlRegistrationOptions {
+    /// The session context to register the source in.
     pub context: Arc<SessionContext>,
+    /// The name of the catalog.
     pub catalog_name: String,
+    /// The unique name of the source.
     pub name: String,
+    /// The dialect of the SQL source.
     pub dialect: SqlDialect,
+    /// The connection string to the database.
     pub connection_string: String,
+    /// The maximum size of the connection pool.
     pub pool_size: usize,
+    /// Explicitly listed tables to register (if any).
     pub explicit_tables: Arc<Option<Vec<strake_common::config::TableConfig>>>,
+    /// Retry settings for the source.
     pub retry: strake_common::config::RetrySettings,
+    /// Maximum number of concurrent queries allowed for this source.
     pub max_concurrent_queries: usize,
 }

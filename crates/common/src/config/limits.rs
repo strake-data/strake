@@ -133,4 +133,8 @@ pub struct ResourceConfig {
     /// Directory used for spilling intermediate query results to disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spill_dir: Option<String>,
+    /// Number of partitions for query execution.
+    /// If None, the engine will automatically determine the best value based on available CPU cores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_partitions: Option<usize>,
 }

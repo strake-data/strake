@@ -22,6 +22,7 @@ use super::common::{
 use crate::introspect::{IntrospectError, SchemaIntrospector, TableRef};
 use globset::GlobMatcher;
 
+/// Fetches metadata (such as table comments) from ClickHouse.
 pub struct ClickHouseMetadataFetcher;
 
 #[async_trait]
@@ -56,7 +57,9 @@ impl SqlProviderFactory for ClickHouseTableFactory {
 
 use secrecy::ExposeSecret;
 
+/// Introspects ClickHouse database schemas to discover tables and columns.
 pub struct ClickHouseIntrospector {
+    /// The ClickHouse connection string used to connect to the database.
     pub connection_string: SecretString,
 }
 

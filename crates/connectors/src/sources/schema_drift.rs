@@ -46,34 +46,52 @@ use datafusion::physical_plan::{
 };
 use futures::StreamExt;
 
+/// Warnings emitted when schema drift is detected and reconciled.
 #[derive(Debug, Clone)]
 pub enum DriftWarning {
     /// Column defined in catalog but missing from source (reconciled as NULLs)
     MissingColumn {
+        /// Name of the missing column.
         name: String,
+        /// The expected Arrow data type.
         expected_type: DataType,
     },
     /// Source type differs from catalog but was successfully coerced
     TypeCoerced {
+        /// Name of the coerced column.
         name: String,
+        /// The expected Arrow data type.
         expected_type: DataType,
+        /// The actual Arrow data type found in the source.
         actual_type: DataType,
     },
     /// Column cast failed (all values became NULL)
     CastFailed {
+        /// Name of the failed column.
         name: String,
+        /// The expected Arrow data type.
         expected_type: DataType,
+        /// The actual Arrow data type found in the source.
         actual_type: DataType,
     },
     /// Column partially cast (some values became NULL)
     PartialCast {
+        /// Name of the partially cast column.
         name: String,
+        /// The expected Arrow data type.
         expected_type: DataType,
+        /// The actual Arrow data type found in the source.
         actual_type: DataType,
+        /// Number of rows that were successfully cast.
         surviving_rows: usize,
     },
     /// Source contains column not defined in catalog (dropped)
-    ExtraColumn { name: String, actual_type: DataType },
+    ExtraColumn {
+        /// Name of the extra column.
+        name: String,
+        /// The actual Arrow data type found in the source.
+        actual_type: DataType,
+    },
 }
 
 impl std::fmt::Display for DriftWarning {
@@ -224,6 +242,7 @@ pub fn reconcile_batch(
     Ok((batch, warnings))
 }
 
+/// An [`ExecutionPlan`] node that reconciles schema drift at runtime.
 #[derive(Debug)]
 pub struct SchemaDriftExec {
     inner: Arc<dyn ExecutionPlan>,
@@ -234,6 +253,7 @@ pub struct SchemaDriftExec {
 }
 
 impl SchemaDriftExec {
+    /// Creates a new `SchemaDriftExec` node wrapping the given plan.
     pub fn new(inner: Arc<dyn ExecutionPlan>, expected_schema: SchemaRef) -> Self {
         let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(expected_schema.clone()),
@@ -372,6 +392,7 @@ impl ExecutionPlan for SchemaDriftExec {
     }
 }
 
+/// A [`TableProvider`] decorator that enables transparent schema drift detection.
 #[derive(Debug)]
 pub struct SchemaDriftTableProvider {
     inner: Arc<dyn TableProvider>,
@@ -379,6 +400,7 @@ pub struct SchemaDriftTableProvider {
 }
 
 impl SchemaDriftTableProvider {
+    /// Wraps an existing [`TableProvider`] with schema drift detection.
     pub fn new(inner: Arc<dyn TableProvider>) -> Self {
         let expected_schema = inner.schema();
         Self {
@@ -430,6 +452,12 @@ impl TableProvider for SchemaDriftTableProvider {
         filters: &[&Expr],
     ) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
         self.inner.supports_filters_pushdown(filters)
+    }
+}
+
+impl crate::sources::WrappingTableProvider for SchemaDriftTableProvider {
+    fn inner(&self) -> &Arc<dyn TableProvider> {
+        &self.inner
     }
 }
 

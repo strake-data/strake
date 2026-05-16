@@ -11,7 +11,9 @@ use strake_common::schema::{
 
 use secrecy::{ExposeSecret, SecretString};
 
+/// Introspects PostgreSQL database schemas to discover tables and columns.
 pub struct PostgresIntrospector {
+    /// The PostgreSQL connection string used to connect to the database.
     pub connection_string: SecretString,
 }
 

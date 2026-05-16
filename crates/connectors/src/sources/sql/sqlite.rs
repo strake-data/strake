@@ -21,8 +21,9 @@ use super::common::{
 };
 use super::sqlite_introspect::SqliteIntrospector;
 
+/// Fetches metadata from SQLite (presently returns default metadata as SQLite lacks standard comments).
 pub struct SqliteMetadataFetcher {
-    #[allow(dead_code)]
+    /// The path to the SQLite database file.
     pub db_path: SecretString,
 }
 

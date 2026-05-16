@@ -45,6 +45,7 @@ pub struct StrakeFederationProvider {
 }
 
 impl StrakeFederationProvider {
+    /// Creates a new `StrakeFederationProvider` with the given executor and dialect.
     pub fn new(executor: Arc<dyn SQLExecutor>, dialect: SqlDialect) -> Self {
         Self { executor, dialect }
     }
@@ -78,6 +79,7 @@ pub struct StrakeFederationOptimizerRule {
 }
 
 impl StrakeFederationOptimizerRule {
+    /// Creates a new `StrakeFederationOptimizerRule` with the given executor and dialect.
     pub fn new(executor: Arc<dyn SQLExecutor>, dialect: SqlDialect) -> Self {
         Self {
             planner: Arc::new(StrakeFederationPlanner::new(executor, dialect.clone())),
@@ -132,6 +134,7 @@ pub struct StrakeFederationPlanner {
 }
 
 impl StrakeFederationPlanner {
+    /// Creates a new `StrakeFederationPlanner` with the given executor and dialect.
     pub fn new(executor: Arc<dyn SQLExecutor>, dialect: SqlDialect) -> Self {
         Self { executor, dialect }
     }
@@ -189,19 +192,8 @@ fn is_federated_plan(plan: &LogicalPlan, provider_name: &str) -> datafusion::err
             fn check_provider(provider: &Arc<dyn TableProvider>, provider_name: &str) -> bool {
                 let any = provider.as_any();
 
-                if let Some(w) = any.downcast_ref::<crate::sources::sql::wrappers::MetadataEnrichedTableProvider>() {
-                    return check_provider(&w.inner(), provider_name);
-                }
-                if let Some(w) = any.downcast_ref::<crate::sources::sql::wrappers::ConcurrencyLimitedTableProvider>() {
-                    return check_provider(&w.inner(), provider_name);
-                }
-                if let Some(w) = any.downcast_ref::<crate::resilience::circuit_breaker::CircuitBreakerTableProvider>() {
-                    return check_provider(&w.inner(), provider_name);
-                }
-                if let Some(w) = any.downcast_ref::<crate::sources::schema_drift::SchemaDriftTableProvider>() {
-                    return check_provider(&w.inner(), provider_name);
-                }
-                if let Some(source) = any.downcast_ref::<datafusion_federation::sql::SQLTableSource>()
+                if let Some(source) =
+                    any.downcast_ref::<datafusion_federation::sql::SQLTableSource>()
                     && source.federation_provider().name() == provider_name
                 {
                     return true;
@@ -211,32 +203,48 @@ fn is_federated_plan(plan: &LogicalPlan, provider_name: &str) -> datafusion::err
                 {
                     return true;
                 }
-                if let Some(adaptor) = any.downcast_ref::<FederatedTableProviderAdaptor>()
-                    && adaptor.source.federation_provider().name() == provider_name
-                {
-                    return true;
+                if let Some(adaptor) = any.downcast_ref::<FederatedTableProviderAdaptor>() {
+                    if adaptor.source.federation_provider().name() == provider_name {
+                        return true;
+                    }
+                    if let Some(inner) = adaptor.table_provider.as_ref() {
+                        return check_provider(inner, provider_name);
+                    }
                 }
-                if let Some(adaptor) = any.downcast_ref::<FederatedTableProviderAdaptor>()
-                    && let Some(inner) = adaptor.table_provider.as_ref()
-                {
-                    return check_provider(inner, provider_name);
+
+                // Generically unwrap decorated providers
+                if let Some(wrapping) = crate::sources::as_wrapping(provider.as_ref()) {
+                    return check_provider(wrapping.inner(), provider_name);
                 }
+
                 false
             }
 
-            if let Some(default_source) = scan.source.as_any().downcast_ref::<datafusion::datasource::DefaultTableSource>()
+            if let Some(default_source) =
+                scan.source
+                    .as_any()
+                    .downcast_ref::<datafusion::datasource::DefaultTableSource>()
                 && check_provider(&default_source.table_provider, provider_name)
             {
                 is_match = true;
-            } else if let Some(adaptor) = scan.source.as_any().downcast_ref::<FederatedTableProviderAdaptor>()
+            } else if let Some(adaptor) = scan
+                .source
+                .as_any()
+                .downcast_ref::<FederatedTableProviderAdaptor>()
                 && adaptor.source.federation_provider().name() == provider_name
             {
                 is_match = true;
-            } else if let Some(source) = scan.source.as_any().downcast_ref::<datafusion_federation::sql::SQLTableSource>()
+            } else if let Some(source) =
+                scan.source
+                    .as_any()
+                    .downcast_ref::<datafusion_federation::sql::SQLTableSource>()
                 && source.federation_provider().name() == provider_name
             {
                 is_match = true;
-            } else if let Some(source) = scan.source.as_any().downcast_ref::<crate::sources::sql::duckdb::DuckDBTableSource>()
+            } else if let Some(source) =
+                scan.source
+                    .as_any()
+                    .downcast_ref::<crate::sources::sql::duckdb::DuckDBTableSource>()
                 && source.federation_provider().name() == provider_name
             {
                 is_match = true;
@@ -258,12 +266,17 @@ fn is_federated_plan(plan: &LogicalPlan, provider_name: &str) -> datafusion::err
     Ok(has_source && all_sources)
 }
 
-/// Generic execution plan that runs a federated SQL query.
+/// Generic execution plan that runs a federated SQL query against a remote data source.
 pub struct StrakeFederationExec {
+    /// The SQL query string to be executed on the remote engine.
     sql: String,
+    /// The executor responsible for running the query and returning Arrow results.
     executor: Arc<dyn SQLExecutor>,
+    /// The output schema of the query.
     schema: datafusion::arrow::datatypes::SchemaRef,
+    /// Physical plan properties (partitioning, boundedness, etc.).
     properties: Arc<datafusion::physical_plan::PlanProperties>,
+    /// Metrics collected during execution (e.g., output rows, compute time).
     metrics: datafusion::physical_plan::metrics::ExecutionPlanMetricsSet,
 }
 
@@ -277,6 +290,7 @@ impl std::fmt::Debug for StrakeFederationExec {
 }
 
 impl StrakeFederationExec {
+    /// Creates a new `StrakeFederationExec` execution plan node.
     pub fn new(
         sql: String,
         executor: Arc<dyn SQLExecutor>,
@@ -375,6 +389,12 @@ impl ExecutionPlan for StrakeFederationExec {
     }
 }
 
+impl crate::sources::federated::FederatedPlan for StrakeFederationExec {
+    fn pushed_sql(&self) -> Option<&str> {
+        Some(&self.sql)
+    }
+}
+
 /// Custom Federated Table Source that works with StrakeFederationProvider.
 #[derive(Debug)]
 pub struct StrakeTableSource {
@@ -384,6 +404,7 @@ pub struct StrakeTableSource {
 }
 
 impl StrakeTableSource {
+    /// Creates a new `StrakeTableSource` with the given provider, table name, and schema.
     pub fn new(
         provider: Arc<StrakeFederationProvider>,
         table_name: TableReference,
@@ -417,5 +438,137 @@ impl datafusion::logical_expr::TableSource for StrakeTableSource {
 impl FederatedTableSource for StrakeTableSource {
     fn federation_provider(&self) -> Arc<dyn FederationProvider> {
         self.provider.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sources::sql::common::FetchedMetadata;
+    use crate::sources::sql::wrappers::MetadataEnrichedTableProvider;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+    use datafusion::catalog::Session;
+    use datafusion::datasource::{TableProvider, TableType};
+    use datafusion::error::Result as DataFusionResult;
+    use datafusion::logical_expr::{Expr, LogicalPlanBuilder, TableProviderFilterPushDown};
+
+    struct MockFederatedProvider {
+        name: String,
+    }
+    impl FederationProvider for MockFederatedProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn compute_context(&self) -> Option<String> {
+            None
+        }
+        fn optimizer(&self) -> Option<Arc<datafusion::optimizer::optimizer::Optimizer>> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn test_is_federated_plan_wrappers() {
+        use datafusion::physical_plan::ExecutionPlan;
+
+        #[derive(Debug)]
+        struct MockFedTable {
+            schema: SchemaRef,
+            name: String,
+        }
+        #[async_trait]
+        impl TableProvider for MockFedTable {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn schema(&self) -> SchemaRef {
+                self.schema.clone()
+            }
+            fn table_type(&self) -> TableType {
+                TableType::Base
+            }
+            async fn scan(
+                &self,
+                _: &dyn Session,
+                _: Option<&Vec<usize>>,
+                _: &[Expr],
+                _: Option<usize>,
+            ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+                Err(datafusion::error::DataFusionError::NotImplemented(
+                    "MockFedTable does not implement scan".to_string(),
+                ))
+            }
+            fn supports_filters_pushdown(
+                &self,
+                _: &[&Expr],
+            ) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
+                Err(datafusion::error::DataFusionError::NotImplemented(
+                    "MockFedTable does not implement supports_filters_pushdown".to_string(),
+                ))
+            }
+        }
+        impl FederatedTableSource for MockFedTable {
+            fn federation_provider(&self) -> Arc<dyn FederationProvider> {
+                Arc::new(MockFederatedProvider {
+                    name: self.name.clone(),
+                })
+            }
+        }
+        // Need to implement TableSource for MockFedTable to use it in TableScan
+        impl datafusion::logical_expr::TableSource for MockFedTable {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn schema(&self) -> SchemaRef {
+                self.schema.clone()
+            }
+            fn table_type(&self) -> TableType {
+                TableType::Base
+            }
+        }
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, true)]));
+        let provider_name = "test_fed";
+
+        let base_table = Arc::new(MockFedTable {
+            schema: schema.clone(),
+            name: provider_name.to_string(),
+        });
+
+        // In DataFusion federation, we often have an adaptor that wraps a TableSource
+        let adaptor = Arc::new(datafusion_federation::FederatedTableProviderAdaptor::new(
+            base_table.clone(), // MockFedTable implements FederatedTableSource
+        ));
+
+        // Wrap it multiple times
+        let enriched = Arc::new(MetadataEnrichedTableProvider::new(
+            adaptor.clone(),
+            Arc::new(FetchedMetadata::default()),
+        ));
+
+        let circuit_breaker = Arc::new(
+            crate::resilience::circuit_breaker::CircuitBreakerTableProvider::new(
+                enriched.clone(),
+                Arc::new(strake_common::circuit_breaker::AdaptiveCircuitBreaker::new(
+                    strake_common::circuit_breaker::CircuitBreakerConfig {
+                        name: "test".into(),
+                        ..Default::default()
+                    },
+                )),
+            ),
+        );
+
+        let drift = Arc::new(crate::sources::schema_drift::SchemaDriftTableProvider::new(
+            circuit_breaker.clone(),
+        ));
+
+        // Create a LogicalPlan with a TableScan using the wrapped provider
+        let table_source = Arc::new(datafusion::datasource::DefaultTableSource::new(drift));
+        let plan = LogicalPlanBuilder::scan("t1", table_source, None)
+            .unwrap()
+            .build()
+            .unwrap();
+
+        assert!(is_federated_plan(&plan, provider_name).unwrap());
     }
 }

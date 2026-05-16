@@ -257,18 +257,42 @@ impl FederationEngine {
             .with_default_catalog_and_schema(catalog_name, "public")
             .with_information_schema(true);
 
-        // Enable predicate pushdown to minimize data transferred from remote sources
+        // Enable predicate pushdown and advanced Parquet features to match high-performance engines
         session_config
             .options_mut()
             .execution
             .parquet
             .pushdown_filters = true;
+        session_config
+            .options_mut()
+            .execution
+            .parquet
+            .reorder_filters = true;
         session_config.options_mut().execution.parquet.pruning = true;
+        session_config
+            .options_mut()
+            .execution
+            .parquet
+            .enable_page_index = true;
+        session_config
+            .options_mut()
+            .execution
+            .parquet
+            .bloom_filter_on_read = true;
+        session_config.options_mut().execution.batch_size = 8192;
 
-        // DataFusion defaults to 0 (auto-detect), but we want deterministic behavior
-        if session_config.options().execution.target_partitions == 0 {
-            session_config.options_mut().execution.target_partitions = 4;
-        }
+        // Determine target partitions: Config > Auto-detect > Default (4)
+        let target_partitions = if let Some(p) = resource_config.target_partitions {
+            if p == 0 {
+                anyhow::bail!("target_partitions must be at least 1");
+            }
+            p
+        } else {
+            std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(4)
+        };
+        session_config.options_mut().execution.target_partitions = target_partitions;
 
         for (key, value) in datafusion_config {
             session_config
@@ -280,12 +304,20 @@ impl FederationEngine {
         let mut rt_builder = RuntimeEnvBuilder::new();
 
         if let Some(limit_mb) = resource_config.memory_limit_mb {
-            let limit_bytes = limit_mb * 1024 * 1024;
+            let limit_bytes = limit_mb.checked_mul(1024 * 1024).ok_or_else(|| {
+                anyhow::anyhow!("Memory limit {} MB is too large (overflow)", limit_mb)
+            })?;
             // FairSpillPool spills to disk when memory is exhausted, preventing OOM
             rt_builder = rt_builder.with_memory_pool(Arc::new(FairSpillPool::new(limit_bytes)));
         } else {
             // No limit: relies on OS memory pressure handling
-            rt_builder = rt_builder.with_memory_pool(Arc::new(GreedyMemoryPool::new(usize::MAX)));
+            let pool_limit = if cfg!(target_pointer_width = "64") {
+                usize::MAX
+            } else {
+                // On 32-bit, limit to a conservative 2GB to avoid OOM due to address space fragmentation
+                2 * 1024 * 1024 * 1024
+            };
+            rt_builder = rt_builder.with_memory_pool(Arc::new(GreedyMemoryPool::new(pool_limit)));
         }
 
         if let Some(spill_path) = resource_config.spill_dir {
@@ -394,12 +426,14 @@ impl FederationEngine {
         // Safety limit: only collect up to 10k rows for the legacy/REST API
         // This is a temporary measure until the REST API is also fully streaming
         let mut batches = Vec::new();
-        let mut row_count = 0;
+        let mut row_count: usize = 0;
         let limit = self.query_limits.max_output_rows.unwrap_or(10000);
 
         while let Some(batch_res) = stream.next().await {
             let batch = batch_res?;
-            row_count += batch.num_rows();
+            row_count = row_count
+                .checked_add(batch.num_rows())
+                .ok_or_else(|| anyhow::anyhow!("Row count overflow during result collection"))?;
             if row_count > limit {
                 anyhow::bail!(
                     "Query result exceeded safety limit for materialized execution ({} rows). Please use the streaming API.",

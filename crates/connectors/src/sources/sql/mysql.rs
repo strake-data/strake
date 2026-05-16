@@ -22,7 +22,9 @@ use super::common::{
 use crate::introspect::{IntrospectError, SchemaIntrospector, TableRef};
 use globset::GlobMatcher;
 
+/// Fetches metadata (such as table and column comments) from MySQL.
 pub struct MySqlMetadataFetcher {
+    /// The MySQL connection string used to connect to the database.
     pub connection_string: SecretString,
 }
 
@@ -36,7 +38,9 @@ impl SqlMetadataFetcher for MySqlMetadataFetcher {
 // FIXME: MySQL presently lacks federation support (join pushdown).
 // It should be migrated to GenericFederatedTableFactory in the future.
 
+/// A wrapper for the MySQL table factory that implements the generic `SqlProviderFactory` trait.
 pub struct MySQLTableFactoryWrapper {
+    /// The inner MySQL table factory.
     pub factory: MySQLTableFactory,
 }
 
@@ -61,7 +65,9 @@ impl SqlProviderFactory for MySQLTableFactoryWrapper {
     }
 }
 
+/// Introspects MySQL database schemas to discover tables and columns.
 pub struct MySqlIntrospector {
+    /// The MySQL connection string used to connect to the database.
     pub connection_string: SecretString,
 }
 
@@ -144,6 +150,7 @@ pub async fn register_mysql(params: SqlSourceParams) -> Result<()> {
     connector.register(params).await
 }
 
+/// Lists all base tables in the current MySQL database.
 pub async fn introspect_mysql_tables(connection_string: &str) -> Result<Vec<String>> {
     use mysql_async::prelude::Queryable;
     let pool = mysql_async::Pool::new(connection_string);
@@ -160,6 +167,7 @@ pub async fn introspect_mysql_tables(connection_string: &str) -> Result<Vec<Stri
     Ok(rows)
 }
 
+/// Fetches table and column comments for a specific MySQL table.
 pub async fn fetch_mysql_comments(connection_string: &str, table: &str) -> Result<FetchedMetadata> {
     use mysql_async::prelude::Queryable;
     let pool = mysql_async::Pool::new(connection_string);

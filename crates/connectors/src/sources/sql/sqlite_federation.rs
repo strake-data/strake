@@ -22,10 +22,12 @@ pub struct SqliteExecutor {
 }
 
 impl SqliteExecutor {
+    /// Creates a new `SqliteExecutor` with the given connection string.
     pub fn new(connection_string: secrecy::SecretString) -> Self {
         Self { connection_string }
     }
 
+    /// Create a `StrakeFederationProvider` wrapping this executor to enable pushdown.
     pub fn create_federation_provider(self) -> Arc<StrakeFederationProvider> {
         Arc::new(StrakeFederationProvider::new(
             Arc::new(self),
@@ -241,6 +243,7 @@ impl SQLExecutor for SqliteExecutor {
     }
 }
 
+/// Map SQLite data type strings to Arrow DataTypes.
 fn map_sqlite_type(type_str: &str) -> DataType {
     let t = type_str.to_uppercase();
     if t.contains("INT") {

@@ -1,7 +1,23 @@
-//! REST API data source.
+//! # REST API Data Source
 //!
 //! Fetches data from HTTP JSON APIs, with support for pagination, authentication (Basic, Bearer, OAuth),
 //! and JMESPath-based data extraction.
+//!
+//! ## Overview
+//!
+//! This module provides a `SourceProvider` for REST APIs. It handles the complexity
+//! of different authentication schemes and pagination patterns, converting JSON
+//! responses into Arrow `RecordBatch` streams.
+//!
+//! ## Errors
+//!
+//! - `anyhow::Error` for connection, authentication, or JSON parsing failures.
+//! - `DataFusionError` for schema inference or execution failures.
+//!
+//! ## Performance Characteristics
+//!
+//! - JSON parsing can be CPU-intensive; use projections to limit the data extracted.
+//! - Network I/O is typically the bottleneck; consider enabling compression in the client.
 use crate::sources::SourceProvider;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -13,29 +29,42 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use strake_common::config::{RetrySettings, SourceConfig, TableConfig};
 
+/// Configuration for a REST API data source.
 #[derive(Debug, Deserialize, Clone)]
 pub struct RestSourceConfig {
+    /// The base URL of the REST API.
     pub base_url: String,
+    /// The HTTP method to use (e.g., "GET", "POST").
     #[serde(default = "default_method")]
     pub method: String,
+    /// Custom HTTP headers to include in every request.
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// Authentication configuration (e.g., Bearer token, OAuth).
     #[serde(default)]
     pub auth: Option<AuthConfig>,
+    /// Pagination strategy to use for fetching multiple pages of results.
     #[serde(default)]
     pub pagination: Option<PaginationConfig>,
+    /// Optional response encoding (e.g., "gzip").
     #[serde(default)]
     pub encoding: Option<String>,
+    /// Optional list of tables to register for this source.
     #[serde(default)]
     pub tables: Option<Vec<TableConfig>>,
+    /// Optional filter pushdown configurations to map DataFusion filters to query parameters.
     #[serde(default)]
     pub pushdown: Option<Vec<PushdownConfig>>,
 }
 
+/// Configuration for mapping a logical filter to a REST API query parameter.
 #[derive(Debug, Deserialize, Clone)]
 pub struct PushdownConfig {
+    /// The name of the column in the Arrow schema.
     pub column: String,
+    /// The comparison operator (e.g., "=", ">").
     pub operator: String, // "=", ">", "<", ">=", "<="
+    /// The name of the query parameter to use in the REST request.
     pub param: String,
 }
 
@@ -43,36 +72,54 @@ fn default_method() -> String {
     "GET".to_string()
 }
 
+/// Authentication schemes supported by the REST connector.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum AuthConfig {
+    /// HTTP Basic authentication with username and optional password.
     Basic {
+        /// The username for authentication.
         username: String,
+        /// The optional password for authentication.
         password: Option<String>,
     },
+    /// HTTP Bearer token authentication.
     Bearer {
+        /// The static token string.
         token: String,
     },
+    /// OAuth 2.0 Client Credentials flow.
     #[serde(rename = "oauth_client_credentials")]
     OAuthClientCredentials {
+        /// The client ID assigned by the OAuth provider.
         client_id: String,
+        /// The client secret assigned by the OAuth provider.
         client_secret: String,
+        /// The URL of the token endpoint to fetch access tokens from.
         token_url: String,
+        /// Optional scopes to request from the OAuth provider.
         #[serde(default)]
         scopes: Vec<String>,
     },
     /// Self-signed JWT for service account authentication (Google, GitHub Apps).
     #[serde(rename = "jwt_assertion")]
     JwtAssertion {
+        /// The issuer (iss) claim of the JWT.
         issuer: String,
+        /// The audience (aud) claim of the JWT.
         audience: String,
+        /// The PEM-encoded private key used to sign the JWT.
         private_key_pem: String,
+        /// The signing algorithm to use (e.g., "RS256").
         #[serde(default = "default_jwt_algorithm")]
         algorithm: String,
+        /// The number of seconds until the JWT expires.
         #[serde(default = "default_jwt_expiry")]
         expiry_secs: u64,
+        /// The optional subject (sub) claim of the JWT.
         #[serde(default)]
         subject: Option<String>,
+        /// Optional custom claims to include in the JWT.
         #[serde(default)]
         claims: std::collections::HashMap<String, serde_json::Value>,
     },
@@ -86,36 +133,48 @@ fn default_jwt_expiry() -> u64 {
     3600
 }
 
+/// Pagination strategies supported by the REST connector.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum PaginationConfig {
     /// Next URL provided in a response header (e.g. 'Link')
     Header {
+        /// The name of the header containing the next page URL.
         header_name: String,
         // Regex to extract URL? explicit for Link header parsing?
         // simple implementation assumes header value IS the url for now or standard Link header
     },
     /// Next URL found in the JSON response body at path
     BodyUrl {
+        /// The JMESPath-like path to the next page URL in the JSON response.
         path: String, // e.g. "meta.next_url"
     },
     /// Continuation token found in response, injected into next request param
     Token {
+        /// The path to the continuation token in the JSON response.
         token_path: String, // Path in response json
+        /// The query parameter name to use for the token in the next request.
         param_name: String, // Parameter name in next request
     },
     /// Offset/Limit calculation
     Indices {
+        /// The query parameter name for the offset.
         param_offset: String,
+        /// The query parameter name for the limit.
         param_limit: String,
+        /// The number of records to fetch per page.
         limit: usize,
+        /// The initial offset value (default: 0).
         #[serde(default)]
         initial_offset: usize,
     },
 }
 
+/// A provider for REST API-based data sources.
 pub struct RestSourceProvider {
+    /// Global retry settings for HTTP requests.
     pub global_retry: RetrySettings,
+    /// Cache for inferred schemas to avoid redundant network calls during discovery.
     pub schema_cache: Arc<DashMap<String, arrow::datatypes::SchemaRef>>,
 }
 
@@ -388,7 +447,6 @@ struct RestExec {
     #[allow(dead_code)]
     projection: Option<Vec<usize>>,
     #[allow(dead_code)]
-    #[allow(dead_code)]
     limit: Option<usize>,
     filters: Vec<datafusion::logical_expr::Expr>,
     cache: Arc<PlanProperties>,
@@ -484,7 +542,7 @@ impl ExecutionPlan for RestExec {
 
         // Register metrics
         let output_rows = MetricBuilder::new(&self.metrics).output_rows(partition);
-        let output_bytes = MetricBuilder::new(&self.metrics).counter("output_bytes", partition);
+        let output_bytes = MetricBuilder::new(&self.metrics).output_bytes(partition);
         let elapsed_compute = MetricBuilder::new(&self.metrics).elapsed_compute(partition);
 
         // Use try_unfold to create an async stream

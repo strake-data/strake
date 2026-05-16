@@ -16,13 +16,17 @@ use datafusion_table_providers::sql::db_connection_pool::dbconnection::{
     AsyncDbConnection, DbConnection, Error,
 };
 
+/// A pooled connection to an Oracle database.
 pub type OraclePooledConnection = bb8::PooledConnection<'static, OracleConnectionManager>;
 
+/// A wrapper around a pooled Oracle database connection.
 pub struct OracleConnection {
+    /// The underlying pooled connection.
     pub conn: OraclePooledConnection,
 }
 
 impl OracleConnection {
+    /// Creates a new `OracleConnection` from a pooled connection.
     pub fn new(conn: OraclePooledConnection) -> Self {
         Self { conn }
     }
@@ -273,6 +277,7 @@ impl AsyncDbConnection<OraclePooledConnection, rust_oracle::sql_type::OracleType
     }
 }
 
+/// Maps an Oracle data type string and optional precision/scale to an Arrow `DataType`.
 pub fn map_oracle_type_to_arrow(
     oracle_type: &str,
     precision: Option<i32>,

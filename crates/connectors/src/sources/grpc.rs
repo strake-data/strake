@@ -1,7 +1,26 @@
-//! Generic gRPC data source.
+//! # Generic gRPC Data Source
 //!
 //! Invokes gRPC methods on remote services and maps Protobuf responses to Arrow tables.
 //! Uses `prost-reflect` for dynamic message decoding.
+//!
+//! ## Overview
+//!
+//! This module provides a `SourceProvider` for gRPC services. It uses reflection
+//! or pre-compiled descriptor sets to dynamically decode Protobuf messages into
+//! Arrow `RecordBatch`es, allowing Strake to query gRPC endpoints as if they
+//! were standard database tables.
+//!
+//! ## Errors
+//!
+//! - `anyhow::Error` for connection, descriptor loading, or Protobuf decoding failures.
+//! - `DataFusionError` for execution or schema mapping failures.
+//!
+//! ## Performance Characteristics
+//!
+//! - Dynamic message decoding has some overhead; consider using pre-loaded
+//!   descriptor pools for high-throughput scenarios.
+//! - Leverages Arrow's JSON reader for efficient batch construction from
+//!   decoded messages.
 use std::sync::Arc;
 
 use crate::sources::SourceProvider;
@@ -18,32 +37,34 @@ use tonic::{
 };
 use tower::ServiceExt;
 
+/// Configuration for a gRPC data source.
 #[derive(Debug, Deserialize, Clone)]
 pub struct GrpcSourceConfig {
+    /// The URL of the gRPC server.
     pub url: String,
+    /// The full name of the gRPC service (e.g., `package.Service`).
     pub service: String,
+    /// The name of the method to invoke on the service.
     pub method: String,
-    // JSON body to send as request
+    /// Optional JSON body to send as the request message.
     #[serde(default)]
     pub request_body: Option<String>,
+    /// Optional path to a file containing a serialized `FileDescriptorSet`.
     #[serde(default)]
     pub descriptor_set: Option<String>,
+    /// Optional explicit column definitions to override or supplement inference.
     #[serde(default)]
     pub columns: Option<Vec<ColumnConfig>>,
+    /// Optional list of tables to register for this source.
     #[serde(default)]
     pub tables: Option<Vec<TableConfig>>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct ColumnConfig {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub data_type: String, // e.g. "Utf8", "Int64"
-    #[serde(default)]
-    pub nullable: bool,
-}
+use strake_common::models::ColumnConfig;
 
+/// A provider for gRPC-based data sources.
 pub struct GrpcSourceProvider {
+    /// Global retry settings for gRPC calls.
     pub global_retry: RetrySettings,
 }
 
@@ -106,10 +127,9 @@ impl SourceProvider for GrpcSourceProvider {
                     let grpc_cols: Vec<ColumnConfig> = table_cfg
                         .column_definitions
                         .iter()
-                        .map(|c| ColumnConfig {
-                            name: c.name.clone(),
-                            data_type: c.data_type.clone(),
-                            nullable: !c.not_null,
+                        .map(|c| {
+                            ColumnConfig::new(c.name.clone(), c.data_type.clone())
+                                .with_not_null(c.not_null)
                         })
                         .collect();
                     let mut temp_cfg = grpc_config.clone();
@@ -310,7 +330,7 @@ impl ExecutionPlan for GrpcExec {
         let pool = self.pool.clone();
 
         let output_rows = MetricBuilder::new(&self.metrics).output_rows(partition);
-        let output_bytes = MetricBuilder::new(&self.metrics).counter("output_bytes", partition);
+        let output_bytes = MetricBuilder::new(&self.metrics).output_bytes(partition);
         let elapsed_compute = MetricBuilder::new(&self.metrics).elapsed_compute(partition);
 
         // Return a stream that executes gRPC in background
@@ -588,7 +608,7 @@ fn create_schema_from_config(config: &GrpcSourceConfig) -> Result<arrow::datatyp
                     "Boolean" => arrow::datatypes::DataType::Boolean,
                     _ => return Err(anyhow::anyhow!("Unsupported data type: {}", c.data_type)),
                 };
-                Ok(arrow::datatypes::Field::new(&c.name, dt, c.nullable))
+                Ok(arrow::datatypes::Field::new(&c.name, dt, !c.not_null))
             })
             .collect();
         Ok(Arc::new(arrow::datatypes::Schema::new(fields?)))
@@ -631,9 +651,9 @@ mod tests {
         assert_eq!(cols.len(), 2);
         assert_eq!(cols[0].name, "id");
         assert_eq!(cols[0].data_type, "Int64");
-        assert!(!cols[0].nullable);
+        assert!(!cols[0].not_null);
         assert_eq!(cols[1].name, "name");
-        assert!(!cols[1].nullable); // Default is false? No, struct bool default is false.
+        assert!(!cols[1].not_null);
     }
 
     #[test]
@@ -645,16 +665,8 @@ mod tests {
             request_body: None,
             descriptor_set: None,
             columns: Some(vec![
-                ColumnConfig {
-                    name: "col1".to_string(),
-                    data_type: "Utf8".to_string(),
-                    nullable: true,
-                },
-                ColumnConfig {
-                    name: "col2".to_string(),
-                    data_type: "Int64".to_string(),
-                    nullable: false,
-                },
+                ColumnConfig::new("col1", "Utf8").with_not_null(false),
+                ColumnConfig::new("col2", "Int64").with_not_null(true),
             ]),
             tables: None,
         };
@@ -697,11 +709,9 @@ mod tests {
             method: "M".to_string(),
             request_body: None,
             descriptor_set: None,
-            columns: Some(vec![ColumnConfig {
-                name: "col1".to_string(),
-                data_type: "UnknownType".to_string(),
-                nullable: true,
-            }]),
+            columns: Some(vec![
+                ColumnConfig::new("col1", "UnknownType").with_not_null(false),
+            ]),
             tables: None,
         };
 

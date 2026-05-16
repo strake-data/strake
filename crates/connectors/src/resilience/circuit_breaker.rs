@@ -102,6 +102,12 @@ impl TableProvider for CircuitBreakerTableProvider {
     }
 }
 
+impl crate::sources::WrappingTableProvider for CircuitBreakerTableProvider {
+    fn inner(&self) -> &Arc<dyn TableProvider> {
+        &self.inner
+    }
+}
+
 /// Execution plan wrapper that monitors successes/failures and exposes DataFusion metrics.
 #[derive(Debug)]
 pub struct CircuitBreakerExec {

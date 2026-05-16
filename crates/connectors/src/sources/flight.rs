@@ -1,7 +1,23 @@
-//! Arrow Flight SQL data source.
+//! # Arrow Flight SQL Data Source
 //!
 //! Connects to databases supporting the Arrow Flight SQL standard for high-performance,
 //! low-overhead data transfer.
+//!
+//! ## Overview
+//!
+//! This module provides a `SourceProvider` implementation for Flight SQL, allowing Strake
+//! to discover and register tables from remote Flight SQL endpoints (e.g., Snowflake,
+//! Dremio, InfluxDB).
+//!
+//! ## Errors
+//!
+//! - `anyhow::Error` for connection or protocol-level failures.
+//! - `DataFusionError` for table registration failures.
+//!
+//! ## Performance Characteristics
+//!
+//! - Uses vectorized metadata discovery to minimize allocations.
+//! - Leverages Arrow Flight for zero-copy data transfer where supported.
 use anyhow::{Context, Result};
 use arrow::array::Array;
 use arrow_flight::sql::CommandGetTables;
@@ -20,6 +36,7 @@ use crate::sources::SourceProvider;
 use async_trait::async_trait;
 use strake_common::config::SourceConfig;
 
+/// A provider for Arrow Flight SQL data sources.
 pub struct FlightSqlSourceProvider;
 
 #[async_trait]
@@ -98,47 +115,18 @@ pub async fn register_flight_sql_source(
                 .downcast_ref::<arrow::array::StringArray>()
                 .context("Failed to downcast db_schema_name column")?;
 
-            // Vectorized discovery using Arrow kernels
-            let valid_mask = arrow::compute::is_not_null(table_names)?;
-            let indices = arrow::array::Int32Array::from_iter_values(0..batch.num_rows() as i32);
-            let valid_indices = arrow::compute::filter(&indices, &valid_mask)
-                .context("Failed to filter valid indices")?;
-
-            let valid_indices = valid_indices
-                .as_any()
-                .downcast_ref::<arrow::array::Int32Array>()
-                .context("Failed to downcast valid indices")?;
-
-            // Optimization: Use take to get only valid table names without allocations
-            // Fix [Performance]: Avoid per-row allocation loop
-            let filtered_tables = arrow::compute::take(table_names, valid_indices, None)
-                .context("Failed to take valid table names")?;
-            let filtered_tables = filtered_tables
-                .as_any()
-                .downcast_ref::<arrow::array::StringArray>()
-                .context("Failed to downcast filtered table names")?;
-
-            let filtered_schemas = arrow::compute::take(schema_names, valid_indices, None)
-                .context("Failed to take valid schema names")?;
-            let filtered_schemas = filtered_schemas
-                .as_any()
-                .downcast_ref::<arrow::array::StringArray>()
-                .context("Failed to downcast filtered schema names")?;
-
-            let discovered: Vec<(Option<String>, String)> = (0..filtered_tables.len())
-                .map(|i| {
-                    let t_name = filtered_tables.value(i).to_string();
-                    let s_name =
-                        if filtered_schemas.is_valid(i) && !filtered_schemas.value(i).is_empty() {
-                            Some(filtered_schemas.value(i).to_string())
-                        } else {
-                            None
-                        };
-                    (s_name, t_name)
-                })
-                .collect();
-
-            discovered_tables.extend(discovered);
+            // Optimization: Iterate directly over the arrays to avoid intermediate indices and take allocations
+            for i in 0..batch.num_rows() {
+                if table_names.is_valid(i) {
+                    let t_name = table_names.value(i).to_string();
+                    let s_name = if schema_names.is_valid(i) && !schema_names.value(i).is_empty() {
+                        Some(schema_names.value(i).to_string())
+                    } else {
+                        None
+                    };
+                    discovered_tables.push((s_name, t_name));
+                }
+            }
         }
     }
 

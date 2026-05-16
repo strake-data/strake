@@ -21,7 +21,9 @@ use super::common::{
 };
 use super::postgres_introspect::PostgresIntrospector;
 
+/// Fetches metadata (such as table and column comments) from PostgreSQL.
 pub struct PostgresMetadataFetcher {
+    /// The PostgreSQL connection string used to connect to the database.
     pub connection_string: SecretString,
 }
 
@@ -148,6 +150,7 @@ async fn create_pg_pool(
     Ok(Arc::new(pool))
 }
 
+/// Lists all base tables in the 'public' schema of a PostgreSQL database.
 pub async fn introspect_pg_tables(connection_string: &str) -> Result<Vec<String>> {
     let (client, connection) = tokio_postgres::connect(connection_string, tokio_postgres::NoTls)
         .await
@@ -170,6 +173,7 @@ pub async fn introspect_pg_tables(connection_string: &str) -> Result<Vec<String>
     Ok(rows.iter().map(|row| row.get(0)).collect())
 }
 
+/// Fetches table and column comments for a specific PostgreSQL table.
 pub async fn fetch_postgres_comments(
     connection_string: &str,
     schema: &str,

@@ -7,7 +7,9 @@ use strake_common::schema::{IntrospectedColumn, IntrospectedTable, normalize_typ
 
 use secrecy::{ExposeSecret, SecretString};
 
+/// Introspects DuckDB database schemas to discover tables and columns.
 pub struct DuckDBIntrospector {
+    /// The path to the DuckDB database file.
     pub db_path: SecretString,
 }
 

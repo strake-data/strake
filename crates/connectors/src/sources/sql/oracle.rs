@@ -24,6 +24,7 @@ use super::common::{GenericFederatedTableFactory, SchemaMappingRule, SqlSourcePa
 use crate::sources::sql::oracle::pool::OracleConnectionPool;
 use crate::sources::sql::oracle::table::OracleTableFactory;
 
+/// Registers the Oracle data source with the given parameters.
 pub async fn register_oracle(params: SqlSourceParams) -> anyhow::Result<()> {
     tracing::info!("Oracle: registering source {}", params.name);
     let pool = Arc::new(
@@ -49,7 +50,9 @@ pub async fn register_oracle(params: SqlSourceParams) -> anyhow::Result<()> {
     connector.register(params).await
 }
 
+/// Introspects Oracle database schemas to discover tables and columns.
 pub struct OracleIntrospector {
+    /// The Oracle connection pool used to connect to the database.
     pub pool: Arc<OracleConnectionPool>,
 }
 

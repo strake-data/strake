@@ -17,20 +17,26 @@ use datafusion_table_providers::sql::db_connection_pool::DbConnectionPool;
 use datafusion_table_providers::sql::db_connection_pool::JoinPushDown;
 use datafusion_table_providers::sql::db_connection_pool::dbconnection::DbConnection;
 
+/// Errors that can occur when managing the Oracle connection pool.
 #[derive(Debug, Error)]
 pub enum OraclePoolError {
+    /// An error occurred during a basic Oracle connection operation.
     #[error("Oracle connection failed: {0}")]
     ConnectionError(#[from] rust_oracle::Error),
 
+    /// An error occurred while creating the connection pool.
     #[error("Unable to create Oracle connection pool: {0}")]
     PoolCreationError(#[from] bb8_oracle::Error),
 
+    /// An error occurred while retrieving a connection from the pool.
     #[error("Unable to get Oracle connection from pool: {0}")]
     PoolRunError(String),
 }
 
+/// A specialized `Result` type for Oracle pool operations.
 pub type Result<T, E = OraclePoolError> = std::result::Result<T, E>;
 
+/// A connection pool for Oracle databases, using `bb8`.
 pub struct OracleConnectionPool {
     pool: Arc<bb8::Pool<OracleConnectionManager>>,
     connection_string: String,
@@ -45,6 +51,7 @@ impl std::fmt::Debug for OracleConnectionPool {
 /// Customizer that sets session timezone on connection acquire.
 #[derive(Debug, Clone)]
 pub struct SetTimezoneCustomizer {
+    /// The timezone to set on the Oracle session.
     pub timezone: String,
 }
 
@@ -74,6 +81,7 @@ impl CustomizeConnection<Arc<Connection>, bb8_oracle::Error> for SetTimezoneCust
 }
 
 impl OracleConnectionPool {
+    /// Creates a new `OracleConnectionPool` with the given connection string and pool size.
     pub async fn new(connection_string: &str, pool_size: usize) -> Result<Self> {
         tracing::info!("Oracle: creating connection pool");
 
@@ -119,6 +127,7 @@ impl OracleConnectionPool {
         })
     }
 
+    /// Returns the connection string for this pool.
     pub fn connection_string(&self) -> &str {
         &self.connection_string
     }

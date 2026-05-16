@@ -16,6 +16,7 @@ use crate::sources::sql::oracle::table::OracleTableFactory;
 use crate::sources::sql::strake_federation::StrakeFederationProvider;
 
 impl OracleTableFactory {
+    /// Creates a federation provider for this Oracle source to enable pushdown optimizations.
     pub fn create_federation_provider(&self) -> Arc<StrakeFederationProvider> {
         Arc::new(StrakeFederationProvider::new(
             Arc::new(OracleSQLExecutor {
@@ -26,6 +27,7 @@ impl OracleTableFactory {
     }
 }
 
+/// Executes SQL queries against an Oracle database for federated query execution.
 pub struct OracleSQLExecutor {
     pool: Arc<crate::sources::sql::oracle::pool::OracleConnectionPool>,
 }

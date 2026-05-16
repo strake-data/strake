@@ -345,6 +345,23 @@ pub struct ColumnConfig {
     pub description: Option<String>,
 }
 
+impl ColumnConfig {
+    /// Creates a new column configuration.
+    pub fn new(name: impl Into<String>, data_type: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            data_type: data_type.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Sets whether the column is non-nullable.
+    pub fn with_not_null(mut self, not_null: bool) -> Self {
+        self.not_null = not_null;
+        self
+    }
+}
+
 impl PartialEq for SourcesConfig {
     fn eq(&self, other: &Self) -> bool {
         self.domain == other.domain && self.sources == other.sources
@@ -389,6 +406,10 @@ pub struct QueryCacheConfig {
     /// Time-to-live for cache entries in seconds.
     #[serde(default = "default_cache_ttl_seconds")]
     pub ttl_seconds: u64,
+    /// Maximum number of Parquet metadata entries to cache.
+    #[serde(default = "default_metadata_cache_capacity")]
+    #[validate(range(min = 1))]
+    pub metadata_cache_capacity: usize,
 }
 
 impl Default for QueryCacheConfig {
@@ -398,8 +419,14 @@ impl Default for QueryCacheConfig {
             directory: default_cache_directory(),
             max_size_mb: default_cache_max_size_mb(),
             ttl_seconds: default_cache_ttl_seconds(),
+            metadata_cache_capacity: default_metadata_cache_capacity(),
         }
     }
+}
+
+/// Returns the default capacity for the Parquet metadata cache.
+pub fn default_metadata_cache_capacity() -> usize {
+    1000
 }
 
 // Data Contracts
@@ -501,143 +528,68 @@ pub struct QueryResponse {
     /// Optional error or warning message.
     pub message: Option<String>,
 }
-/// Newtype for a domain name.
-#[derive(
-    Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default, PartialOrd, Ord, Validate,
-)]
-#[non_exhaustive]
-#[serde(transparent)]
-pub struct DomainName {
-    /// The inner domain name string.
-    #[validate(length(min = 1))]
-    pub name: String,
-}
-
-impl std::str::FromStr for DomainName {
-    type Err = std::convert::Infallible;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        Ok(Self {
-            name: s.to_string(),
-        })
-    }
-}
-
-impl From<String> for DomainName {
-    fn from(name: String) -> Self {
-        Self { name }
-    }
-}
-
-impl From<&str> for DomainName {
-    fn from(s: &str) -> Self {
-        Self {
-            name: s.to_string(),
+/// Macro to generate a string-based newtype with common trait implementations.
+macro_rules! string_newtype {
+    ($name:ident, $doc:expr) => {
+        #[doc = $doc]
+        #[derive(
+            Debug,
+            Clone,
+            PartialEq,
+            Eq,
+            Hash,
+            Serialize,
+            Deserialize,
+            Default,
+            PartialOrd,
+            Ord,
+            Validate,
+        )]
+        #[non_exhaustive]
+        #[serde(transparent)]
+        pub struct $name {
+            /// The inner string value.
+            #[validate(length(min = 1))]
+            pub name: String,
         }
-    }
-}
 
-impl std::fmt::Display for DomainName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name)
-    }
-}
-
-impl AsRef<str> for DomainName {
-    fn as_ref(&self) -> &str {
-        &self.name
-    }
-}
-
-/// Newtype for an actor name.
-#[derive(
-    Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default, PartialOrd, Ord, Validate,
-)]
-#[non_exhaustive]
-#[serde(transparent)]
-pub struct ActorName {
-    /// The inner actor name string.
-    #[validate(length(min = 1))]
-    pub name: String,
-}
-
-impl std::str::FromStr for ActorName {
-    type Err = std::convert::Infallible;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        Ok(Self {
-            name: s.to_string(),
-        })
-    }
-}
-
-impl From<String> for ActorName {
-    fn from(name: String) -> Self {
-        Self { name }
-    }
-}
-
-impl From<&str> for ActorName {
-    fn from(s: &str) -> Self {
-        Self {
-            name: s.to_string(),
+        impl std::str::FromStr for $name {
+            type Err = std::convert::Infallible;
+            fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+                Ok(Self {
+                    name: s.to_string(),
+                })
+            }
         }
-    }
-}
 
-impl std::fmt::Display for ActorName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name)
-    }
-}
-
-impl AsRef<str> for ActorName {
-    fn as_ref(&self) -> &str {
-        &self.name
-    }
-}
-
-/// Newtype for a source name.
-#[derive(
-    Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default, PartialOrd, Ord, Validate,
-)]
-#[non_exhaustive]
-#[serde(transparent)]
-pub struct SourceName {
-    /// The inner source name string.
-    #[validate(length(min = 1))]
-    pub name: String,
-}
-
-impl std::str::FromStr for SourceName {
-    type Err = std::convert::Infallible;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        Ok(Self {
-            name: s.to_string(),
-        })
-    }
-}
-
-impl From<String> for SourceName {
-    fn from(name: String) -> Self {
-        Self { name }
-    }
-}
-
-impl From<&str> for SourceName {
-    fn from(s: &str) -> Self {
-        Self {
-            name: s.to_string(),
+        impl From<String> for $name {
+            fn from(name: String) -> Self {
+                Self { name }
+            }
         }
-    }
+
+        impl From<&str> for $name {
+            fn from(s: &str) -> Self {
+                Self {
+                    name: s.to_string(),
+                }
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", self.name)
+            }
+        }
+
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str {
+                &self.name
+            }
+        }
+    };
 }
 
-impl std::fmt::Display for SourceName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name)
-    }
-}
-
-impl AsRef<str> for SourceName {
-    fn as_ref(&self) -> &str {
-        &self.name
-    }
-}
+string_newtype!(DomainName, "Newtype for a domain name.");
+string_newtype!(ActorName, "Newtype for an actor name.");
+string_newtype!(SourceName, "Newtype for a source name.");

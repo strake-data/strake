@@ -1,7 +1,23 @@
-//! SQL Database connectors.
+//! # SQL Database Connectors
 //!
 //! Provides support for JDBC-style SQL sources including Postgres, MySQL, SQLite, DuckDB, and ClickHouse.
 //! Handles dialect-specific SQL generation and type mapping.
+//!
+//! ## Overview
+//!
+//! This module acts as the entry point for all SQL-based data sources. It
+//! delegates to specific dialect implementations while providing common
+//! infrastructure for connection pooling, circuit breaking, and concurrency control.
+//!
+//! ## Errors
+//!
+//! - `anyhow::Error` for configuration parsing failures or unsupported dialects.
+//! - Specific connector errors (e.g., `postgres::Error`) for database-level failures.
+//!
+//! ## Performance Characteristics
+//!
+//! - Uses asynchronous connection pools to manage resources efficiently.
+//! - Implements adaptive circuit breaking to protect against cascading failures.
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use datafusion::prelude::SessionContext;
@@ -25,18 +41,23 @@ pub use common::SqlDialect;
 use mysql::register_mysql;
 use postgres::register_postgres;
 use sqlite::register_sqlite;
+/// Provides case-insensitive schema resolution for SQL dialects.
 pub mod case_insensitive_schema;
 pub mod clickhouse;
 pub mod duckdb;
 pub mod duckdb_federation;
+/// Introspection support for DuckDB databases.
 pub mod duckdb_introspect;
 pub mod oracle;
+/// Introspection support for PostgreSQL databases.
 pub mod postgres_introspect;
 use clickhouse::register_clickhouse;
 use duckdb::register_duckdb;
 use oracle::register_oracle;
 
+/// A provider for SQL-based data sources.
 pub struct SqlSourceProvider {
+    /// The default retry settings to use for SQL operations if not overridden.
     pub global_retry: RetrySettings,
 }
 
@@ -102,6 +123,7 @@ impl SourceProvider for SqlSourceProvider {
     }
 }
 
+/// Registers a SQL data source using the provided options.
 #[allow(clippy::too_many_arguments)]
 pub async fn register_sql_source(options: common::SqlRegistrationOptions) -> Result<()> {
     use strake_common::circuit_breaker::{AdaptiveCircuitBreaker, CircuitBreakerConfig};

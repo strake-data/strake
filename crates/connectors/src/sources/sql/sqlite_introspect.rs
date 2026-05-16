@@ -12,7 +12,9 @@ use strake_common::schema::{IntrospectedColumn, IntrospectedTable, normalize_typ
 
 use secrecy::{ExposeSecret, SecretString};
 
+/// Introspects SQLite database schemas to discover tables and columns.
 pub struct SqliteIntrospector {
+    /// The path to the SQLite database file.
     pub db_path: SecretString,
 }
 

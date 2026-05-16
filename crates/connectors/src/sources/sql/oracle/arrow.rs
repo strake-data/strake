@@ -17,23 +17,30 @@ use thiserror::Error;
 
 use crate::sources::sql::oracle::conn::map_oracle_type_to_arrow;
 
+/// Errors that can occur during Oracle to Arrow conversion.
 #[derive(Debug, Error)]
 pub enum ArrowError {
+    /// An error occurred in the underlying Oracle driver.
     #[error("Oracle error: {0}")]
     OracleError(#[from] rust_oracle::Error),
 
+    /// A column type could not be mapped to an Arrow data type.
     #[error("Failed to map column {0} to arrow type")]
     FailedToMapColumnType(String),
 
+    /// A builder could not be downcast to the expected concrete type.
     #[error("Failed to downcast builder at index {0}")]
     FailedToDowncastBuilder(usize),
 
+    /// An error occurred in the Arrow library.
     #[error("Arrow error: {0}")]
     ArrowError(#[from] arrow::error::ArrowError),
 }
 
+/// A specialized `Result` type for Oracle to Arrow conversion operations.
 pub type Result<T> = std::result::Result<T, ArrowError>;
 
+/// Converts a vector of Oracle rows into an Arrow `RecordBatch`.
 pub fn rows_to_arrow(
     rows: Vec<rust_oracle::Row>,
     projected_schema: &Option<SchemaRef>,

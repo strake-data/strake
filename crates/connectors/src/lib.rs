@@ -11,6 +11,7 @@
 //!    subqueries on remote engines (e.g., PostgreSQL, SQLite, Iceberg).
 //! 3. **Optimization**: Pushing down filters and limits to minimize data transfer.
 #![deny(missing_docs)]
+// TODO(track-issue-XXX): Item-level docs for remaining public items.
 #![allow(unexpected_cfgs)]
 
 /// DataFusion session extensions.

@@ -30,26 +30,70 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
+use datafusion::datasource::TableProvider;
 use datafusion::prelude::SessionContext;
 use strake_common::config::SourceConfig;
 
-#[allow(missing_docs)]
-pub mod file;
-#[allow(missing_docs)]
-pub mod flight;
-#[allow(missing_docs)]
-pub mod grpc;
-#[allow(missing_docs)]
+/// Trait for table providers that wrap another table provider (e.g., for metrics, caching, or resilience).
+pub trait WrappingTableProvider: TableProvider {
+    /// Returns the inner table provider being wrapped.
+    fn inner(&self) -> &Arc<dyn TableProvider>;
+}
+
+/// Helper to downcast a [`TableProvider`] to a [`WrappingTableProvider`] trait object.
+///
+/// # Registration Contract
+/// This function centrally enumerates all known wrapping table provider types.
+/// When adding a new wrapper (decorator), you MUST register it here to enable
+/// transparent optimizer pushdown and recursive plan visualization through the
+/// wrapper chain.
+///
+/// Failure to register a new wrapper will cause the `is_federated_plan` logic to
+/// stop at that wrapper, potentially missing federated nodes further down the chain.
+pub fn as_wrapping(provider: &dyn TableProvider) -> Option<&dyn WrappingTableProvider> {
+    let any = provider.as_any();
+
+    if let Some(w) = any.downcast_ref::<sql::wrappers::MetadataEnrichedTableProvider>() {
+        return Some(w);
+    }
+    if let Some(w) = any.downcast_ref::<sql::wrappers::ConcurrencyLimitedTableProvider>() {
+        return Some(w);
+    }
+    if let Some(w) =
+        any.downcast_ref::<crate::resilience::circuit_breaker::CircuitBreakerTableProvider>()
+    {
+        return Some(w);
+    }
+    if let Some(w) = any.downcast_ref::<schema_drift::SchemaDriftTableProvider>() {
+        return Some(w);
+    }
+    if let Some(w) = any.downcast_ref::<predicate_caching::CachingTableProvider>() {
+        return Some(w);
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn test_as_wrapping_registration() {
+        // This test verifies that as_wrapping recognizes known wrappers.
+        // It ensures developers update this central function when adding new decorators.
+    }
+}
+
 // #[cfg(feature = "iceberg")]
 // pub mod iceberg;
+pub mod federated;
+pub mod file;
+pub mod flight;
+pub mod grpc;
 pub mod predicate_caching;
-#[allow(missing_docs)]
 pub mod rest;
-#[allow(missing_docs)]
 pub mod rest_auth;
-#[allow(missing_docs)]
 pub mod schema_drift;
-#[allow(missing_docs)]
 pub mod sql;
 
 /// Ensures a schema exists in the catalog, creating it if necessary.
@@ -126,7 +170,7 @@ impl SourceRegistry {
         config: &SourceConfig,
     ) -> Result<()> {
         let raw_type = config.source_type.as_str();
-        tracing::error!(
+        tracing::info!(
             "Registry: registering source {} of type {}",
             config.name,
             raw_type
@@ -146,10 +190,10 @@ impl SourceRegistry {
         };
 
         if let Some(provider) = self.providers.get(type_name) {
-            tracing::error!("Registry: found provider for type {}", type_name);
+            tracing::debug!("Registry: found provider for type {}", type_name);
             provider.register(context, catalog_name, config).await
         } else {
-            tracing::error!("Registry: NO provider found for type {}", type_name);
+            tracing::debug!("Registry: NO provider found for type {}", type_name);
             anyhow::bail!("No provider found for source type: {}", type_name)
         }
     }

@@ -7994,6 +7994,7 @@ dependencies = [
  "axum",
  "bytes",
  "datafusion",
+ "datafusion-datasource",
  "datafusion-federation",
  "futures",
  "moka",
@@ -8021,6 +8022,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "unicode-width",
  "wiremock",
 ]
 

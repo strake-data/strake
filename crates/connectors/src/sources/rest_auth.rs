@@ -1,7 +1,24 @@
-//! Authentication helpers for REST datasources.
+//! # Authentication Helpers for REST Data Sources
 //!
 //! Supports OAuth 2.0 Client Credentials flow with token caching,
 //! and self-signed JWT assertions for service account authentication.
+//!
+//! ## Overview
+//!
+//! This module provides the security layer for REST connectors. It implements
+//! token acquisition and lifecycle management, including automated refresh and
+//! secure JWT generation.
+//!
+//! ## Errors
+//!
+//! - `anyhow::Error` for invalid keys, network failures during token exchange,
+//!   or unsupported algorithms.
+//!
+//! ## Performance Characteristics
+//!
+//! - Uses `moka` for thread-safe, asynchronous token caching to minimize
+//!   expensive authentication round-trips.
+//! - Employs `OnceLock` for global cache singleton management.
 
 use anyhow::{Context, Result};
 use moka::future::Cache;
@@ -11,10 +28,14 @@ use std::time::{Duration, Instant};
 /// OAuth 2.0 token response from the authorization server.
 #[derive(Debug, Deserialize)]
 pub struct TokenResponse {
+    /// The access token string.
     pub access_token: String,
+    /// The type of token (e.g., "Bearer").
     pub token_type: String,
+    /// The number of seconds until the token expires.
     #[serde(default)]
     pub expires_in: Option<u64>,
+    /// The optional scope(s) associated with the token.
     #[serde(default)]
     pub scope: Option<String>,
 }
@@ -22,7 +43,9 @@ pub struct TokenResponse {
 /// Cached token with expiry tracking.
 #[derive(Clone, Debug)]
 pub struct CachedToken {
+    /// The access token string.
     pub access_token: String,
+    /// The time at which the token expires.
     pub expires_at: Instant,
 }
 
@@ -36,24 +59,35 @@ impl CachedToken {
 /// OAuth Client Credentials configuration.
 #[derive(Debug, Clone)]
 pub struct OAuthClientCredentialsConfig {
+    /// The client ID.
     pub client_id: String,
+    /// The client secret.
     pub client_secret: String,
+    /// The URL of the token endpoint.
     pub token_url: String,
+    /// The list of scopes to request.
     pub scopes: Vec<String>,
 }
 
 /// JWT Assertion configuration for self-signed JWTs.
 #[derive(Debug, Deserialize, Clone)]
 pub struct JwtAssertionConfig {
+    /// The issuer (iss) claim.
     pub issuer: String,
+    /// The audience (aud) claim.
     pub audience: String,
+    /// The PEM-encoded private key.
     pub private_key_pem: String, // PEM-encoded private key
+    /// The signing algorithm (e.g., "RS256").
     #[serde(default = "default_algorithm")]
     pub algorithm: String, // RS256, ES256
+    /// The number of seconds until the JWT expires.
     #[serde(default = "default_expiry_secs")]
     pub expiry_secs: u64,
+    /// The optional subject (sub) claim.
     #[serde(default)]
     pub subject: Option<String>,
+    /// Optional custom claims.
     #[serde(default)]
     pub claims: std::collections::HashMap<String, serde_json::Value>,
 }
@@ -74,6 +108,7 @@ pub struct OAuthTokenCache {
 }
 
 impl OAuthTokenCache {
+    /// Creates a new `OAuthTokenCache` with default settings.
     pub fn new() -> Self {
         Self {
             cache: Cache::builder()
@@ -222,7 +257,7 @@ pub fn generate_jwt_assertion(config: &JwtAssertionConfig) -> Result<String> {
     // Build claims
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .map_err(|e| anyhow::anyhow!("System clock error: {}", e))?
         .as_secs();
 
     let mut claims = serde_json::Map::new();
@@ -453,6 +488,8 @@ mod tests {
 
     #[test]
     fn test_jwt_assertion_config_parsing() {
+        // NOTE: This test uses a fake/malformed PEM string for deserialization testing only.
+        // It does not attempt to sign a JWT using this key.
         let yaml = r#"
             issuer: "service@project.iam.example.com"
             audience: "https://api.example.com"

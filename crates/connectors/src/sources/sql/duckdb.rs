@@ -68,14 +68,6 @@ impl DuckDBPath {
             return Self(s.to_string());
         }
 
-        // If canonicalization fails, we still want a consistent representation.
-        // We use absolute path as a fallback.
-        if let Ok(absolute) = std::path::Path::new(&path_str).to_path_buf().canonicalize()
-            && let Some(s) = absolute.to_str()
-        {
-            return Self(s.to_string());
-        }
-
         Self(path_str)
     }
 
@@ -176,6 +168,7 @@ impl std::fmt::Debug for DuckDBScanExec {
 }
 
 impl DuckDBScanExec {
+    /// Creates a new `DuckDBScanExec` execution plan node.
     pub fn new(pool: Arc<DuckDBPool>, query: String, schema: SchemaRef) -> Self {
         let properties = Arc::new(PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
@@ -304,6 +297,12 @@ impl ExecutionPlan for DuckDBScanExec {
         });
 
         Ok(builder.build())
+    }
+}
+
+impl crate::sources::federated::FederatedPlan for DuckDBScanExec {
+    fn pushed_sql(&self) -> Option<&str> {
+        Some(&self.query)
     }
 }
 
@@ -460,19 +459,36 @@ pub fn generate_duckdb_pushdown_sql(
 }
 
 /// Maps a DuckDB type string to an Arrow `DataType`.
+///
+/// # Note
+/// This mapping defaults to `Decimal64(18, 2)` for general `DECIMAL` types.
+/// However, users should be aware that certain DataFusion arithmetic kernels
+/// may internally widen these to `Decimal128`, which might impact performance
+/// or type consistency in complex expressions.
 pub fn map_duckdb_type(type_str: &str) -> DataType {
     if type_str.starts_with("DECIMAL") || type_str.starts_with("decimal") {
         let t = type_str.to_uppercase();
         // Parse DECIMAL(P, S)
-        if let (Some(start), Some(end)) = (t.find('('), t.find(')')) {
+        let (p, s) = if let (Some(start), Some(end)) = (t.find('('), t.find(')')) {
             let parts: Vec<&str> = t[start + 1..end].split(',').map(|s| s.trim()).collect();
             if parts.len() == 2
                 && let (Ok(p), Ok(s)) = (parts[0].parse::<u8>(), parts[1].parse::<i8>())
             {
-                return DataType::Decimal128(p, s);
+                (p, s)
+            } else {
+                (18, 2)
             }
+        } else {
+            (18, 2)
+        };
+
+        if p <= 9 {
+            return DataType::Decimal32(p, s);
+        } else if p <= 18 {
+            return DataType::Decimal64(p, s);
+        } else {
+            return DataType::Decimal128(p, s);
         }
-        return DataType::Decimal128(18, 2); // Default
     }
 
     if type_str.eq_ignore_ascii_case("BIGINT")
@@ -668,6 +684,7 @@ pub struct DuckDBTableSource {
 }
 
 impl DuckDBTableSource {
+    /// Creates a new `DuckDBTableSource` with the given federation provider and table provider.
     pub fn new(
         federation_provider: Arc<dyn datafusion_federation::FederationProvider>,
         table_provider: Arc<dyn TableProvider>,
@@ -706,13 +723,17 @@ impl datafusion_federation::FederatedTableSource for DuckDBTableSource {
     }
 }
 
+/// Registers a DuckDB data source using the provided parameters.
 pub async fn register_duckdb(params: SqlSourceParams) -> Result<()> {
     let connection_string = params.connection_string.clone();
     let db_path_str = connection_string.expose_secret().to_string();
     let db_path = tokio::task::spawn_blocking(move || DuckDBPath::new(db_path_str))
         .await
         .context("Blocking task panicked")?;
-    let factory = DuckDBTableFactory::new(db_path.clone())?;
+    let db_path_factory = db_path.clone();
+    let factory = tokio::task::spawn_blocking(move || DuckDBTableFactory::new(db_path_factory))
+        .await
+        .context("Blocking task panicked")??;
 
     let connector = GenericSqlConnector {
         introspector: Arc::new(DuckDBIntrospector {
