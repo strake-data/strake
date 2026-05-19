@@ -343,4 +343,22 @@ mod tests {
         let err = AppConfig::from_file(temp.path().to_str().unwrap()).unwrap_err();
         assert!(matches!(err, ConfigError::ParseError(_)));
     }
+
+    #[test]
+    fn test_enable_broadcast_join_config() {
+        let mut temp = tempfile::Builder::new().suffix(".yaml").tempfile().unwrap();
+        writeln!(
+            temp,
+            "resources:\n  enable_broadcast_join: true\n  target_partitions: 8"
+        )
+        .unwrap();
+
+        let config = AppConfig::from_file(temp.path().to_str().unwrap()).unwrap();
+        assert!(config.resources.enable_broadcast_join);
+        assert_eq!(config.resources.target_partitions, Some(8));
+
+        // Default should be false
+        let default_config = AppConfig::default();
+        assert!(!default_config.resources.enable_broadcast_join);
+    }
 }

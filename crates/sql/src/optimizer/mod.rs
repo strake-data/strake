@@ -11,6 +11,8 @@
 
 /// Rule for injecting defensive limits to prevent runaway queries.
 pub mod defensive_trace;
+/// Rule for distinct key pushdown.
+pub mod distinct_decorrelation;
 /// Rule for flattening join trees into N-way joins.
 pub mod flatten_federated;
 /// Custom logical node for representing N-way joins.

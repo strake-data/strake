@@ -114,6 +114,7 @@ pub(crate) fn should_cache_plan(
     !explicit_disable
 }
 use strake_sql::optimizer::defensive_trace::DefensiveLimitRule;
+use strake_sql::optimizer::distinct_decorrelation::CorrelatedDistinctPushdownRule;
 
 use crate::query::orchestrator::{BudgetPolicy, CachePolicy, ExecutionPolicy};
 use tokio::sync::Semaphore;
@@ -280,6 +281,14 @@ impl FederationEngine {
             .parquet
             .bloom_filter_on_read = true;
         session_config.options_mut().execution.batch_size = 8192;
+        let _ = session_config.options_mut().set(
+            "datafusion.optimizer.enable_join_dynamic_filter_pushdown",
+            "true",
+        );
+        let _ = session_config.options_mut().set(
+            "datafusion.optimizer.enable_dynamic_filter_pushdown",
+            "true",
+        );
 
         // Determine target partitions: Config > Auto-detect > Default (4)
         let target_partitions = if let Some(p) = resource_config.target_partitions {
@@ -348,14 +357,18 @@ impl FederationEngine {
             crate::optimizer::flatten_federated::FlattenFederatedNodesRule::new(),
         ));
 
+        if resource_config.enable_correlated_distinct_pushdown {
+            rules.push(Arc::new(CorrelatedDistinctPushdownRule::new()));
+        }
+
         if let Some(limit) = limits.default_limit {
             rules.push(Arc::new(DefensiveLimitRule::new(limit)));
         }
 
-        debug!("Optimizer rules registered:");
+        println!("Optimizer rules registered:");
         for (i, rule) in rules.iter().enumerate() {
             let name = datafusion::optimizer::optimizer::OptimizerRule::name(rule.as_ref());
-            debug!("  {}: {}", i, name);
+            println!("  {}: {}", i, name);
         }
 
         // Create physical planner with extension planners registered
@@ -366,6 +379,32 @@ impl FederationEngine {
         ));
 
         let mut physical_optimizers = state.physical_optimizers().to_vec();
+
+        if resource_config.enable_push_down_filter {
+            physical_optimizers.push(Arc::new(crate::query::physical_rules::PushDownFilter::new()));
+        }
+
+        if resource_config.enable_broadcast_join {
+            physical_optimizers.push(Arc::new(
+                crate::query::physical_rules::StrakeBroadcastJoinRule::new(
+                    100_000,
+                    50 * 1024 * 1024,
+                ),
+            ));
+        }
+
+        if resource_config.enable_single_node_aggregation {
+            physical_optimizers.push(Arc::new(
+                crate::query::physical_rules::SingleNodeAggregationRule,
+            ));
+        }
+
+        if resource_config.enable_single_partition_optimizer {
+            physical_optimizers.push(Arc::new(
+                crate::query::physical_rules::StrakeSinglePartitionOptimizer,
+            ));
+        }
+
         physical_optimizers.push(cost_validator);
 
         // IMPORTANT: Build state in a single chain to preserve QueryPlanner registration.
@@ -561,13 +600,26 @@ impl FederationEngine {
             .await
             .context("Failed to create logical plan")?;
 
-        // Create physical plan
-        let physical_plan = self
+        // Optimize logical plan
+        let optimized_plan = self
             .context
             .state()
-            .create_physical_plan(&logical_plan)
+            .optimize(&logical_plan)
+            .context("Failed to optimize logical plan")?;
+
+        // Create physical plan
+        let physical_plan = match self
+            .context
+            .state()
+            .create_physical_plan(&optimized_plan)
             .await
-            .context("Failed to create physical plan")?;
+        {
+            Ok(p) => p,
+            Err(e) => {
+                println!("PHYSICAL PLANNING ERROR DETAIL: {:#}", e);
+                return Err(anyhow::anyhow!("Failed to create physical plan: {:#}", e));
+            }
+        };
 
         // Format as tree
         Ok(crate::query::plan_tree::format_plan_tree(&physical_plan))

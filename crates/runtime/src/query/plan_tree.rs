@@ -33,8 +33,9 @@ use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::{CrossJoinExec, HashJoinExec, NestedLoopJoinExec};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion_datasource::file_scan_config::FileScanConfig;
+use datafusion_datasource::file::FileSource;
 use datafusion_datasource::source::DataSourceExec;
+use datafusion_datasource_parquet::source::ParquetSource;
 use std::borrow::Cow;
 use std::sync::Arc;
 use strake_connectors::sources::federated;
@@ -543,19 +544,18 @@ impl PlanTreeFormatter {
 
         // DataSource
         if let Some(ds) = any.downcast_ref::<DataSourceExec>() {
-            let data_source = ds.data_source();
-            if let Some(cfg) = data_source.as_any().downcast_ref::<FileScanConfig>() {
-                if let Some(filter) = cfg.file_source.filter() {
-                    lines.push(format!("filter: {}", filter));
-                }
-                let schema = plan.schema();
-                let fields: Vec<String> = schema
-                    .fields()
-                    .iter()
-                    .map(|f| f.name().to_string())
-                    .collect();
-                lines.push(format!("projection: [{}]", fields.join(", ")));
+            if let Some((_, parquet_source)) = ds.downcast_to_file_source::<ParquetSource>()
+                && let Some(filter) = parquet_source.filter()
+            {
+                lines.push(format!("filter: {}", filter));
             }
+            let schema = plan.schema();
+            let fields: Vec<String> = schema
+                .fields()
+                .iter()
+                .map(|f| f.name().to_string())
+                .collect();
+            lines.push(format!("projection: [{}]", fields.join(", ")));
             return lines;
         }
 
@@ -600,13 +600,11 @@ impl PlanTreeFormatter {
         }
 
         // 2. Check for local data source filter pushdown
-        if let Some(ds) = plan.as_any().downcast_ref::<DataSourceExec>() {
-            let data_source = ds.data_source();
-            if let Some(cfg) = data_source.as_any().downcast_ref::<FileScanConfig>()
-                && cfg.file_source.filter().is_some()
-            {
-                return "[LOCAL-PUSHDOWN]";
-            }
+        if let Some(ds) = plan.as_any().downcast_ref::<DataSourceExec>()
+            && let Some((_, parquet_source)) = ds.downcast_to_file_source::<ParquetSource>()
+            && parquet_source.filter().is_some()
+        {
+            return "[PUSHED]";
         }
 
         ""

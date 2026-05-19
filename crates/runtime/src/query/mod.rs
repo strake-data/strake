@@ -16,6 +16,8 @@ pub mod cache;
 pub mod cost_validator;
 /// Policy-driven query execution orchestration.
 pub mod orchestrator;
+/// Custom physical query optimization rules.
+pub mod physical_rules;
 /// Stateless query execution pipeline.
 pub mod pipeline;
 /// Federated plan visualization utilities.

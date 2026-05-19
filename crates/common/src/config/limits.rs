@@ -137,4 +137,19 @@ pub struct ResourceConfig {
     /// If None, the engine will automatically determine the best value based on available CPU cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_partitions: Option<usize>,
+    /// Enable high-performance physical broadcast join optimization.
+    #[serde(default)]
+    pub enable_broadcast_join: bool,
+    /// Enable pushing down filters to data sources.
+    #[serde(default)]
+    pub enable_push_down_filter: bool,
+    /// Enable single node aggregation optimization.
+    #[serde(default)]
+    pub enable_single_node_aggregation: bool,
+    /// Enable single partition optimization.
+    #[serde(default)]
+    pub enable_single_partition_optimizer: bool,
+    /// Enable correlated distinct pushdown optimization.
+    #[serde(default)]
+    pub enable_correlated_distinct_pushdown: bool,
 }

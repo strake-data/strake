@@ -7995,6 +7995,7 @@ dependencies = [
  "bytes",
  "datafusion",
  "datafusion-datasource",
+ "datafusion-datasource-parquet",
  "datafusion-federation",
  "futures",
  "moka",

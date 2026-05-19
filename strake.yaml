@@ -1,0 +1,9 @@
+server:
+  listen_addr: "0.0.0.0:50051"
+resources:
+  target_partitions: 4
+  enable_broadcast_join: false
+  enable_push_down_filter: false
+  enable_single_node_aggregation: false
+  enable_single_partition_optimizer: false
+  enable_correlated_distinct_pushdown: false
