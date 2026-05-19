@@ -74,10 +74,10 @@ pub async fn register_postgres(params: SqlSourceParams) -> Result<()> {
     connector.register(params).await
 }
 
-async fn create_pg_pool(
+fn build_pg_params(
     connection_string: &str,
     pool_size: usize,
-) -> Result<Arc<PostgresConnectionPool>> {
+) -> Result<HashMap<String, secrecy::SecretString>> {
     use secrecy::SecretString;
     use tokio_postgres::config::Host;
 
@@ -114,6 +114,7 @@ async fn create_pg_pool(
 
     if let Some(dbname) = config.get_dbname() {
         params.insert("dbname".to_string(), SecretString::from(dbname.to_string()));
+        params.insert("db".to_string(), SecretString::from(dbname.to_string()));
     }
 
     if let Some(port) = config.get_ports().first() {
@@ -122,6 +123,10 @@ async fn create_pg_pool(
 
     params.insert(
         "max_pool_size".to_string(),
+        SecretString::from(pool_size.to_string()),
+    );
+    params.insert(
+        "connection_pool_size".to_string(),
         SecretString::from(pool_size.to_string()),
     );
     let mut ssl_mode = match config.get_ssl_mode() {
@@ -142,6 +147,15 @@ async fn create_pg_pool(
         "sslmode".to_string(),
         SecretString::from(ssl_mode.to_string()),
     );
+
+    Ok(params)
+}
+
+async fn create_pg_pool(
+    connection_string: &str,
+    pool_size: usize,
+) -> Result<Arc<PostgresConnectionPool>> {
+    let params = build_pg_params(connection_string, pool_size)?;
 
     let pool = PostgresConnectionPool::new(params)
         .await
@@ -225,4 +239,58 @@ pub async fn fetch_postgres_comments(
         }
     }
     Ok(metadata)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secrecy::ExposeSecret;
+
+    #[test]
+    fn test_build_pg_params_mapping() {
+        let conn_str =
+            "postgres://db_user:secure_password@localhost:5432/production_db?sslmode=prefer";
+        let pool_size = 15;
+        let params = build_pg_params(conn_str, pool_size).expect("Failed to build params");
+
+        assert_eq!(
+            params.get("user").map(|s| s.expose_secret()),
+            Some("db_user")
+        );
+        assert_eq!(
+            params.get("pass").map(|s| s.expose_secret()),
+            Some("secure_password")
+        );
+        assert_eq!(
+            params.get("password").map(|s| s.expose_secret()),
+            Some("secure_password")
+        );
+        assert_eq!(
+            params.get("db").map(|s| s.expose_secret()),
+            Some("production_db")
+        );
+        assert_eq!(
+            params.get("dbname").map(|s| s.expose_secret()),
+            Some("production_db")
+        );
+        assert_eq!(
+            params.get("host").map(|s| s.expose_secret()),
+            Some("localhost")
+        );
+        assert_eq!(params.get("port").map(|s| s.expose_secret()), Some("5432"));
+        assert_eq!(
+            params.get("max_pool_size").map(|s| s.expose_secret()),
+            Some("15")
+        );
+        assert_eq!(
+            params
+                .get("connection_pool_size")
+                .map(|s| s.expose_secret()),
+            Some("15")
+        );
+        assert_eq!(
+            params.get("sslmode").map(|s| s.expose_secret()),
+            Some("prefer")
+        );
+    }
 }
