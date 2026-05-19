@@ -1,0 +1,48 @@
+# DuckDB Connector
+
+Strake supports connecting to local persistent or in-memory DuckDB engines, allowing you to run analytical queries over native DuckDB relational tables directly inside the Strake mesh.
+
+---
+
+## 1. Connection Syntax
+
+DuckDB connection strings point to a local persistent DuckDB database file or specify an in-memory database:
+
+```yaml
+# Persistent local file connection
+connection: "duckdb:///<absolute_path_to_duckdb_file>"
+
+# In-memory transient database
+connection: "duckdb:///:memory:"
+```
+
+### Connection Example
+```yaml
+connection: "duckdb:///workspaces/rust-postgres/data/analytics.duckdb"
+```
+
+---
+
+## 2. Configuration Parameters
+
+The DuckDB database is registered as a `sql` source type with `dialect: duckdb`:
+
+| Parameter | Type | Required | Default | Description |
+|:---|:---|:---|:---|:---|
+| `dialect` | string | **Yes** | - | Must be `duckdb`. |
+| `connection` | string | **Yes** | - | Path URI pointing to your persistent file or `:memory:`. |
+
+---
+
+## 3. Configuration Snippet
+
+Add the following block to your `sources.yaml` to register a DuckDB database:
+
+```yaml
+sources:
+  - name: local_duckdb
+    type: sql
+    config:
+      dialect: duckdb
+      connection: "duckdb:///workspaces/rust-postgres/data/analytics.duckdb"
+```

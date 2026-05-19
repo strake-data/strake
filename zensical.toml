@@ -11,18 +11,34 @@ extra_css = ["stylesheets/extra.css"]
 
 nav = [
     { "Home" = "index.md" },
-    { "Guide" = [
+    { "User Guides" = [
         { "Quickstart" = "quickstart.md" },
         { "Installation" = "install.md" },
-        { "Concepts" = "concepts.md" },
-        { "Authentication" = "authentication.md" }
+        { "Core Concepts" = "concepts.md" },
+        { "Examples & Joins" = "examples.md" },
+        { "Query Profiling & Tuning" = "query-profiling.md" }
     ] },
-    { "Connectors" = "connectors.md" },
-    { "Architecture" = "architecture.md" },
-    { "Enterprise" = "enterprise.md" },
-    { "Examples" = "examples.md" },
-    { "Python API" = "python-api.md" },
-    { "CLI Reference" = "cli-reference.md" }
+    { "Connectors" = [
+        { "Overview" = "connectors.md" },
+        { "PostgreSQL" = "connectors/postgres.md" },
+        { "MySQL" = "connectors/mysql.md" },
+        { "SQLite" = "connectors/sqlite.md" },
+        { "DuckDB" = "connectors/duckdb.md" },
+        { "ClickHouse" = "connectors/clickhouse.md" },
+        { "Oracle" = "connectors/oracle.md" },
+        { "Files & Cloud Storage" = "connectors/file.md" },
+        { "Apache Iceberg" = "connectors/iceberg.md" },
+        { "Arrow Flight SQL" = "connectors/flight_sql.md" },
+        { "REST APIs & SaaS" = "connectors/rest.md" },
+        { "gRPC Services" = "connectors/grpc.md" }
+    ] },
+    { "Reference & Internals" = [
+        { "Python API" = "python-api.md" },
+        { "CLI Reference" = "cli-reference.md" },
+        { "Authentication" = "authentication.md" },
+        { "Engine Architecture" = "architecture.md" },
+        { "Enterprise Edition" = "enterprise.md" }
+    ] }
 ]
 
 [project.theme]

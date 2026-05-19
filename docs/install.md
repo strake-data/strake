@@ -17,16 +17,16 @@ Strake consists of two main components:
 Strake provides a high-performance Python client written in Rust.
 
 ### From PyPI (Recommended)
-    ```bash
-    ## uv
-    uv init strake-demo
-    uv pip add strake
-    ```
-
-    ```bash
-    ## pip
-    pip install strake
-    ```
+```bash
+## uv
+uv init strake-demo
+uv pip add strake
+```
+or
+```bash
+## pip
+pip install strake
+```
 
 ## 2. Universal Install Script (Linux/macOS)
 
