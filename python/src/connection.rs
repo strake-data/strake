@@ -598,7 +598,7 @@ fn to_py_exception_anyhow(e: anyhow::Error) -> PyErr {
         if let Some(strake_err) = e.downcast_ref::<strake_error::StrakeError>() {
             to_py_exception(py, strake_err.clone())
         } else {
-            InternalError::new_err(e.to_string())
+            InternalError::new_err(format!("{:#}", e))
         }
     })
 }

@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use strake_common::config::{Config, QueryLimits, ResourceConfig};
+use strake_common::config::Config;
 use strake_runtime::federation::FederationEngine;
 
 use super::StrakeQueryExecutor;
@@ -51,16 +51,24 @@ impl EmbeddedBackend {
             anyhow::anyhow!("Failed to load sources config from {}: {}", config_str, e)
         })?;
 
+        let app_config = if Path::new(config_path_str).exists() {
+            strake_common::config::AppConfig::from_file(config_path_str).map_err(|e| {
+                anyhow::anyhow!("Failed to load app config from {}: {}", config_path_str, e)
+            })?
+        } else {
+            strake_common::config::AppConfig::default()
+        };
+
         let engine = FederationEngine::new(strake_runtime::federation::FederationEngineOptions {
             config,
             catalog_name: "strake".to_string(),
-            query_limits: QueryLimits::default(),
-            resource_config: ResourceConfig::default(),
+            query_limits: app_config.query_limits,
+            resource_config: app_config.resources,
             datafusion_config: HashMap::new(),
-            global_budget: 100,
+            global_budget: app_config.server.global_connection_budget,
             extra_optimizer_rules: vec![],
             extra_sources: vec![],
-            retry: Default::default(),
+            retry: app_config.retry,
         })
         .await?;
 
