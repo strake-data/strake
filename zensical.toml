@@ -37,7 +37,8 @@ nav = [
         { "CLI Reference" = "cli-reference.md" },
         { "Authentication" = "authentication.md" },
         { "Engine Architecture" = "architecture.md" },
-        { "Enterprise Edition" = "enterprise.md" }
+        { "Enterprise Edition" = "enterprise.md" },
+        { "Configuration Reference" = "configuration.md" }
     ] }
 ]
 
