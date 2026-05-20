@@ -25,6 +25,7 @@ INSTALL_CLI=false
 INSTALL_SERVER=false
 INSTALL_ENTERPRISE=false
 VERSION=""
+FORCE_MUSL=false
 
 # Parse arguments
 while [ $# -gt 0 ]; do
@@ -51,6 +52,10 @@ while [ $# -gt 0 ]; do
             VERSION="$2"
             shift 2
             ;;
+        --musl)
+            FORCE_MUSL=true
+            shift
+            ;;
         --help|-h)
             cat <<EOF
 Strake Universal Installer
@@ -66,6 +71,7 @@ Options:
   --server            Install strake-server only
   --enterprise        Install strake-enterprise only
   --version, -v       Install a specific version (e.g., v0.1.0)
+  --musl              Force installation of musl (static) Linux binary
   --help, -h          Show this help message
 
 Environment Variables:
@@ -118,7 +124,9 @@ detect_platform() {
 
     # Linux: prefer musl for better portability
     if [ "$os" = "unknown-linux" ]; then
-        if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -q musl; then
+        if [ "$FORCE_MUSL" = "true" ]; then
+            os="unknown-linux-musl"
+        elif command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -q musl; then
             os="unknown-linux-musl"
         else
             os="unknown-linux-gnu"

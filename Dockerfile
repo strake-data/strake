@@ -80,15 +80,28 @@ RUN strip /out/strake-server
 RUN strip /out/strake-enterprise
 
 # ===== Runtime Stage =====
-FROM scratch
+FROM alpine:${ALPINE_VERSION}
+
+# Install Oracle Instant Client dependencies
+# Note: Oracle Instant Client requires glibc, so we use gcompat on Alpine
+RUN apk add --no-cache \
+    libaio \
+    libnsl \
+    libc6-compat \
+    gcompat \
+    ca-certificates \
+    libstdc++
+
+# Setup Oracle Instant Client environment
+ENV LD_LIBRARY_PATH=/usr/lib/oracle
 
 # Copy binaries from builder for the native architecture
 COPY --from=builder /out/strake-cli /bin/strake-cli
 COPY --from=builder /out/strake-server /bin/strake-server
 COPY --from=builder /out/strake-enterprise /bin/strake-enterprise
 
-# Copy CA certificates for TLS
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+# Copy CA certificates for TLS (already in alpine, but copying for good measure if needed)
+# COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 # Create minimal passwd/group files for running as non-root
 COPY --from=builder /etc/passwd /etc/passwd
