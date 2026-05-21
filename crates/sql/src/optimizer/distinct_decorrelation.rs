@@ -100,10 +100,8 @@ impl OptimizerRule for CorrelatedDistinctPushdownRule {
         plan: LogicalPlan,
         _config: &dyn OptimizerConfig,
     ) -> Result<Transformed<LogicalPlan>> {
-        println!("DECORRELATION RULE: rewrite called! plan = {:?}", plan);
         plan.transform_up(&|node| {
             if let LogicalPlan::Join(join) = &node {
-                println!("DECORRELATION RULE: Found join! on = {:?}", join.on);
                 // Pattern match TPC-H Q2 correlation style: joining on "partkey"
                 let has_partkey = join.on.iter().any(|(l, r)| {
                     let l_str = l.to_string();
@@ -370,11 +368,11 @@ mod tests {
             optimized.data
         ));
 
-        std::fs::write(
-            "/workspaces/rust-postgres/strake/scratch/test_q2_plan.txt",
-            output,
-        )
-        .unwrap();
+        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("target");
+        let _ = std::fs::create_dir_all(&path);
+        path.push("test_q2_plan.txt");
+        std::fs::write(path, output).unwrap();
 
         Ok(())
     }
