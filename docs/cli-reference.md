@@ -180,7 +180,7 @@ Automatically adds one or more discovered tables into your `sources.yaml`.
 :   Perform deep introspection of the source (e.g., fetching constraints and native types).
 
 `--ai-descriptions` : `bool`, *default: false*
-:   Connect to the configured AI provider to generate natural language descriptions for the table and its columns.
+:   Connect to the configured AI provider to generate natural language descriptions for the table and its columns. See the [AI-Powered Metadata Enrichment Guide](./metadata-enrichment.md) for details.
 
 `--merge` : `bool`, *default: true*
 :   Fill in missing fields from introspection but preserve any existing manual edits in `sources.yaml`.

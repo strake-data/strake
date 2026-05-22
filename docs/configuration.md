@@ -103,6 +103,12 @@ mcp:
   port: 8001
   use_firecracker: true
 
+# AI metadata enrichment configuration
+ai:
+  provider: gemini
+  model: gemini-3.5-flash
+  temperature: 0.7 # Higher temperature results in more variety
+
 # Telemetry and observability exporter
 telemetry:
   enabled: true
@@ -266,3 +272,16 @@ Controls the exported observability footprint.
 | `telemetry.enabled` | `boolean` | `false` | Enable telemetry tracing and metrics reporting. |
 | `telemetry.endpoint` | `string` | `http://localhost:4317` | OTLP collector address for traces/metrics. |
 | `telemetry.service_name` | `string` | `Strake Server` | Service identifier reported to OpenTelemetry. |
+
+---
+
+### `ai` Settings
+
+Controls AI metadata description generation options during table discovery. For detailed setup and usage, see the [AI-Powered Metadata Enrichment Guide](./metadata-enrichment.md).
+
+| Parameter | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `ai.provider` | `string` | `None` | AI provider for metadata enrichment (e.g. `gemini` or `openai`). |
+| `ai.model` | `string` | `None` | The specific model name used for introspective descriptions (e.g., `gemini-3.5-flash`). |
+| `ai.url` | `string` | `None` | Custom API endpoint URL for the AI provider. |
+| `ai.temperature` | `float` | `0.7` | Sampling temperature for descriptions (between 0.0 and 1.0). Higher temperature results in more generation variety. |
