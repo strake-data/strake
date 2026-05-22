@@ -365,10 +365,10 @@ impl FederationEngine {
             rules.push(Arc::new(DefensiveLimitRule::new(limit)));
         }
 
-        println!("Optimizer rules registered:");
+        debug!("Optimizer rules registered:");
         for (i, rule) in rules.iter().enumerate() {
             let name = datafusion::optimizer::optimizer::OptimizerRule::name(rule.as_ref());
-            println!("  {}: {}", i, name);
+            debug!("  {}: {}", i, name);
         }
 
         // Create physical planner with extension planners registered
@@ -616,7 +616,7 @@ impl FederationEngine {
         {
             Ok(p) => p,
             Err(e) => {
-                println!("PHYSICAL PLANNING ERROR DETAIL: {:#}", e);
+                tracing::error!("PHYSICAL PLANNING ERROR DETAIL: {:#}", e);
                 return Err(anyhow::anyhow!("Failed to create physical plan: {:#}", e));
             }
         };
