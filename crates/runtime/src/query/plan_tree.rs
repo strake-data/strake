@@ -130,13 +130,7 @@ impl PlanTreeFormatter {
         let mut grid = RenderGrid::new(width, height);
         self.place_in_grid(&mut grid, plan, 0, 0);
 
-        // Dynamic node width based on terminal limit
-        let mut node_width = 45usize;
-        while grid.width * node_width > 240 && node_width > 15 {
-            node_width -= 2;
-        }
-
-        self.render_grid(&grid, node_width)
+        self.render_grid(&grid)
     }
 
     fn compute_size(&self, plan: &Arc<dyn ExecutionPlan>) -> (usize, usize) {
@@ -226,15 +220,30 @@ impl PlanTreeFormatter {
         }
     }
 
-    fn render_grid(&self, grid: &RenderGrid, node_width: usize) -> String {
+    fn render_grid(&self, grid: &RenderGrid) -> String {
         let mut lines = Vec::new();
-        let box_w = node_width - 2; // interior width between │ borders
-        let half = node_width / 2;
+
+        // Calculate dynamic column widths
+        let mut col_widths = vec![15usize; grid.width];
+        for y in 0..grid.height {
+            for (x, col_w) in col_widths.iter_mut().enumerate().take(grid.width) {
+                if let Some(node) = grid.get(x, y) {
+                    let mut max_w = UnicodeWidthStr::width(node.name.as_str());
+                    max_w = max_w.max(UnicodeWidthStr::width(node.metrics.as_str()));
+                    for detail in &node.details {
+                        max_w = max_w.max(UnicodeWidthStr::width(detail.as_str()));
+                    }
+                    let required_width = max_w + 2;
+                    *col_w = (*col_w).max(required_width);
+                }
+            }
+        }
 
         for y in 0..grid.height {
             // ── 1. Top layer ──
-            let mut top = String::with_capacity(grid.width * node_width);
-            for x in 0..grid.width {
+            let mut top = String::new();
+            for (x, &col_w) in col_widths.iter().enumerate().take(grid.width) {
+                let half = col_w / 2;
                 if grid.has_node(x, y) {
                     top.push('┌');
                     top.push_str(&"─".repeat(half - 1));
@@ -243,19 +252,19 @@ impl PlanTreeFormatter {
                     } else {
                         top.push('─');
                     }
-                    top.push_str(&"─".repeat(node_width - half - 2));
+                    top.push_str(&"─".repeat(col_w - half - 2));
                     top.push('┐');
                 } else {
                     let has_right = (x + 1..grid.width)
                         .any(|rx| grid.has_node(rx, y) || grid.has_node(rx, y + 1));
                     if has_right || self.should_render_whitespace(grid, x, y) {
-                        for _ in 0..node_width {
+                        for _ in 0..col_w {
                             top.push(' ');
                         }
                     }
                 }
             }
-            lines.push(top);
+            lines.push(top.trim_end().to_string());
 
             // ── 2. Box content ──
             let mut max_extra = 0;
@@ -275,8 +284,10 @@ impl PlanTreeFormatter {
             let halfway = max_extra / 2;
 
             for render_y in 0..max_extra {
-                let mut row = String::with_capacity(grid.width * node_width);
-                for x in 0..grid.width {
+                let mut row = String::new();
+                for (x, &col_w) in col_widths.iter().enumerate().take(grid.width) {
+                    let box_w = col_w - 2;
+                    let half = col_w / 2;
                     if let Some(node) = grid.get(x, y) {
                         row.push('│');
                         let text: Cow<'_, str> = if render_y == 0 {
@@ -317,18 +328,18 @@ impl PlanTreeFormatter {
                                 if needs_whitespace {
                                     row.push_str(&"─".repeat(half));
                                     row.push('┬');
-                                    row.push_str(&"─".repeat(node_width - half - 1));
+                                    row.push_str(&"─".repeat(col_w - half - 1));
                                 } else {
                                     row.push_str(&"─".repeat(half));
                                     row.push('┐');
-                                    for _ in 0..(node_width - half - 1) {
+                                    for _ in 0..(col_w - half - 1) {
                                         row.push(' ');
                                     }
                                 }
                             } else if needs_whitespace {
-                                row.push_str(&"─".repeat(node_width));
+                                row.push_str(&"─".repeat(col_w));
                             } else {
-                                for _ in 0..node_width {
+                                for _ in 0..col_w {
                                     row.push(' ');
                                 }
                             }
@@ -337,22 +348,23 @@ impl PlanTreeFormatter {
                                 row.push(' ');
                             }
                             row.push('│');
-                            for _ in 0..(node_width - half - 1) {
+                            for _ in 0..(col_w - half - 1) {
                                 row.push(' ');
                             }
                         } else {
-                            for _ in 0..node_width {
+                            for _ in 0..col_w {
                                 row.push(' ');
                             }
                         }
                     }
                 }
-                lines.push(row);
+                lines.push(row.trim_end().to_string());
             }
 
             // ── 3. Bottom layer ──
-            let mut bottom = String::with_capacity(grid.width * node_width);
-            for x in 0..grid.width {
+            let mut bottom = String::new();
+            for (x, &col_w) in col_widths.iter().enumerate().take(grid.width) {
+                let half = col_w / 2;
                 if let Some(node) = grid.get(x, y) {
                     bottom.push('└');
                     bottom.push_str(&"─".repeat(half - 1));
@@ -361,7 +373,7 @@ impl PlanTreeFormatter {
                     } else {
                         bottom.push('─');
                     }
-                    bottom.push_str(&"─".repeat(node_width - half - 2));
+                    bottom.push_str(&"─".repeat(col_w - half - 2));
                     bottom.push('┘');
                 } else {
                     let has_child_below = grid.has_node(x, y + 1);
@@ -371,17 +383,17 @@ impl PlanTreeFormatter {
                             bottom.push(' ');
                         }
                         bottom.push('│');
-                        for _ in 0..(node_width - half - 1) {
+                        for _ in 0..(col_w - half - 1) {
                             bottom.push(' ');
                         }
                     } else if needs_whitespace {
-                        for _ in 0..node_width {
+                        for _ in 0..col_w {
                             bottom.push(' ');
                         }
                     }
                 }
             }
-            lines.push(bottom);
+            lines.push(bottom.trim_end().to_string());
         }
 
         lines.join("\n")
