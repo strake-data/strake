@@ -16,7 +16,8 @@ nav = [
         { "Installation" = "install.md" },
         { "Core Concepts" = "concepts.md" },
         { "Examples & Joins" = "examples.md" },
-        { "Query Profiling & Tuning" = "query-profiling.md" }
+        { "Query Profiling & Tuning" = "query-profiling.md" },
+        { "Sandbox Metering" = "sandbox-metering.md" }
     ] },
     { "Connectors" = [
         { "Overview" = "connectors.md" },
