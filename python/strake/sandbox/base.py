@@ -1,18 +1,22 @@
 from abc import ABC, abstractmethod
-from typing import Optional, Any
+import enum
+from typing import Any
 from dataclasses import dataclass
 
 
-class SandboxErrorMessages:
+@dataclass(frozen=True)
+class ExecutionContext:
+    """Frozen dataclass container for execution metadata context.
+
+    Attributes:
+        session_id: Unique identifier for tracking this execution session.
+    """
+
+    session_id: str | None = None
+
+
+class SandboxErrorMessages(str, enum.Enum):
     """Unified error message constants for the sandbox."""
-
-    __slots__ = ()
-
-    def __new__(cls):
-        raise TypeError("SandboxErrorMessages is a namespace, not a class")
-
-    def __init_subclass__(cls, **kwargs):
-        raise TypeError("SandboxErrorMessages cannot be subclassed")
 
     CONNECTION_FAILED = "Runtime Error: Sandbox could not connect to the data engine. Check server logs."
     TIMEOUT = "Resource Error: Execution timed out."
@@ -50,9 +54,7 @@ class SandboxResult:
         return {
             "stdout": self.stdout,
             "stderr": self.stderr,
-            # Explicitly keep result as None in the current design to avoid lossy string conversion.
-            # If non-None results are needed in future, implement a typed encoding.
-            "result": None,
+            "result": self.result,
         }
 
     @classmethod
@@ -73,8 +75,7 @@ class SandboxResult:
 
 
 class SandboxManager(ABC):
-    """
-    Abstract interface for executing Agent-generated Python code safely.
+    """Abstract interface for executing Agent-generated Python code safely.
 
     Note: The connection is stored directly. Ensure StrakeConnection uses
     Arc<> internally for thread-safe sharing (Python-side bindings usually
@@ -82,7 +83,13 @@ class SandboxManager(ABC):
     may fail or result in deadlocks if the underlying Rust objects are moved.
     """
 
-    def __init__(self, connection, config_path=None):
+    def __init__(self, connection: Any, config_path: str | None = None) -> None:
+        """Initialize the sandbox execution manager.
+
+        Args:
+            connection: Database/Federation connection instance.
+            config_path: Path to optional configuration files.
+        """
         self.connection = connection
         self.config_path = config_path
 
@@ -90,10 +97,10 @@ class SandboxManager(ABC):
     async def run(
         self,
         code: str,
-        timeout_secs: Optional[float] = None,
+        timeout_secs: float | None = None,
         *,
-        execution_context: Optional[dict[str, str]] = None,
-    ) -> "SandboxResult":
+        execution_context: ExecutionContext | None = None,
+    ) -> SandboxResult:
         """Executes Python code in the sandbox and returns the result.
 
         execution_context is an optional, per-call metadata envelope used to
