@@ -38,6 +38,7 @@ ALLOWED_IMPORTS = frozenset(
         "math",
         "statistics",
         "datetime",
+        "_strptime",
         "collections",
         "itertools",
         "functools",
