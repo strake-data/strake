@@ -30,10 +30,13 @@ use anyhow::Result;
 use futures::future::BoxFuture;
 use strake_common::models::{DomainName, SourcesConfig};
 
+/// The expected length of the API key prefix.
+pub const KEY_PREFIX_LEN: usize = 8;
+
 pub mod models;
 pub mod postgres;
 pub mod sqlite;
-use models::{ApplyLogEntry, ApplyResult, DomainStatus};
+use models::{ApiKeyInfo, ApplyLogEntry, ApplyResult, DomainStatus};
 
 /// Interface for metadata storage backends that manage domain configurations and history.
 pub trait MetadataStore: Send + Sync {
@@ -79,6 +82,47 @@ pub trait MetadataStore: Send + Sync {
 
     /// List all domains and their status
     fn list_domains(&self) -> BoxFuture<'_, Result<Vec<DomainStatus>>>;
+
+    /// Runs outstanding database schema migrations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if applying the migrations fails.
+    fn migrate(&self) -> BoxFuture<'_, Result<()>> {
+        self.init()
+    }
+
+    /// Create a new API key in the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying database insertion fails or if a
+    /// uniqueness constraint on `key_prefix` is violated.
+    fn create_api_key<'a>(
+        &'a self,
+        name: &'a str,
+        description: Option<&'a str>,
+        user_id: &'a str,
+        key_prefix: &'a str,
+        key_hash: &'a str,
+        permissions: &'a [String],
+    ) -> BoxFuture<'a, Result<()>>;
+
+    /// List all API keys in the store, ordered by creation time descending.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    fn list_api_keys(&self) -> BoxFuture<'_, Result<Vec<ApiKeyInfo>>>;
+
+    /// Revoke an active API key by its prefix.
+    ///
+    /// Returns `true` if a key was revoked, `false` if no active key matched.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the update query fails.
+    fn revoke_api_key<'a>(&'a self, key_prefix: &'a str) -> BoxFuture<'a, Result<bool>>;
 }
 
 /// Initialize the metadata store based on configuration

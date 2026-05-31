@@ -21,30 +21,31 @@ server:
 
 ### 2. Setup the Database
 
-Strake expects an `api_keys` table in the metadata database. Execute the following SQL to create the required schema:
+Use the `strake-cli` command to initialize the metadata database and create the required tables:
 
-```sql
-CREATE TABLE api_keys (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    key_prefix VARCHAR(8) NOT NULL,
-    key_hash VARCHAR(255) NOT NULL,
-    user_id VARCHAR(255) NOT NULL,
-    permissions TEXT[] DEFAULT '{}',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    last_used_at TIMESTAMP WITH TIME ZONE,
-    revoked_at TIMESTAMP WITH TIME ZONE
-);
-
-CREATE INDEX idx_api_keys_prefix ON api_keys(key_prefix) WHERE revoked_at IS NULL;
+```bash
+strake-cli db init
 ```
 
 ### 3. Generate and Manage Keys
 
-Keys are not stored in plaintext. To create a new key:
-1. Generate a secure random string (at least 32 characters).
-2. Take the first 8 characters as the `key_prefix`.
-3. Generate an Argon2 hash of the full key string.
-4. Insert the prefix, hash, and desired permissions into the `api_keys` table.
+Keys are not stored in plaintext. To generate a new API key:
+
+```bash
+strake-cli apikey create --name "my-app-key" --user "user-123" --permissions "read"
+```
+
+This will generate a cryptographically secure key, compute its Argon2 hash, and store it in the database. The raw key (starting with `strk_`) will be displayed exactly once.
+
+To list or revoke keys:
+
+```bash
+# List key prefixes and active status
+strake-cli apikey list
+
+# Revoke a key using its 8-character prefix
+strake-cli apikey revoke <prefix>
+```
 
 ### 4. Client Usage
 

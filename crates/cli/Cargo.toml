@@ -34,6 +34,8 @@ strake-connectors = { path = "../connectors" }
 zeroize = { version = "1.8", features = ["derive"] }
 futures = "0.3"
 tempfile = "3.17.1"
+uuid = { workspace = true, features = ["v4"] }
+argon2 = "0.5"
 
 [dev-dependencies]
 wiremock = "0.6"

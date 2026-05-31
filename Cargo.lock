@@ -7768,6 +7768,7 @@ name = "strake-cli"
 version = "0.2.6"
 dependencies = [
  "anyhow",
+ "argon2",
  "async-trait",
  "chrono",
  "clap",
@@ -7798,6 +7799,7 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "tracing",
+ "uuid",
  "wiremock",
  "zeroize",
 ]

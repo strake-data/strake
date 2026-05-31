@@ -44,8 +44,10 @@
 //! - [Strake CLI Commands Reference](https://docs.strake.io/cli/commands)
 
 pub mod ai;
+pub mod apikey;
 mod apply;
 mod apply_models;
+pub mod db;
 mod describe;
 mod diff_logic;
 mod discovery;

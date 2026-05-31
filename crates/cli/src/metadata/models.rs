@@ -71,3 +71,26 @@ pub struct ApplyResult {
     /// Names of sources that were successfully deleted.
     pub sources_deleted: Vec<strake_common::models::SourceName>,
 }
+
+/// Information about an API key in the metadata store.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ApiKeyInfo {
+    /// The unique identifier of the key.
+    pub id: String,
+    /// The human-readable name of the key.
+    pub name: String,
+    /// The 8-character prefix of the key.
+    pub key_prefix: String,
+    /// The user ID associated with the key.
+    pub user_id: String,
+    /// Permissions assigned to the key.
+    pub permissions: Vec<String>,
+    /// When the key was created.
+    pub created_at: String,
+    /// When the key was last used.
+    pub last_used_at: Option<String>,
+    /// When the key was revoked.
+    pub revoked_at: Option<String>,
+    /// Optional description of the key.
+    pub description: Option<String>,
+}

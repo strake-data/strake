@@ -220,6 +220,50 @@ enum Commands {
         #[command(subcommand)]
         subcommand: SecretCommands,
     },
+    /// Manage the metadata database (init, migrate)
+    Db {
+        #[command(subcommand)]
+        subcommand: DbCommands,
+    },
+    /// Manage API keys (create, list, revoke)
+    Apikey {
+        #[command(subcommand)]
+        subcommand: ApikeyCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum DbCommands {
+    /// Initialize a fresh metadata database
+    Init,
+    /// Run outstanding database schema migrations
+    Migrate,
+}
+
+#[derive(Subcommand)]
+enum ApikeyCommands {
+    /// Generate a new secure API key
+    Create {
+        /// Name of the key to easily identify it later
+        #[arg(long)]
+        name: String,
+        /// Description of the key's purpose
+        #[arg(long)]
+        description: Option<String>,
+        /// User ID/Actor name associated with the key
+        #[arg(long)]
+        user: String,
+        /// Comma-separated permissions (e.g. read,write)
+        #[arg(long, value_delimiter = ',', default_value = "read")]
+        permissions: Vec<String>,
+    },
+    /// List all registered API keys
+    List,
+    /// Revoke an API key by its 8-character prefix
+    Revoke {
+        /// The 8-character prefix of the key to revoke
+        prefix: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -528,10 +572,11 @@ async fn run_cli(
             SecretCommands::Validate { file, offline } => {
                 let mut ctx = load_resolver_context();
                 ctx.offline = *offline;
-                return commands::validate_secrets(file, &ctx, cli.output).await;
+                commands::validate_secrets(file, &ctx, cli.output).await
             }
             SecretCommands::Configure => {
                 println!("'secrets configure' is not yet implemented");
+                Ok(exit_codes::EXIT_OK)
             }
         },
         Commands::Status {
@@ -569,6 +614,39 @@ async fn run_cli(
             )
             .await;
         }
+        Commands::Db { subcommand } => {
+            let store = metadata::init_store(config).await?;
+            match subcommand {
+                DbCommands::Init => commands::db::init(&*store).await,
+                DbCommands::Migrate => commands::db::migrate(&*store).await,
+            }
+        }
+        Commands::Apikey { subcommand } => {
+            let store = metadata::init_store(config).await?;
+            match subcommand {
+                ApikeyCommands::Create {
+                    name,
+                    description,
+                    user,
+                    permissions,
+                } => {
+                    commands::apikey::create(
+                        &*store,
+                        commands::apikey::ApikeyCreateOptions {
+                            name: name.clone(),
+                            description: description.clone(),
+                            user_id: user.clone(),
+                            permissions: permissions.clone(),
+                        },
+                        cli.output,
+                    )
+                    .await
+                }
+                ApikeyCommands::List => commands::apikey::list(&*store, cli.output).await,
+                ApikeyCommands::Revoke { prefix } => {
+                    commands::apikey::revoke(&*store, prefix, cli.output).await
+                }
+            }
+        }
     }
-    Ok(exit_codes::EXIT_OK)
 }

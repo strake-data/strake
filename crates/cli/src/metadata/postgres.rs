@@ -141,7 +141,6 @@ impl MetadataStore for PostgresStore {
         let domain_str = domain.to_string();
         Box::pin(async move {
             let client = client_ptr.lock().await;
-
             // Use an UPSERT to handle both initial creation and existing increments
             let row = client
                 .query_one(
@@ -157,9 +156,9 @@ impl MetadataStore for PostgresStore {
                 .map_err(|e| {
                     if e.to_string().contains("optimistic locking failure") || e.to_string().contains("where clause") {
                         anyhow!(
-                            "Optimistic locking failure: Domain '{}' version has changed (expected v{})",
-                            domain_str,
-                            expected_version
+                             "Optimistic locking failure: Domain '{}' version has changed (expected v{})",
+                             domain_str,
+                             expected_version
                         )
                     } else {
                         anyhow!(e).context("Failed to increment domain version")
@@ -175,13 +174,12 @@ impl MetadataStore for PostgresStore {
         config: &'a SourcesConfig,
         force: bool,
     ) -> BoxFuture<'a, Result<ApplyResult>> {
-        let client_ptr = self.client.clone();
         Box::pin(async move {
-            let mut client = client_ptr.lock().await;
+            let mut client = self.client.lock().await;
             let tx = client
                 .transaction()
                 .await
-                .context("Failed to begin apply transaction")?;
+                .context("Failed to begin transaction")?;
 
             let domain = config
                 .domain
@@ -396,7 +394,7 @@ impl MetadataStore for PostgresStore {
             client.execute(
                 "INSERT INTO apply_history (domain_name, version, user_id, sources_added, sources_deleted, tables_modified, config_hash, config_yaml)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                &[&entry.domain.to_string(), &entry.version, &entry.user_id.to_string(), &added_json, &deleted_json, &tables_modified, &entry.config_hash, &entry.config_yaml],
+                &[&entry.domain.to_string() as &(dyn tokio_postgres::types::ToSql + Sync), &entry.version, &entry.user_id.to_string(), &added_json, &deleted_json, &tables_modified, &entry.config_hash, &entry.config_yaml],
             ).await.map_err(|e| anyhow!(e).context("Failed to log apply history"))?;
             Ok(())
         })
@@ -415,7 +413,7 @@ impl MetadataStore for PostgresStore {
                 .query(
                     "SELECT domain_name, version, user_id, sources_added, sources_deleted, tables_modified, config_hash, config_yaml, timestamp
                      FROM apply_history WHERE domain_name = $1 ORDER BY version DESC LIMIT $2",
-                    &[&domain_str, &limit],
+                    &[&domain_str as &(dyn tokio_postgres::types::ToSql + Sync), &limit],
                 )
                 .await?;
 
@@ -553,7 +551,10 @@ impl MetadataStore for PostgresStore {
             let row = client
                 .query_opt(
                     "SELECT config_yaml FROM apply_history WHERE domain_name = $1 AND version = $2",
-                    &[&domain_str, &version],
+                    &[
+                        &domain_str as &(dyn tokio_postgres::types::ToSql + Sync),
+                        &version,
+                    ],
                 )
                 .await
                 .context("Failed to query apply history for config")?;
@@ -590,6 +591,109 @@ impl MetadataStore for PostgresStore {
                 });
             }
             Ok(results)
+        })
+    }
+
+    fn create_api_key<'a>(
+        &'a self,
+        name: &'a str,
+        description: Option<&'a str>,
+        user_id: &'a str,
+        key_prefix: &'a str,
+        key_hash: &'a str,
+        permissions: &'a [String],
+    ) -> BoxFuture<'a, Result<()>> {
+        let client_ptr = self.client.clone();
+        let name = name.to_string();
+        let description = description.map(|s| s.to_string());
+        let user_id = user_id.to_string();
+        let key_prefix = key_prefix.to_string();
+        let key_hash = key_hash.to_string();
+        let permissions = permissions.to_vec();
+
+        Box::pin(async move {
+            let client = client_ptr.lock().await;
+            if key_prefix.len() != crate::metadata::KEY_PREFIX_LEN {
+                anyhow::bail!(
+                    "Invalid prefix length: expected {}, got {}",
+                    crate::metadata::KEY_PREFIX_LEN,
+                    key_prefix.len()
+                );
+            }
+
+            client.execute(
+                "INSERT INTO api_keys (name, description, user_id, key_prefix, key_hash, permissions)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+                &[
+                    &name as &(dyn tokio_postgres::types::ToSql + Sync),
+                    &description as &(dyn tokio_postgres::types::ToSql + Sync),
+                    &user_id as &(dyn tokio_postgres::types::ToSql + Sync),
+                    &key_prefix as &(dyn tokio_postgres::types::ToSql + Sync),
+                    &key_hash as &(dyn tokio_postgres::types::ToSql + Sync),
+                    &permissions as &(dyn tokio_postgres::types::ToSql + Sync),
+                ],
+            )
+            .await
+            .context("Failed to insert API key into postgres")?;
+            Ok(())
+        })
+    }
+
+    fn list_api_keys(&self) -> BoxFuture<'_, Result<Vec<super::models::ApiKeyInfo>>> {
+        let client_ptr = self.client.clone();
+        Box::pin(async move {
+            let client = client_ptr.lock().await;
+            let rows = client.query(
+                "SELECT id, name, key_prefix, user_id, permissions, created_at, last_used_at, revoked_at, description
+                 FROM api_keys ORDER BY created_at DESC",
+                &[],
+            )
+            .await
+            .context("Failed to query API keys from postgres")?;
+
+            let mut results = Vec::new();
+            for row in rows {
+                let id: uuid::Uuid = row.get("id");
+                let created_at: DateTime<Utc> = row.get("created_at");
+                let last_used_at: Option<DateTime<Utc>> = row.get("last_used_at");
+                let revoked_at: Option<DateTime<Utc>> = row.get("revoked_at");
+
+                results.push(super::models::ApiKeyInfo {
+                    id: id.to_string(),
+                    name: row.get("name"),
+                    key_prefix: row.get("key_prefix"),
+                    user_id: row.get("user_id"),
+                    permissions: row.get("permissions"),
+                    created_at: created_at.to_rfc3339(),
+                    last_used_at: last_used_at.map(|t| t.to_rfc3339()),
+                    revoked_at: revoked_at.map(|t| t.to_rfc3339()),
+                    description: row.get("description"),
+                });
+            }
+            Ok(results)
+        })
+    }
+
+    fn revoke_api_key<'a>(&'a self, key_prefix: &'a str) -> BoxFuture<'a, Result<bool>> {
+        let client_ptr = self.client.clone();
+        let prefix = key_prefix.to_string();
+        Box::pin(async move {
+            let client = client_ptr.lock().await;
+            if prefix.len() != crate::metadata::KEY_PREFIX_LEN {
+                anyhow::bail!(
+                    "Invalid prefix length: expected {}, got {}",
+                    crate::metadata::KEY_PREFIX_LEN,
+                    prefix.len()
+                );
+            }
+
+            let rows_updated = client.execute(
+                "UPDATE api_keys SET revoked_at = NOW() WHERE key_prefix = $1 AND revoked_at IS NULL",
+                &[&prefix],
+            )
+            .await
+            .context("Failed to revoke API key in postgres")?;
+            Ok(rows_updated > 0)
         })
     }
 }

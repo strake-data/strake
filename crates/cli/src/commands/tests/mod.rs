@@ -1,3 +1,4 @@
+mod test_apikey;
 mod test_diff;
 mod test_discovery;
 mod test_helpers;
