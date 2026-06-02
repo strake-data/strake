@@ -1,6 +1,6 @@
 # CLI Reference
 
-The `strake-cli` is the primary tool for managing your Strake configuration, validating metadata, and performing GitOps-style deployments.
+The `strake-cli` is the primary tool for managing your Strake configuration, validating metadata, and synchronizing schema definitions.
 
 ## Global Options
 
@@ -39,7 +39,7 @@ Initialize a new Strake project with a template configuration.
 
 ---
 
-## GitOps & Deployment
+## GitOps & Schema Synchronization
 
 ### `validate`
 
@@ -48,7 +48,7 @@ Initialize a new Strake project with a template configuration.
 <span class="type">command</span>
 </div>
 
-Check your configuration for syntax and connectivity errors without applying changes.
+Check your configuration for syntax and connectivity errors.
 
 **Options:**
 
@@ -70,7 +70,7 @@ Check your configuration for syntax and connectivity errors without applying cha
 <span class="type">command</span>
 </div>
 
-Preview the differences between your local configuration and the live metadata store.
+Preview the differences between the local schema definitions in `sources.yaml` and live remote database schemas. It performs stateless introspection to detect table additions, deletions, column type mismatches, and nullability drift without relying on database-stored metadata state.
 
 **Options:**
 
@@ -82,31 +82,19 @@ Preview the differences between your local configuration and the live metadata s
 
 ---
 
-### `apply`
+### `sync`
 
 <div class="api-signature">
-<code>strake-cli apply [file]</code>
+<code>strake-cli sync [file]</code>
 <span class="type">command</span>
 </div>
 
-Deploy your local configuration to the metadata store. In JSON mode, returns an `ApplyReceipt`.
+Introspect live remote database schemas and update the local `sources.yaml` schema definitions in-place, preserving hand-written table and column descriptions.
 
 **Options:**
 
 `file` : `str`, *default: sources.yaml*
-:   Path to the configuration file to deploy.
-
-`--force` : `bool`, *default: false*
-:   Required for potentially destructive actions (e.g., deleting a source or bypassing orphaned references).
-
-`--dry-run` : `bool`, *default: false*
-:   Runs validation and previews changes (via `diff`) without actually persisting them.
-
-`--expected-version` : `int`, *optional*
-:   Enforces optimistic locking. The operation will fail if the current version in the metadata store does not match this value.
-
-`--notify-url` : `str`, *optional*
-:   URL to notify after successful application (for cache invalidation).
+:   Path to the configuration file (e.g. `sources.yaml`) to sync.
 
 ---
 
@@ -274,56 +262,7 @@ Shows the current configuration and metadata stored in the metadata database for
 
 ---
 
-## Domain Management
 
-### `domain list`
-
-<div class="api-signature">
-<code>strake-cli domain list</code>
-<span class="type">command</span>
-</div>
-
-List all registered domains currently tracked in the metadata store.
-
----
-
-### `domain history`
-
-<div class="api-signature">
-<code>strake-cli domain history [name]</code>
-<span class="type">command</span>
-</div>
-
-Show the audit trail of deployment events for a domain.
-
-**Options:**
-
-`name` : `str`, *default: default*
-:   The name of the domain to inspect.
-
----
-
-### `domain rollback`
-
-<div class="api-signature">
-<code>strake-cli domain rollback [name] --to-version &lt;n&gt;</code>
-<span class="type">command</span>
-</div>
-
-Revert a domain to a previous known-good version.
-
-**Options:**
-
-`name` : `str`, *default: default*
-:   The name of the domain to rollback.
-
-`--to-version` : `int`
-:   **Required**. The specific target version to revert to.
-
-`--force` : `bool`, *default: false*
-:   Force operation (bypass safety guards).
-
----
 
 ## Security
 
