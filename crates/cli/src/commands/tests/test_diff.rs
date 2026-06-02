@@ -1,65 +1,83 @@
-#![allow(clippy::field_reassign_with_default)]
-use crate::commands::diff_logic::{diff_sources, diff_tables};
-use crate::models::{ColumnConfig, SourceConfig, TableConfig};
+use crate::commands::diff::diff_internal;
+use crate::commands::sync::{SyncOptions, sync};
+use crate::config::CliConfig;
+use crate::output::OutputFormat;
+use crate::secrets::ResolverContext;
+use anyhow::Result;
+use std::fs;
+use tempfile::tempdir;
 
-#[test]
-fn test_diff_sources_no_changes() {
-    let mut source = SourceConfig::default();
-    source.name = "test".into();
-    source.source_type = strake_common::models::SourceType::Other("postgres".to_string());
-    source.url = Some("postgres://localhost:5432/db".to_string());
-    source.tables = vec![];
+#[tokio::test]
+async fn test_diff_and_sync_sqlite_integration() -> Result<()> {
+    let dir = tempdir()?;
+    let db_path = dir.path().join("test.db");
+    let db_path_str = db_path.to_str().unwrap();
 
-    let changes = diff_sources(&source, &source);
-    assert!(changes.is_empty());
-}
+    // Create a sqlite database and schema
+    let conn = rusqlite::Connection::open(db_path_str)?;
+    conn.execute(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, age INTEGER)",
+        [],
+    )?;
 
-#[test]
-fn test_diff_sources_url_change() {
-    let mut local = SourceConfig::default();
-    local.name = "test".into();
-    local.source_type = strake_common::models::SourceType::Other("postgres".to_string());
-    local.url = Some("postgres://new:5432/db".to_string());
-    local.tables = vec![];
-
-    let mut db = SourceConfig::default();
-    db.name = "test".into();
-    db.source_type = strake_common::models::SourceType::Other("postgres".to_string());
-    db.url = Some("postgres://old:5432/db".to_string());
-    db.tables = vec![];
-
-    let changes = diff_sources(&local, &db);
-    assert_eq!(changes.len(), 1);
-    assert_eq!(
-        changes[0].change_type,
-        crate::commands::helpers::ChangeType::Modified
+    // Create a local sources.yaml config pointing to this database
+    let yaml_content = format!(
+        r#"
+domain: test_domain
+sources:
+  - name: my_sqlite
+    type: sqlite
+    url: "sqlite://{}"
+    tables:
+      - name: users
+        schema: main
+        columns:
+          - name: id
+            type: integer
+            primary_key: true
+            not_null: true
+          - name: name
+            type: text
+            not_null: true
+"#,
+        db_path_str
     );
-    assert_eq!(changes[0].path, "sources[test].url");
-}
 
-#[test]
-fn test_diff_tables_add_column() {
-    let mut local = TableConfig::default();
-    local.name = "users".to_string();
-    local.schema = "public".to_string();
-    let mut col = ColumnConfig::default();
-    col.name = "new_col".to_string();
-    col.data_type = "int".to_string();
-    local.column_definitions = vec![col];
+    let config_file = dir.path().join("sources.yaml");
+    fs::write(&config_file, yaml_content)?;
 
-    let mut db = TableConfig::default();
-    db.name = "users".to_string();
-    db.schema = "public".to_string();
-    db.column_definitions = vec![];
+    let config = CliConfig::default();
+    let ctx = ResolverContext {
+        system_env: std::collections::HashMap::new(),
+        dotenv: std::collections::HashMap::new(),
+        offline: false,
+    };
 
-    let changes = diff_tables("test_source", &local, &db);
-    assert_eq!(changes.len(), 1);
+    // Run diff: the database has 'age' but local config does not (it should show 'age' added on remote)
+    let diff_res = diff_internal(config_file.to_str().unwrap(), &config, &ctx).await?;
+    assert_eq!(diff_res.changes.len(), 1);
     assert_eq!(
-        changes[0].change_type,
+        diff_res.changes[0].change_type,
         crate::commands::helpers::ChangeType::Added
     );
-    assert_eq!(
-        changes[0].path,
-        "sources[test_source].tables[public.users].column_definitions[new_col]"
-    );
+    assert!(diff_res.changes[0].path.contains("age"));
+
+    // Run sync to update sources.yaml in place
+    let sync_opts = SyncOptions {
+        file: config_file.to_str().unwrap().to_string(),
+        format: OutputFormat::Human,
+    };
+    let sync_status = sync(sync_opts, &config, &ctx).await?;
+    assert_eq!(sync_status, 0);
+
+    // Read the updated sources.yaml
+    let updated_yaml = fs::read_to_string(&config_file)?;
+    assert!(updated_yaml.contains("age"));
+    assert!(updated_yaml.contains("INTEGER")); // type should be updated/merged from introspected column
+
+    // Run diff again: should have zero changes now!
+    let diff_res_after = diff_internal(config_file.to_str().unwrap(), &config, &ctx).await?;
+    assert!(diff_res_after.changes.is_empty());
+
+    Ok(())
 }

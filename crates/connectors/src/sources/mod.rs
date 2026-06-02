@@ -53,7 +53,7 @@ pub trait WrappingTableProvider: TableProvider {
 pub fn as_wrapping(provider: &dyn TableProvider) -> Option<&dyn WrappingTableProvider> {
     let any = provider.as_any();
 
-    if let Some(w) = any.downcast_ref::<sql::wrappers::MetadataEnrichedTableProvider>() {
+    if let Some(w) = any.downcast_ref::<sql::wrappers::SchemaAdaptingTableProvider>() {
         return Some(w);
     }
     if let Some(w) = any.downcast_ref::<sql::wrappers::ConcurrencyLimitedTableProvider>() {

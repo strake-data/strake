@@ -36,9 +36,7 @@ use std::sync::OnceLock;
 use strake_common::circuit_breaker::AdaptiveCircuitBreaker;
 
 use super::base_connector::GenericSqlConnector;
-use super::common::{
-    FetchedMetadata, SchemaMappingRule, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams,
-};
+use super::common::{SchemaMappingRule, SqlProviderFactory, SqlSourceParams};
 use super::duckdb_introspect::DuckDBIntrospector;
 
 /// Newtype for a DuckDB database path.
@@ -103,25 +101,6 @@ impl AsRef<str> for DuckDBPath {
 impl std::fmt::Display for DuckDBPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
-    }
-}
-
-/// Fetches metadata and statistics for DuckDB tables.
-pub struct DuckDBMetadataFetcher {
-    /// Path to the DuckDB database file.
-    pub db_path: DuckDBPath,
-}
-
-#[async_trait]
-impl SqlMetadataFetcher for DuckDBMetadataFetcher {
-    /// Fetches metadata for a specific table, including row count estimates.
-    ///
-    /// # Errors
-    /// Returns an error if the database cannot be accessed or the table does not exist.
-    async fn fetch_metadata(&self, _schema: &str, _table: &str) -> Result<FetchedMetadata> {
-        // TODO: Implement statistics fetching once FetchedMetadata supports it.
-        // We could use the pool here too if it were shared.
-        Ok(FetchedMetadata::default())
     }
 }
 
@@ -645,16 +624,14 @@ impl SqlProviderFactory for DuckDBTableFactory {
     async fn create_table_provider(
         &self,
         table_ref: TableReference,
-        metadata: Arc<FetchedMetadata>,
         cb: Arc<AdaptiveCircuitBreaker>,
     ) -> Result<Arc<dyn TableProvider>> {
         let table_name = table_ref.table();
         let provider = DuckDBTableProvider::new(self.pool.clone(), table_name.to_string()).await?;
 
-        // First wrap with metadata and circuit breaker
+        // First wrap with circuit breaker
         // DuckDB is local/authoritative, so we skip schema drift detection.
-        let wrapped_provider =
-            super::wrappers::wrap_provider(Arc::new(provider), cb, metadata, false);
+        let wrapped_provider = super::wrappers::wrap_provider(Arc::new(provider), cb, false);
 
         // Enable federation support using the SHARED federation provider from the factory.
         // This ensures the federation optimizer identifies tables as coming from the same source.
@@ -740,7 +717,6 @@ pub async fn register_duckdb(params: SqlSourceParams) -> Result<()> {
             db_path: SecretString::from(connection_string.clone()),
         }),
         factory: Arc::new(factory),
-        metadata_fetcher: Some(Arc::new(DuckDBMetadataFetcher { db_path })),
         schema_mapping: SchemaMappingRule::Standard,
     };
 

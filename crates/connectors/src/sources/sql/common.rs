@@ -23,13 +23,6 @@ pub struct FetchedMetadata {
     pub columns: HashMap<String, String>,
 }
 
-/// Trait for fetching dialect-specific metadata (comments, descriptions, stats).
-#[async_trait]
-pub trait SqlMetadataFetcher: Send + Sync {
-    /// Fetches metadata for a specific table identifier.
-    async fn fetch_metadata(&self, schema: &str, table: &str) -> Result<FetchedMetadata>;
-}
-
 /// Factory for creating dialect-specific [`TableProvider`] instances.
 #[async_trait]
 pub trait SqlProviderFactory: Send + Sync {
@@ -37,7 +30,6 @@ pub trait SqlProviderFactory: Send + Sync {
     async fn create_table_provider(
         &self,
         table_ref: TableReference,
-        metadata: Arc<FetchedMetadata>,
         cb: Arc<AdaptiveCircuitBreaker>,
     ) -> Result<Arc<dyn TableProvider>>;
 }
@@ -67,7 +59,6 @@ impl<F: TableFactory + Send + Sync> SqlProviderFactory for GenericFederatedTable
     async fn create_table_provider(
         &self,
         table_ref: TableReference,
-        metadata: Arc<FetchedMetadata>,
         cb: Arc<AdaptiveCircuitBreaker>,
     ) -> Result<Arc<dyn TableProvider>> {
         let inner = self
@@ -76,7 +67,7 @@ impl<F: TableFactory + Send + Sync> SqlProviderFactory for GenericFederatedTable
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        let wrapped = super::wrappers::wrap_provider(inner, cb, metadata, self.schema_drift);
+        let wrapped = super::wrappers::wrap_provider(inner, cb, self.schema_drift);
 
         let sql_source = super::strake_federation::StrakeTableSource::new(
             self.federation_provider.clone(),

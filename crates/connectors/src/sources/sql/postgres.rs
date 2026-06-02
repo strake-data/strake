@@ -16,23 +16,9 @@ use tokio_postgres::Config;
 
 use super::base_connector::GenericSqlConnector;
 use super::common::{
-    FetchedMetadata, GenericFederatedTableFactory, SchemaMappingRule, SqlMetadataFetcher,
-    SqlSourceParams, TableFactory,
+    FetchedMetadata, GenericFederatedTableFactory, SchemaMappingRule, SqlSourceParams, TableFactory,
 };
 use super::postgres_introspect::PostgresIntrospector;
-
-/// Fetches metadata (such as table and column comments) from PostgreSQL.
-pub struct PostgresMetadataFetcher {
-    /// The PostgreSQL connection string used to connect to the database.
-    pub connection_string: SecretString,
-}
-
-#[async_trait]
-impl SqlMetadataFetcher for PostgresMetadataFetcher {
-    async fn fetch_metadata(&self, schema: &str, table: &str) -> Result<FetchedMetadata> {
-        fetch_postgres_comments(self.connection_string.expose_secret(), schema, table).await
-    }
-}
 
 #[async_trait]
 impl TableFactory for PostgresTableFactory {
@@ -65,9 +51,6 @@ pub async fn register_postgres(params: SqlSourceParams) -> Result<()> {
             connection_string: SecretString::from(connection_string.clone()),
         }),
         factory: Arc::new(factory),
-        metadata_fetcher: Some(Arc::new(PostgresMetadataFetcher {
-            connection_string: SecretString::from(connection_string.clone()),
-        })),
         schema_mapping: SchemaMappingRule::Standard,
     };
 

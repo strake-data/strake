@@ -94,13 +94,18 @@ pub async fn create(
     let full_key = format!("strk_{}", random_str);
     let prefix = &full_key[..crate::metadata::KEY_PREFIX_LEN];
 
-    // 2. Compute Argon2 hash
-    let salt = SaltString::generate(&mut OsRng);
-    let argon2 = Argon2::default();
-    let key_hash = argon2
-        .hash_password(full_key.as_bytes(), &salt)
-        .map_err(|e| anyhow::anyhow!("Argon2 hashing failed: {}", e))?
-        .to_string();
+    // 2. Compute Argon2 hash in a threadpool block to avoid starving Tokio async reactor
+    let full_key_clone = full_key.clone();
+    let key_hash = tokio::task::spawn_blocking(move || {
+        let salt = SaltString::generate(&mut OsRng);
+        let argon2 = Argon2::default();
+        argon2
+            .hash_password(full_key_clone.as_bytes(), &salt)
+            .map(|h| h.to_string())
+            .map_err(|e| anyhow::anyhow!("Argon2 hashing failed: {}", e))
+    })
+    .await
+    .context("API key hashing task panicked")??;
 
     // 3. Store in the metadata database
     store

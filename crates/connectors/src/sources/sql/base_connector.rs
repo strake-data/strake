@@ -8,9 +8,7 @@ use datafusion::sql::TableReference;
 use std::sync::Arc;
 use strake_common::retry::retry_async;
 
-use super::common::{
-    FetchedMetadata, SchemaMappingRule, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams,
-};
+use super::common::{SchemaMappingRule, SqlProviderFactory, SqlSourceParams};
 use super::wrappers::wrap_concurrent;
 use crate::introspect::{IntrospectError, SchemaIntrospector};
 use crate::sources::sql::case_insensitive_schema::CaseInsensitiveSchemaProvider;
@@ -26,8 +24,6 @@ pub struct GenericSqlConnector {
     pub introspector: Arc<dyn SchemaIntrospector>,
     /// Factory for creating dialect-specific table providers.
     pub factory: Arc<dyn SqlProviderFactory>,
-    /// Optional fetcher for table and column metadata (comments/descriptions).
-    pub metadata_fetcher: Option<Arc<dyn SqlMetadataFetcher>>,
     /// Rule for mapping source schemas to DataFusion schemas.
     pub schema_mapping: SchemaMappingRule,
 }
@@ -108,30 +104,33 @@ impl GenericSqlConnector {
                 "Registering table into schema"
             );
 
-            let metadata = if let Some(fetcher) = &self.metadata_fetcher {
-                match fetcher.fetch_metadata(&original_schema, &table_name).await {
-                    Ok(m) => Arc::new(m),
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to fetch metadata for {}.{}: {}",
-                            target_schema,
-                            table_name,
-                            e
-                        );
-                        Arc::new(FetchedMetadata::default())
-                    }
-                }
-            } else {
-                Arc::new(FetchedMetadata::default())
-            };
+            let config_table = params
+                .explicit_tables
+                .as_ref()
+                .as_ref()
+                .and_then(|config_tables| {
+                    config_tables
+                        .iter()
+                        .find(|t| t.name == table_name && t.schema == original_schema)
+                });
+
+            let custom_schema = config_table
+                .filter(|t| !t.column_definitions.is_empty())
+                .map(construct_schema_from_config);
 
             let table_ref = TableReference::bare(table_name.as_str());
             match self
                 .factory
-                .create_table_provider(table_ref, metadata, params.cb.clone())
+                .create_table_provider(table_ref, params.cb.clone())
                 .await
             {
-                Ok(provider) => {
+                Ok(mut provider) => {
+                    if let Some(custom_schema) = custom_schema {
+                        provider = Arc::new(super::wrappers::SchemaAdaptingTableProvider::new(
+                            provider,
+                            custom_schema,
+                        ));
+                    }
                     let provider = wrap_concurrent(provider, params.max_concurrent_queries);
                     let target_schema_ref = target_schema.as_str();
                     let table_name_ref = table_name.as_str();
@@ -174,4 +173,94 @@ impl GenericSqlConnector {
 
         Ok(())
     }
+}
+
+fn map_type_str_to_arrow(type_str: &str) -> datafusion::arrow::datatypes::DataType {
+    use datafusion::arrow::datatypes::DataType;
+    let type_str = type_str.to_uppercase();
+    if type_str.starts_with("VARCHAR") || type_str == "TEXT" || type_str == "CHARACTER VARYING" {
+        DataType::Utf8
+    } else if type_str.starts_with("INTEGER") || type_str == "INT" || type_str == "INT4" {
+        DataType::Int32
+    } else if type_str == "BIGINT" || type_str == "INT8" {
+        DataType::Int64
+    } else if type_str == "BOOLEAN" || type_str == "BOOL" {
+        DataType::Boolean
+    } else if type_str.starts_with("NUMERIC") || type_str.starts_with("DECIMAL") {
+        let (p, s) = if let (Some(start), Some(end)) = (type_str.find('('), type_str.find(')')) {
+            let parts: Vec<&str> = type_str[start + 1..end]
+                .split(',')
+                .map(|s| s.trim())
+                .collect();
+            if parts.len() == 2 {
+                if let (Ok(p), Ok(s)) = (parts[0].parse::<u8>(), parts[1].parse::<i8>()) {
+                    (p, s)
+                } else {
+                    (38, 10)
+                }
+            } else if parts.len() == 1 {
+                if let Ok(p) = parts[0].parse::<u8>() {
+                    (p, 0)
+                } else {
+                    (38, 10)
+                }
+            } else {
+                (38, 10)
+            }
+        } else {
+            (38, 10)
+        };
+
+        if p <= 9 {
+            DataType::Decimal32(p, s)
+        } else if p <= 18 {
+            DataType::Decimal64(p, s)
+        } else {
+            DataType::Decimal128(p, s)
+        }
+    } else if type_str == "TIMESTAMP" || type_str.starts_with("TIMESTAMP WITHOUT TIME ZONE") {
+        DataType::Timestamp(datafusion::arrow::datatypes::TimeUnit::Microsecond, None)
+    } else if type_str == "TIMESTAMPTZ" || type_str.starts_with("TIMESTAMP WITH TIME ZONE") {
+        DataType::Timestamp(
+            datafusion::arrow::datatypes::TimeUnit::Microsecond,
+            Some("+00:00".into()),
+        )
+    } else if type_str == "DOUBLE" || type_str == "DOUBLE PRECISION" || type_str == "FLOAT8" {
+        DataType::Float64
+    } else if type_str == "FLOAT" || type_str == "REAL" || type_str == "FLOAT4" {
+        DataType::Float32
+    } else {
+        DataType::Utf8
+    }
+}
+
+fn construct_schema_from_config(
+    config: &strake_common::config::TableConfig,
+) -> datafusion::arrow::datatypes::SchemaRef {
+    use datafusion::arrow::datatypes::{Field, Schema};
+    use std::collections::HashMap;
+
+    let mut fields = Vec::new();
+    for col in &config.column_definitions {
+        let dt = map_type_str_to_arrow(&col.data_type);
+        let mut field_metadata = HashMap::new();
+        if let Some(desc) = &col.description {
+            field_metadata.insert("description".to_string(), desc.clone());
+            field_metadata.insert("comment".to_string(), desc.clone());
+            field_metadata.insert("remarks".to_string(), desc.clone());
+            field_metadata.insert("ARROW:FLIGHT:SQL:REMARKS".to_string(), desc.clone());
+        }
+        let field = Field::new(&col.name, dt, !col.not_null).with_metadata(field_metadata);
+        fields.push(Arc::new(field));
+    }
+
+    let mut schema_metadata = HashMap::new();
+    if let Some(table_desc) = &config.description {
+        schema_metadata.insert("description".to_string(), table_desc.clone());
+        schema_metadata.insert("comment".to_string(), table_desc.clone());
+        schema_metadata.insert("remarks".to_string(), table_desc.clone());
+        schema_metadata.insert("ARROW:FLIGHT:SQL:REMARKS".to_string(), table_desc.clone());
+    }
+
+    Arc::new(Schema::new_with_metadata(fields, schema_metadata))
 }

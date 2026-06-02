@@ -5,34 +5,31 @@
 //! This module provides wrappers for concurrency limiting, circuit breaking,
 //! metadata enrichment, and schema drift detection.
 
-use datafusion::arrow::datatypes::{Schema, SchemaRef};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::ExecutionPlan;
 use futures::stream::TryStreamExt;
 use std::any::Any;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-use super::common::FetchedMetadata;
 use async_trait::async_trait;
 use datafusion::catalog::Session;
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 
-/// Helper to wrap a provider with metadata and circuit breaking.
+/// Helper to wrap a provider with circuit breaking.
 ///
-/// This function applies a decorator chain that adds table/column descriptions
-/// and provides circuit breaking protection. Optionally enables schema drift detection.
+/// This function applies a decorator chain that provides circuit breaking protection.
+/// Optionally enables schema drift detection.
 pub fn wrap_provider(
     provider: Arc<dyn TableProvider>,
     cb: Arc<strake_common::circuit_breaker::AdaptiveCircuitBreaker>,
-    metadata: Arc<FetchedMetadata>,
     schema_drift: bool,
 ) -> Arc<dyn TableProvider> {
     use crate::resilience::circuit_breaker::CircuitBreakerTableProvider;
 
-    let enriched = Arc::new(MetadataEnrichedTableProvider::new(provider, metadata));
-    let with_cb = Arc::new(CircuitBreakerTableProvider::new(enriched, cb));
+    let with_cb = Arc::new(CircuitBreakerTableProvider::new(provider, cb));
 
     if schema_drift {
         Arc::new(crate::sources::schema_drift::SchemaDriftTableProvider::new(
@@ -40,101 +37,6 @@ pub fn wrap_provider(
         ))
     } else {
         with_cb
-    }
-}
-
-/// A [`TableProvider`] decorator that adds metadata (e.g. descriptions) to the schema.
-#[derive(Debug)]
-pub struct MetadataEnrichedTableProvider {
-    /// The underlying provider being enriched.
-    pub inner: Arc<dyn TableProvider>,
-    /// Metadata to merge into the schema and fields.
-    pub metadata: Arc<FetchedMetadata>,
-    // Use std::sync::OnceLock because schema() is a synchronous trait method.
-    // We cannot await tokio::sync::OnceCell here, and the computation is CPU-bound.
-    schema: OnceLock<SchemaRef>,
-}
-
-impl MetadataEnrichedTableProvider {
-    /// Creates a new `MetadataEnrichedTableProvider`.
-    pub fn new(provider: Arc<dyn TableProvider>, metadata: Arc<FetchedMetadata>) -> Self {
-        Self {
-            inner: provider,
-            metadata,
-            schema: OnceLock::new(),
-        }
-    }
-
-    fn compute_schema(&self) -> SchemaRef {
-        let existing_schema = self.inner.schema();
-        let mut new_fields = Vec::new();
-
-        for field in existing_schema.fields() {
-            if let Some(desc) = self.metadata.columns.get(field.name()) {
-                let mut new_metadata = field.metadata().clone();
-                new_metadata.insert("ARROW:FLIGHT:SQL:REMARKS".to_string(), desc.clone());
-                new_metadata.insert("description".to_string(), desc.clone());
-                new_metadata.insert("comment".to_string(), desc.clone());
-                new_metadata.insert("remarks".to_string(), desc.clone());
-                let new_field = field.as_ref().clone().with_metadata(new_metadata);
-                new_fields.push(Arc::new(new_field));
-            } else {
-                new_fields.push(field.clone());
-            }
-        }
-
-        let mut schema_metadata = existing_schema.metadata().clone();
-        if let Some(table_desc) = &self.metadata.table_description {
-            schema_metadata.insert("ARROW:FLIGHT:SQL:REMARKS".to_string(), table_desc.clone());
-            schema_metadata.insert("description".to_string(), table_desc.clone());
-            schema_metadata.insert("comment".to_string(), table_desc.clone());
-            schema_metadata.insert("remarks".to_string(), table_desc.clone());
-        }
-
-        Arc::new(Schema::new_with_metadata(new_fields, schema_metadata))
-    }
-}
-
-impl MetadataEnrichedTableProvider {
-    /// Returns the underlying [`TableProvider`] wrapped by this metadata enricher.
-    pub fn inner(&self) -> Arc<dyn TableProvider> {
-        self.inner.clone()
-    }
-}
-
-#[async_trait]
-impl TableProvider for MetadataEnrichedTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-    fn schema(&self) -> SchemaRef {
-        self.schema.get_or_init(|| self.compute_schema()).clone()
-    }
-    fn table_type(&self) -> TableType {
-        self.inner.table_type()
-    }
-    async fn scan(
-        &self,
-        state: &dyn Session,
-        projection: Option<&Vec<usize>>,
-        filters: &[Expr],
-        limit: Option<usize>,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        self.inner.scan(state, projection, filters, limit).await
-    }
-
-    fn supports_filters_pushdown(
-        &self,
-        filters: &[&Expr],
-    ) -> datafusion::common::Result<Vec<datafusion::logical_expr::TableProviderFilterPushDown>>
-    {
-        self.inner.supports_filters_pushdown(filters)
-    }
-}
-
-impl crate::sources::WrappingTableProvider for MetadataEnrichedTableProvider {
-    fn inner(&self) -> &Arc<dyn TableProvider> {
-        &self.inner
     }
 }
 
@@ -357,5 +259,120 @@ impl futures::stream::Stream for PermitStream {
 impl datafusion::execution::RecordBatchStream for PermitStream {
     fn schema(&self) -> datafusion::arrow::datatypes::SchemaRef {
         self.inner.schema()
+    }
+}
+
+/// A [`TableProvider`] decorator that overrides the provider's schema with a custom schema.
+#[derive(Debug)]
+pub struct SchemaAdaptingTableProvider {
+    /// The underlying provider.
+    pub inner: Arc<dyn TableProvider>,
+    /// The customized schema to return.
+    pub custom_schema: SchemaRef,
+}
+
+impl SchemaAdaptingTableProvider {
+    /// Creates a new `SchemaAdaptingTableProvider`.
+    pub fn new(inner: Arc<dyn TableProvider>, custom_schema: SchemaRef) -> Self {
+        Self {
+            inner,
+            custom_schema,
+        }
+    }
+}
+
+#[async_trait]
+impl TableProvider for SchemaAdaptingTableProvider {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn schema(&self) -> SchemaRef {
+        self.custom_schema.clone()
+    }
+    fn table_type(&self) -> TableType {
+        self.inner.table_type()
+    }
+    async fn scan(
+        &self,
+        state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        use datafusion::physical_expr::PhysicalExpr;
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_plan::projection::ProjectionExec;
+
+        let inner_schema = self.inner.schema();
+
+        // 1. Map projection indices from custom_schema to inner_schema by name
+        let mapped_projection = projection
+            .map(|proj| {
+                proj.iter()
+                    .map(|&idx| {
+                        let field_name = self.custom_schema.field(idx).name();
+                        inner_schema.index_of(field_name).map_err(|_| {
+                            datafusion::error::DataFusionError::Plan(format!(
+                                "Column '{}' specified in sources.yaml not found in physical database schema",
+                                field_name
+                            ))
+                        })
+                    })
+                    .collect::<datafusion::common::Result<Vec<usize>>>()
+            })
+            .transpose()?;
+
+        // 2. Scan the inner table using the mapped projection
+        let inner_plan = self
+            .inner
+            .scan(state, mapped_projection.as_ref(), filters, limit)
+            .await?;
+
+        // 3. Construct target schema
+        let target_schema = match projection {
+            Some(proj) => Arc::new(self.custom_schema.project(proj)?),
+            None => self.custom_schema.clone(),
+        };
+
+        // 4. Construct projection expressions for ProjectionExec to project and cast columns to align to target_schema
+        let inner_plan_schema = inner_plan.schema();
+        let mut projection_exprs = Vec::with_capacity(target_schema.fields().len());
+
+        for field in target_schema.fields() {
+            let field_name = field.name();
+            let inner_plan_idx = inner_plan_schema.index_of(field_name)?;
+            let physical_col =
+                Arc::new(Column::new(field_name, inner_plan_idx)) as Arc<dyn PhysicalExpr>;
+
+            // If the data type differs, wrap it in a CastExpr to ensure type alignment
+            let expr = if inner_plan_schema.field(inner_plan_idx).data_type() != field.data_type() {
+                datafusion::physical_expr::expressions::cast(
+                    physical_col,
+                    &inner_plan_schema,
+                    field.data_type().clone(),
+                )?
+            } else {
+                physical_col
+            };
+            projection_exprs.push((expr, field_name.clone()));
+        }
+
+        // 5. Wrap inside ProjectionExec
+        let adapted_plan = ProjectionExec::try_new(projection_exprs, inner_plan)?;
+
+        Ok(Arc::new(adapted_plan))
+    }
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> datafusion::common::Result<Vec<datafusion::logical_expr::TableProviderFilterPushDown>>
+    {
+        self.inner.supports_filters_pushdown(filters)
+    }
+}
+
+impl crate::sources::WrappingTableProvider for SchemaAdaptingTableProvider {
+    fn inner(&self) -> &Arc<dyn TableProvider> {
+        &self.inner
     }
 }

@@ -45,26 +45,22 @@
 
 pub mod ai;
 pub mod apikey;
-mod apply;
-mod apply_models;
 pub mod db;
 mod describe;
-mod diff_logic;
+mod diff;
 mod discovery;
-mod domain;
 mod helpers;
 mod init;
 mod remove;
 mod secrets;
 mod status;
+mod sync;
 mod validate;
 
 // Re-export public command functions
-pub use apply::{ApplyOptions, apply};
 pub use describe::{describe, test_connection};
-pub use diff_logic::{DiffOptions, diff};
+pub use diff::{DiffOptions, diff};
 pub use discovery::{AddOptions, add, search};
-pub use domain::{list_domains, rollback, show_domain_history};
 pub use helpers::DiffChange; // Keep one re-export if needed or remove. Actually I'll just keep DiffChange.
 
 #[cfg(test)]
@@ -74,4 +70,5 @@ pub use init::init;
 pub use remove::remove;
 pub use secrets::validate_secrets;
 pub use status::status;
+pub use sync::{SyncOptions, sync};
 pub use validate::validate;

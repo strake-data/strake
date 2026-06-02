@@ -43,7 +43,6 @@ pub async fn register_oracle(params: SqlSourceParams) -> anyhow::Result<()> {
     let connector = GenericSqlConnector {
         introspector: Arc::new(OracleIntrospector { pool: pool.clone() }),
         factory: Arc::new(federated_factory),
-        metadata_fetcher: None,
         schema_mapping: SchemaMappingRule::Standard,
     };
 

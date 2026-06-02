@@ -14,7 +14,6 @@ use super::validate::validate_source;
 use crate::config::CliConfig;
 use crate::{
     exit_codes,
-    metadata::MetadataStore,
     output::{self, OutputFormat},
     secrets::ResolverContext,
 };
@@ -24,11 +23,10 @@ use owo_colors::OwoColorize;
 use strake_common::models::DomainName;
 
 pub async fn describe(
-    store: &dyn MetadataStore,
     file_path: &str,
     domain: Option<&str>,
     format: OutputFormat,
-    _ctx: &ResolverContext,
+    ctx: &ResolverContext,
 ) -> Result<i32> {
     let domain_name = DomainName::from(domain.unwrap_or("default"));
 
@@ -37,13 +35,11 @@ pub async fn describe(
             "{} {} {} domain '{}':",
             "[Config:".dimmed(),
             file_path.yellow(),
-            "] Current Configuration in Metadata Store for"
-                .bold()
-                .cyan(),
+            "] Current Configuration for".bold().cyan(),
             domain_name.bold()
         );
     }
-    let config = store.get_sources(&domain_name).await?;
+    let config = super::helpers::parse_yaml(file_path, ctx).await?;
 
     if format.is_machine_readable() {
         output::print_success(format, &config)?;

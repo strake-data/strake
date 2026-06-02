@@ -16,27 +16,9 @@ use std::sync::Arc;
 use strake_common::circuit_breaker::AdaptiveCircuitBreaker;
 
 use super::base_connector::GenericSqlConnector;
-use super::common::{
-    FetchedMetadata, SchemaMappingRule, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams,
-};
+use super::common::{FetchedMetadata, SchemaMappingRule, SqlProviderFactory, SqlSourceParams};
 use crate::introspect::{IntrospectError, SchemaIntrospector, TableRef};
 use globset::GlobMatcher;
-
-/// Fetches metadata (such as table and column comments) from MySQL.
-pub struct MySqlMetadataFetcher {
-    /// The MySQL connection string used to connect to the database.
-    pub connection_string: SecretString,
-}
-
-#[async_trait]
-impl SqlMetadataFetcher for MySqlMetadataFetcher {
-    async fn fetch_metadata(&self, _schema: &str, table: &str) -> Result<FetchedMetadata> {
-        fetch_mysql_comments(self.connection_string.expose_secret(), table).await
-    }
-}
-
-// FIXME: MySQL presently lacks federation support (join pushdown).
-// It should be migrated to GenericFederatedTableFactory in the future.
 
 /// A wrapper for the MySQL table factory that implements the generic `SqlProviderFactory` trait.
 pub struct MySQLTableFactoryWrapper {
@@ -49,7 +31,6 @@ impl SqlProviderFactory for MySQLTableFactoryWrapper {
     async fn create_table_provider(
         &self,
         table_ref: TableReference,
-        metadata: Arc<FetchedMetadata>,
         cb: Arc<AdaptiveCircuitBreaker>,
     ) -> Result<Arc<dyn TableProvider>> {
         let inner = self
@@ -58,10 +39,10 @@ impl SqlProviderFactory for MySQLTableFactoryWrapper {
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        // Wrap with metadata and circuit breaker.
+        // Wrap with circuit breaker.
         // MySQL is usually a remote federated source (or at least treated as such),
         // so we enable schema drift detection.
-        Ok(super::wrappers::wrap_provider(inner, cb, metadata, true))
+        Ok(super::wrappers::wrap_provider(inner, cb, true))
     }
 }
 
@@ -141,9 +122,6 @@ pub async fn register_mysql(params: SqlSourceParams) -> Result<()> {
             connection_string: SecretString::from(connection_string.clone()),
         }),
         factory: Arc::new(factory_wrapper),
-        metadata_fetcher: Some(Arc::new(MySqlMetadataFetcher {
-            connection_string: SecretString::from(connection_string.clone()),
-        })),
         schema_mapping: SchemaMappingRule::Standard,
     };
 

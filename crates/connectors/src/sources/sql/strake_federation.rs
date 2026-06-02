@@ -444,8 +444,7 @@ impl FederatedTableSource for StrakeTableSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sources::sql::common::FetchedMetadata;
-    use crate::sources::sql::wrappers::MetadataEnrichedTableProvider;
+    use crate::sources::sql::wrappers::SchemaAdaptingTableProvider;
     use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::catalog::Session;
     use datafusion::datasource::{TableProvider, TableType};
@@ -541,9 +540,9 @@ mod tests {
         ));
 
         // Wrap it multiple times
-        let enriched = Arc::new(MetadataEnrichedTableProvider::new(
+        let enriched = Arc::new(SchemaAdaptingTableProvider::new(
             adaptor.clone(),
-            Arc::new(FetchedMetadata::default()),
+            schema.clone(),
         ));
 
         let circuit_breaker = Arc::new(

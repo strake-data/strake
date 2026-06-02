@@ -10,30 +10,15 @@ use datafusion::sql::TableReference;
 use datafusion_table_providers::sql::db_connection_pool::sqlitepool::SqliteConnectionPool;
 use datafusion_table_providers::sql::db_connection_pool::*;
 use datafusion_table_providers::sqlite::SqliteTableFactory;
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::ExposeSecret;
 use std::sync::Arc;
 use std::time::Duration;
 
 use super::base_connector::GenericSqlConnector;
 use super::common::{
-    FetchedMetadata, GenericFederatedTableFactory, SchemaMappingRule, SqlMetadataFetcher,
-    SqlSourceParams, TableFactory,
+    GenericFederatedTableFactory, SchemaMappingRule, SqlSourceParams, TableFactory,
 };
 use super::sqlite_introspect::SqliteIntrospector;
-
-/// Fetches metadata from SQLite (presently returns default metadata as SQLite lacks standard comments).
-pub struct SqliteMetadataFetcher {
-    /// The path to the SQLite database file.
-    pub db_path: SecretString,
-}
-
-#[async_trait]
-impl SqlMetadataFetcher for SqliteMetadataFetcher {
-    async fn fetch_metadata(&self, _schema: &str, _table: &str) -> Result<FetchedMetadata> {
-        // SQLite doesn't natively support column/table comments in a standard way
-        Ok(FetchedMetadata::default())
-    }
-}
 
 #[async_trait]
 impl TableFactory for SqliteTableFactory {
@@ -74,9 +59,6 @@ pub async fn register_sqlite(params: SqlSourceParams) -> Result<()> {
             db_path: connection_string.clone(),
         }),
         factory: Arc::new(factory),
-        metadata_fetcher: Some(Arc::new(SqliteMetadataFetcher {
-            db_path: connection_string.clone(),
-        })),
         schema_mapping: SchemaMappingRule::SQLite,
     };
 

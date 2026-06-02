@@ -28,7 +28,6 @@
 
 use anyhow::Result;
 use futures::future::BoxFuture;
-use strake_common::models::{DomainName, SourcesConfig};
 
 /// The expected length of the API key prefix.
 pub const KEY_PREFIX_LEN: usize = 8;
@@ -36,52 +35,12 @@ pub const KEY_PREFIX_LEN: usize = 8;
 pub mod models;
 pub mod postgres;
 pub mod sqlite;
-use models::{ApiKeyInfo, ApplyLogEntry, ApplyResult, DomainStatus};
+use models::ApiKeyInfo;
 
 /// Interface for metadata storage backends that manage domain configurations and history.
 pub trait MetadataStore: Send + Sync {
     /// Initialize the metadata store (e.g., create tables if they don't exist)
     fn init(&self) -> BoxFuture<'_, Result<()>>;
-
-    /// Import/Sync sources configuration to the metadata store
-    fn apply_sources<'a>(
-        &'a self,
-        config: &'a SourcesConfig,
-        force: bool,
-    ) -> BoxFuture<'a, Result<ApplyResult>>;
-
-    /// Get current version of a domain
-    fn get_domain_version<'a>(&'a self, domain: &'a DomainName) -> BoxFuture<'a, Result<i32>>;
-
-    /// Increment domain version with optimistic locking
-    fn increment_domain_version<'a>(
-        &'a self,
-        domain: &'a DomainName,
-        expected_version: i32,
-    ) -> BoxFuture<'a, Result<i32>>;
-
-    /// Log an apply event for history/audit
-    fn log_apply_event<'a>(&'a self, entry: ApplyLogEntry) -> BoxFuture<'a, Result<()>>;
-
-    /// Get history of apply events
-    fn get_history<'a>(
-        &'a self,
-        domain: &'a DomainName,
-        limit: i64,
-    ) -> BoxFuture<'a, Result<Vec<ApplyLogEntry>>>;
-
-    /// Get the sources configuration as stored in the DB (for diffing)
-    fn get_sources<'a>(&'a self, domain: &'a DomainName) -> BoxFuture<'a, Result<SourcesConfig>>;
-
-    /// Get valid configuration YAML for a specific history version
-    fn get_history_config<'a>(
-        &'a self,
-        domain: &'a DomainName,
-        version: i32,
-    ) -> BoxFuture<'a, Result<String>>;
-
-    /// List all domains and their status
-    fn list_domains(&self) -> BoxFuture<'_, Result<Vec<DomainStatus>>>;
 
     /// Runs outstanding database schema migrations.
     ///
@@ -89,6 +48,7 @@ pub trait MetadataStore: Send + Sync {
     ///
     /// Returns an error if applying the migrations fails.
     fn migrate(&self) -> BoxFuture<'_, Result<()>> {
+        // Default implementation delegates to init() which runs all migrations in a database batch block.
         self.init()
     }
 

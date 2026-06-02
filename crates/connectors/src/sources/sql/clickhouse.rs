@@ -16,32 +16,15 @@ use strake_common::circuit_breaker::AdaptiveCircuitBreaker;
 use url::Url;
 
 use super::base_connector::GenericSqlConnector;
-use super::common::{
-    FetchedMetadata, SchemaMappingRule, SqlMetadataFetcher, SqlProviderFactory, SqlSourceParams,
-};
+use super::common::{SchemaMappingRule, SqlProviderFactory, SqlSourceParams};
 use crate::introspect::{IntrospectError, SchemaIntrospector, TableRef};
 use globset::GlobMatcher;
-
-/// Fetches metadata (such as table comments) from ClickHouse.
-pub struct ClickHouseMetadataFetcher;
-
-#[async_trait]
-impl SqlMetadataFetcher for ClickHouseMetadataFetcher {
-    async fn fetch_metadata(&self, _schema: &str, _table: &str) -> Result<FetchedMetadata> {
-        // ClickHouse doesn't have a standard comments system like Postgres
-        Ok(FetchedMetadata::default())
-    }
-}
-
-// FIXME: ClickHouse presently lacks federation support (join pushdown).
-// It should be migrated to GenericFederatedTableFactory in the future.
 
 #[async_trait]
 impl SqlProviderFactory for ClickHouseTableFactory {
     async fn create_table_provider(
         &self,
         table_ref: TableReference,
-        metadata: Arc<FetchedMetadata>,
         cb: Arc<AdaptiveCircuitBreaker>,
     ) -> Result<Arc<dyn TableProvider>> {
         let inner = self
@@ -49,9 +32,9 @@ impl SqlProviderFactory for ClickHouseTableFactory {
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        // Wrap with metadata and circuit breaker.
+        // Wrap with circuit breaker.
         // ClickHouse is a remote source, so enable schema drift detection.
-        Ok(super::wrappers::wrap_provider(inner, cb, metadata, true))
+        Ok(super::wrappers::wrap_provider(inner, cb, true))
     }
 }
 
@@ -118,7 +101,6 @@ pub async fn register_clickhouse(params: SqlSourceParams) -> Result<()> {
             connection_string: SecretString::from(connection_string.clone()),
         }),
         factory: Arc::new(factory),
-        metadata_fetcher: Some(Arc::new(ClickHouseMetadataFetcher {})),
         schema_mapping: SchemaMappingRule::Standard,
     };
 

@@ -84,23 +84,11 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         ci: bool,
     },
-    /// Apply the configuration to the metadata store
-    Apply {
+    /// Sync schemas from live remote databases into sources.yaml
+    Sync {
         /// Path to the sources.yaml file
         #[arg(default_value = "sources.yaml")]
         file: String,
-        /// Force operation (required for potentially destructive actions like deleting all sources)
-        #[arg(long, default_value_t = false)]
-        force: bool,
-        /// Run validation and preview changes without applying them
-        #[arg(long, default_value_t = false)]
-        dry_run: bool,
-        /// Optimistic locking: Expected current version of the domain. Fails if mismatch.
-        #[arg(long)]
-        expected_version: Option<i32>,
-        /// URL to notify after successful application (for cache invalidation)
-        #[arg(long)]
-        notify_url: Option<String>,
     },
     /// Aggregated health view of a domain
     Status {
@@ -210,11 +198,7 @@ enum Commands {
         #[arg(long)]
         domain: Option<DomainName>,
     },
-    /// Manage domains (list, history)
-    Domain {
-        #[command(subcommand)]
-        subcommand: DomainCommands,
-    },
+
     /// Manage secrets
     Secrets {
         #[command(subcommand)]
@@ -279,30 +263,6 @@ enum SecretCommands {
     },
     /// Configure secret providers (Not implemented in 1.1)
     Configure,
-}
-
-#[derive(Subcommand)]
-enum DomainCommands {
-    /// List all registered domains
-    List,
-    /// Show the history of apply events for a domain
-    History {
-        /// The name of the domain
-        #[arg(default_value = "default")]
-        name: DomainName,
-    },
-    /// Rollback a domain to a previous version
-    Rollback {
-        /// The name of the domain
-        #[arg(default_value = "default")]
-        name: DomainName,
-        /// The version to rollback to
-        #[arg(long)]
-        to_version: i32,
-        /// Force operation (bypass safety guards)
-        #[arg(long, default_value_t = false)]
-        force: bool,
-    },
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -434,23 +394,11 @@ async fn run_cli(
         Commands::Validate { file, offline, ci } => {
             return commands::validate(file, *offline, *ci, cli.output, config, resolver_ctx).await;
         }
-        Commands::Apply {
-            file,
-            force,
-            dry_run,
-            expected_version,
-            notify_url,
-        } => {
-            let store = metadata::init_store(config).await?;
-            return commands::apply(
-                &*store,
-                commands::ApplyOptions {
-                    file_path: file.clone(),
-                    force: *force,
-                    dry_run: *dry_run,
-                    expected_version: *expected_version,
+        Commands::Sync { file } => {
+            return commands::sync(
+                commands::SyncOptions {
+                    file: file.clone(),
                     format: cli.output,
-                    notify_url: notify_url.clone(),
                 },
                 config,
                 resolver_ctx,
@@ -458,14 +406,13 @@ async fn run_cli(
             .await;
         }
         Commands::Diff { file, impact } => {
-            let store = metadata::init_store(config).await?;
             return commands::diff(
-                &*store,
                 commands::DiffOptions {
                     file: file.clone(),
                     impact: *impact,
                     format: cli.output,
                 },
+                config,
                 resolver_ctx,
             )
             .await;
@@ -526,47 +473,13 @@ async fn run_cli(
             return commands::test_connection(file, cli.output, config, resolver_ctx).await;
         }
         Commands::Describe { file, domain } => {
-            let store = metadata::init_store(config).await?;
             return commands::describe(
-                &*store,
                 file,
                 domain.as_ref().map(|d| d.as_ref()),
                 cli.output,
                 resolver_ctx,
             )
             .await;
-        }
-        Commands::Domain { subcommand } => {
-            let store = metadata::init_store(config).await?;
-            match subcommand {
-                DomainCommands::List => {
-                    return commands::list_domains(&*store, cli.output, resolver_ctx).await;
-                }
-                DomainCommands::History { name } => {
-                    return commands::show_domain_history(
-                        &*store,
-                        name.clone(),
-                        cli.output,
-                        resolver_ctx,
-                    )
-                    .await;
-                }
-                DomainCommands::Rollback {
-                    name,
-                    to_version,
-                    force,
-                } => {
-                    return commands::rollback(
-                        &*store,
-                        name,
-                        *to_version,
-                        *force,
-                        cli.output,
-                        resolver_ctx,
-                    )
-                    .await;
-                }
-            }
         }
         Commands::Secrets { subcommand } => match subcommand {
             SecretCommands::Validate { file, offline } => {
@@ -584,9 +497,7 @@ async fn run_cli(
             domain,
             timeout,
         } => {
-            let store = metadata::init_store(config).await?;
             return commands::status(
-                &*store,
                 file.as_deref(),
                 domain.as_ref().map(|d| d.as_ref()),
                 *timeout,

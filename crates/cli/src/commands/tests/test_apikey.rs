@@ -1,4 +1,4 @@
-//! Tests for API key lifecycle (create, list, revoke).
+//! Tests for apikey.
 
 use crate::commands::{apikey, db};
 use crate::metadata::MetadataStore;

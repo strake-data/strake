@@ -186,17 +186,6 @@ pub struct DiffResult {
 }
 
 #[derive(Serialize)]
-pub struct ApplyResult {
-    pub domain: String,
-    pub version: i32,
-    pub added: Vec<String>,
-    pub deleted: Vec<String>,
-    pub dry_run: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub diff: Option<DiffResult>,
-}
-
-#[derive(Serialize)]
 pub struct SearchResult {
     pub source: strake_common::models::SourceName,
     pub domain: Option<strake_common::models::DomainName>,
@@ -213,20 +202,4 @@ pub struct TestConnectionResult {
 #[derive(Serialize)]
 pub struct TestConnectionSummary {
     pub results: Vec<TestConnectionResult>,
-}
-
-#[derive(Serialize)]
-pub struct DomainEntry {
-    pub name: String,
-    pub version: i32,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-}
-
-#[derive(Serialize)]
-pub struct DomainHistoryEntry {
-    pub version: i32,
-    pub user_id: String,
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-    pub added: usize,
-    pub deleted: usize,
 }

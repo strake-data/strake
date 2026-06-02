@@ -262,7 +262,6 @@ async fn try_register_iceberg_rest(
         let enriched_provider = wrap_provider(
             federated_provider,
             cb.clone(),
-            Arc::new(FetchedMetadata::default()),
             false,
         );
         let limited_provider = wrap_concurrent(enriched_provider, max_concurrency);

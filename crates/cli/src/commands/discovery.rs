@@ -701,7 +701,7 @@ fn merge_introspected(
     Ok(())
 }
 
-async fn resolve_introspector(
+pub(crate) async fn resolve_introspector(
     source_name: &str,
     file_path: &str,
     config: &CliConfig,
@@ -726,6 +726,18 @@ async fn resolve_introspector(
                 return Ok(Box::new(
                     strake_connectors::sources::sql::postgres_introspect::PostgresIntrospector {
                         connection_string: SecretString::from(conn_str.clone()),
+                    },
+                ));
+            }
+            "sqlite" => {
+                let db_path = source
+                    .url
+                    .as_ref()
+                    .context("SQLite path is required for introspection")?;
+                let clean_path = db_path.strip_prefix("sqlite://").unwrap_or(db_path);
+                return Ok(Box::new(
+                    strake_connectors::sources::sql::sqlite_introspect::SqliteIntrospector {
+                        db_path: SecretString::from(clean_path.to_string()),
                     },
                 ));
             }

@@ -14,7 +14,6 @@
 //! strake status --domain my_domain
 //! ```
 
-use crate::metadata::MetadataStore;
 use crate::output::{self, OutputFormat};
 use crate::secrets::ResolverContext;
 use anyhow::Result;
@@ -86,7 +85,6 @@ pub enum HealthState {
 }
 
 pub async fn status(
-    store: &dyn MetadataStore,
     file_path: Option<&str>,
     domain_override: Option<&str>,
     timeout_ms: u64,
@@ -106,14 +104,7 @@ pub async fn status(
             .unwrap_or_else(|| "default".to_string()),
     );
 
-    let version = match store.get_domain_version(&domain).await {
-        Ok(v) => Some(StatusVersion {
-            current: v,
-            applied_at: Utc::now(), // FIXME: get from history
-            actor: "unknown".to_string(),
-        }),
-        Err(_) => None,
-    };
+    let version = None;
 
     let source_details = check_sources(&sources_config, timeout_ms).await;
     let reachable_count = source_details.iter().filter(|s| s.reachable).count();
@@ -125,7 +116,7 @@ pub async fn status(
         violated: 0,
     };
     let policies = PoliciesSummary { total: 0 };
-    let health = derive_health(version.is_none(), 0, degraded_count, None);
+    let health = derive_health(false, 0, degraded_count, None);
 
     let report = StatusReport {
         schema_version: "1.0".to_string(),
