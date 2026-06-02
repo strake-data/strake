@@ -123,7 +123,7 @@ impl OracleTable {
     ) -> DataFusionResult<String> {
         let columns = if let Some(proj) = projection {
             proj.iter()
-                .map(|i| self.schema.field(*i).name().to_string())
+                .map(|i| format!("\"{}\"", self.schema.field(*i).name()))
                 .collect::<Vec<_>>()
                 .join(", ")
         } else {

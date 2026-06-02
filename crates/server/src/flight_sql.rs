@@ -697,7 +697,16 @@ impl StrakeFlightSqlService {
 
                         if query.include_schema {
                             if let Ok(Some(table)) = schema_provider.table(&table_name).await {
-                                let schema = table.schema();
+                                // Prefer the enriched schema (with Arrow metadata / descriptions)
+                                // when the provider is a SchemaAdaptingTableProvider. The planning
+                                // schema strips metadata to avoid DataFusion physical/logical
+                                // schema mismatch errors, but for Flight SQL GetTables we want
+                                // the full schema including ARROW:FLIGHT:SQL:REMARKS etc.
+                                let schema = table
+                                    .as_any()
+                                    .downcast_ref::<strake_connectors::sources::sql::wrappers::SchemaAdaptingTableProvider>()
+                                    .map(|s| s.enriched_schema())
+                                    .unwrap_or_else(|| table.schema());
                                 let options = IpcWriteOptions::default();
                                 let data = SchemaAsIpc::new(&schema, &options).try_into();
                                 match data {

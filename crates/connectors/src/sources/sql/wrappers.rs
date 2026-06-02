@@ -263,21 +263,49 @@ impl datafusion::execution::RecordBatchStream for PermitStream {
 }
 
 /// A [`TableProvider`] decorator that overrides the provider's schema with a custom schema.
+///
+/// Maintains two schemas:
+/// - `planning_schema`: metadata-stripped, used by DataFusion for logical/physical planning
+///   to avoid `physical input schema != logical input schema` errors caused by metadata mismatches.
+/// - `enriched_schema`: the original schema including Arrow metadata (descriptions, remarks)
+///   exposed via [`SchemaAdaptingTableProvider::enriched_schema`] for use by the Flight SQL
+///   `GetTables` endpoint without affecting DataFusion query planning.
 #[derive(Debug)]
 pub struct SchemaAdaptingTableProvider {
     /// The underlying provider.
     pub inner: Arc<dyn TableProvider>,
-    /// The customized schema to return.
+    /// Metadata-free schema for DataFusion planning (prevents physical/logical schema mismatch).
     pub custom_schema: SchemaRef,
+    /// Full schema with Arrow metadata (descriptions, REMARKS) for Flight SQL GetTables.
+    pub enriched_schema: SchemaRef,
 }
 
 impl SchemaAdaptingTableProvider {
     /// Creates a new `SchemaAdaptingTableProvider`.
+    ///
+    /// The `custom_schema` is stored in two forms:
+    /// - With metadata stripped, used by DataFusion during planning.
+    /// - As-is (with metadata), exposed via [`enriched_schema`] for Flight SQL.
     pub fn new(inner: Arc<dyn TableProvider>, custom_schema: SchemaRef) -> Self {
+        // Strip schema-level metadata for planning to avoid DataFusion physical/logical
+        // schema mismatch errors when the physical executor returns a metadata-free schema.
+        let planning_schema = Arc::new(datafusion::arrow::datatypes::Schema::new_with_metadata(
+            custom_schema.fields().to_vec(),
+            std::collections::HashMap::new(),
+        ));
         Self {
             inner,
-            custom_schema,
+            custom_schema: planning_schema,
+            enriched_schema: custom_schema,
         }
+    }
+
+    /// Returns the full schema including Arrow metadata (descriptions, REMARKS).
+    ///
+    /// Use this in Flight SQL `GetTables` to expose table/column descriptions to clients.
+    /// Do NOT use this for DataFusion query planning.
+    pub fn enriched_schema(&self) -> SchemaRef {
+        self.enriched_schema.clone()
     }
 }
 

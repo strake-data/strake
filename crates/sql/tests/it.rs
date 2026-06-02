@@ -33,11 +33,34 @@ async fn test_mysql_quoting() {
 
 #[tokio::test]
 async fn test_oracle_dialect() {
-    let plan = common::test_plan().await;
+    let ctx = SessionContext::new();
+    let schema = arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+        "id",
+        arrow::datatypes::DataType::Int32,
+        false,
+    )]);
+    ctx.register_table(
+        "users",
+        std::sync::Arc::new(datafusion::datasource::empty::EmptyTable::new(
+            std::sync::Arc::new(schema),
+        )),
+    )
+    .unwrap();
+    let table_scan = ctx
+        .table("users")
+        .await
+        .unwrap()
+        .into_optimized_plan()
+        .unwrap();
+    let plan = datafusion::logical_expr::LogicalPlan::Limit(datafusion::logical_expr::Limit {
+        skip: None,
+        fetch: Some(Box::new(datafusion::logical_expr::lit(100i64))),
+        input: std::sync::Arc::new(table_scan),
+    });
     let sql = get_sql_for_plan(&plan, "oracle")
         .expect("failed to generate sql")
         .expect("expected SQL output");
-    println!("Oracle SQL: {}", sql);
+    println!("Oracle SQL with Limit: {}", sql);
 }
 
 #[tokio::test]

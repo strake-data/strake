@@ -461,13 +461,7 @@ pub fn map_duckdb_type(type_str: &str) -> DataType {
             (18, 2)
         };
 
-        if p <= 9 {
-            return DataType::Decimal32(p, s);
-        } else if p <= 18 {
-            return DataType::Decimal64(p, s);
-        } else {
-            return DataType::Decimal128(p, s);
-        }
+        return DataType::Decimal128(p, s);
     }
 
     if type_str.eq_ignore_ascii_case("BIGINT")
