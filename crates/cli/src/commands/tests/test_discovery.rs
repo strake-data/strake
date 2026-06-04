@@ -1,3 +1,5 @@
+//! Tests for discovery command.
+
 use crate::commands::discovery::{add, search};
 use crate::config::CliConfig;
 use crate::output::OutputFormat;

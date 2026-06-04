@@ -9,7 +9,7 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use crate::commands::{ApplyOptions, apply};
+//! use crate::commands::{ValidateOptions, validate};
 //! use crate::config::CliConfig;
 //! use crate::output::OutputFormat;
 //! use crate::secrets::ResolverContext;
@@ -17,16 +17,15 @@
 //! # async fn example() -> anyhow::Result<()> {
 //! let config = CliConfig::default();
 //! let ctx = ResolverContext { system_env: Default::default(), dotenv: Default::default(), offline: false };
-//! let store = crate::metadata::init_store(&config).await?;
-//! let options = ApplyOptions {
-//!     file_path: "sources.yaml".to_string(),
-//!     force: false,
+//! let opts = ValidateOptions {
+//!     file: "sources.yaml".to_string(),
+//!     offline: false,
+//!     fail_on_warnings: false,
 //!     dry_run: false,
-//!     expected_version: None,
-//!     format: OutputFormat::Human,
 //!     notify_url: None,
+//!     format: OutputFormat::Human,
 //! };
-//! apply(&*store, options, &config).await?;
+//! validate(opts, &config, &ctx).await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -61,7 +60,7 @@ mod validate;
 pub use describe::{describe, test_connection};
 pub use diff::{DiffOptions, diff};
 pub use discovery::{AddOptions, add, search};
-pub use helpers::DiffChange; // Keep one re-export if needed or remove. Actually I'll just keep DiffChange.
+pub use helpers::DiffChange;
 
 #[cfg(test)]
 mod tests;
@@ -71,4 +70,4 @@ pub use remove::remove;
 pub use secrets::validate_secrets;
 pub use status::status;
 pub use sync::{SyncOptions, sync};
-pub use validate::validate;
+pub use validate::{ValidateOptions, validate};

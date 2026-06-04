@@ -17,7 +17,8 @@
 //! ## Performance Characteristics
 //!
 //! Uses `tokio-postgres` for fully asynchronous, pipelined database access. Handles
-//! background connections via detached Tokio tasks.
+//! background connections via detached Tokio tasks. Leverages `Arc<Client>` to enable
+//! lock-free, zero-contention concurrent access across multiple async tasks.
 //!
 //! ## Safety
 //!
@@ -33,11 +34,10 @@ use futures::future::BoxFuture;
 use tokio_postgres::{Client, NoTls};
 
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 /// Postgres implementation of the `MetadataStore`.
 pub struct PostgresStore {
-    client: Arc<Mutex<Client>>,
+    client: Arc<Client>,
 }
 
 impl PostgresStore {
@@ -54,16 +54,15 @@ impl PostgresStore {
         });
 
         Ok(Self {
-            client: Arc::new(Mutex::new(client)),
+            client: Arc::new(client),
         })
     }
 }
 
 impl MetadataStore for PostgresStore {
     fn init(&self) -> BoxFuture<'_, Result<()>> {
-        let client_ptr = self.client.clone();
+        let client = self.client.clone();
         Box::pin(async move {
-            let client = client_ptr.lock().await;
             const MIGRATIONS: &[(&str, &str)] = &[
                 (
                     "001_initial_schema",
@@ -108,7 +107,7 @@ impl MetadataStore for PostgresStore {
         key_hash: &'a str,
         permissions: &'a [String],
     ) -> BoxFuture<'a, Result<()>> {
-        let client_ptr = self.client.clone();
+        let client = self.client.clone();
         let name = name.to_string();
         let description = description.map(|s| s.to_string());
         let user_id = user_id.to_string();
@@ -117,7 +116,6 @@ impl MetadataStore for PostgresStore {
         let permissions = permissions.to_vec();
 
         Box::pin(async move {
-            let client = client_ptr.lock().await;
             if key_prefix.len() != crate::metadata::KEY_PREFIX_LEN {
                 anyhow::bail!(
                     "Invalid prefix length: expected {}, got {}",
@@ -145,9 +143,8 @@ impl MetadataStore for PostgresStore {
     }
 
     fn list_api_keys(&self) -> BoxFuture<'_, Result<Vec<super::models::ApiKeyInfo>>> {
-        let client_ptr = self.client.clone();
+        let client = self.client.clone();
         Box::pin(async move {
-            let client = client_ptr.lock().await;
             let rows = client.query(
                 "SELECT id, name, key_prefix, user_id, permissions, created_at, last_used_at, revoked_at, description
                  FROM api_keys ORDER BY created_at DESC",
@@ -180,10 +177,9 @@ impl MetadataStore for PostgresStore {
     }
 
     fn revoke_api_key<'a>(&'a self, key_prefix: &'a str) -> BoxFuture<'a, Result<bool>> {
-        let client_ptr = self.client.clone();
+        let client = self.client.clone();
         let prefix = key_prefix.to_string();
         Box::pin(async move {
-            let client = client_ptr.lock().await;
             if prefix.len() != crate::metadata::KEY_PREFIX_LEN {
                 anyhow::bail!(
                     "Invalid prefix length: expected {}, got {}",

@@ -1,15 +1,16 @@
 #![deny(missing_docs)]
 //! Strake CLI: GitOps-driven federated SQL management.
 //!
-//! The CLI is the primary interface for managing Strake state, designed for GitOps workflows.
-//! It revolves around applying a declarative `sources.yaml` configuration to the metadata store.
+//! The CLI is the primary interface for managing Strake data sources, designed for GitOps
+//! workflows. `sources.yaml` is the declarative source of truth; all commands operate on it
+//! without mutating any centralised metadata store.
 //!
 //! # Core Commands
 //!
 //! - `init`: Create a fresh configuration workspace.
-//! - `apply`: Reconcile the local `sources.yaml` with the database state.
-//! - `diff`: Preview changes before applying.
-//! - `validate`: Check configuration validity (schema and network connectivity).
+//! - `validate`: Verify configuration validity, detect live schema drift, and optionally
+//!   emit a machine-readable CI receipt or notify a webhook.
+//! - `diff`: Preview column-level drift between local config and live remote databases.
 //!
 //! # Exploration
 //!
@@ -72,7 +73,7 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         sources_only: bool,
     },
-    /// Validate the sources.yaml configuration
+    /// Validate sources.yaml and optionally emit a CI receipt or notify a webhook
     Validate {
         /// Path to the sources.yaml file
         #[arg(default_value = "sources.yaml")]
@@ -82,7 +83,13 @@ enum Commands {
         offline: bool,
         /// Strict mode: fail on warnings (coercions, drift)
         #[arg(long, default_value_t = false)]
-        ci: bool,
+        fail_on_warnings: bool,
+        /// Dry-run: compute live diff and print it, but skip webhook notification
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Callback URL to POST the ValidateReceipt JSON to on success
+        #[arg(long)]
+        notify_url: Option<String>,
     },
     /// Sync schemas from live remote databases into sources.yaml
     Sync {
@@ -131,6 +138,7 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         impact: bool,
     },
+
     /// Search for tables in an upstream source
     Search {
         /// The name of the source
@@ -391,8 +399,26 @@ async fn run_cli(
             )
             .await;
         }
-        Commands::Validate { file, offline, ci } => {
-            return commands::validate(file, *offline, *ci, cli.output, config, resolver_ctx).await;
+        Commands::Validate {
+            file,
+            offline,
+            fail_on_warnings,
+            dry_run,
+            notify_url,
+        } => {
+            return commands::validate(
+                commands::ValidateOptions {
+                    file: file.clone(),
+                    offline: *offline,
+                    fail_on_warnings: *fail_on_warnings,
+                    dry_run: *dry_run,
+                    notify_url: notify_url.clone(),
+                    format: cli.output,
+                },
+                config,
+                resolver_ctx,
+            )
+            .await;
         }
         Commands::Sync { file } => {
             return commands::sync(
@@ -417,6 +443,7 @@ async fn run_cli(
             )
             .await;
         }
+
         Commands::Search {
             source,
             file,
@@ -543,7 +570,7 @@ async fn run_cli(
                 } => {
                     commands::apikey::create(
                         &*store,
-                        commands::apikey::ApikeyCreateOptions {
+                        commands::apikey::ApiKeyCreateOptions {
                             name: name.clone(),
                             description: description.clone(),
                             user_id: user.clone(),

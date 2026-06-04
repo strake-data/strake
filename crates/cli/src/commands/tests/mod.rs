@@ -1,3 +1,7 @@
+//! # Command Tests
+//!
+//! Unit and integration tests for CLI commands.
+
 mod test_apikey;
 mod test_diff;
 mod test_discovery;

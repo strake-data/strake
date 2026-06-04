@@ -1,3 +1,5 @@
+//! Tests for validate command.
+
 use crate::commands::validate::validate_contracts;
 use crate::config::CliConfig;
 use wiremock::matchers::{method, path};

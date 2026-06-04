@@ -10,13 +10,26 @@
 //!
 //! ## Usage
 //!
-//! ```bash
-//! strake status --domain my_domain
+//! ```ignore
+//! // status(Some("sources.yaml"), None, 5000, OutputFormat::Human, &ctx).await?;
 //! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Measures source latency with non-blocking async checks under a timeout limit.
+//!
+//! ## Errors
+//!
+//! Returns validation errors if the source configuration cannot be parsed.
+//!
+//! ## References
+//!
+//! - Strake Health and Status Architecture Specification
 
 use crate::output::{self, OutputFormat};
 use crate::secrets::ResolverContext;
 use anyhow::Result;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use strake_common::models::{DomainName, SourcesConfig};
@@ -151,33 +164,90 @@ pub async fn status(
     Ok(exit_code)
 }
 
-async fn check_sources(config: &SourcesConfig, _timeout_ms: u64) -> Vec<SourceDetail> {
-    let mut details = Vec::new();
-    for source in &config.sources {
-        let (reachable, error) = if let Some(url) = &source.url {
+/// Abstraction trait for checking source health status.
+#[async_trait]
+pub trait HealthChecker: Send + Sync {
+    /// Perform check on target source. Returns (reachable, error_message, latency_ms)
+    async fn check(
+        &self,
+        source: &strake_common::models::SourceConfig,
+    ) -> (bool, Option<String>, Option<u128>);
+}
+
+/// Default implementation of health check.
+pub struct DefaultHealthChecker {
+    pub timeout_ms: u64,
+}
+
+#[async_trait]
+impl HealthChecker for DefaultHealthChecker {
+    async fn check(
+        &self,
+        source: &strake_common::models::SourceConfig,
+    ) -> (bool, Option<String>, Option<u128>) {
+        let start = std::time::Instant::now();
+        if let Some(url) = &source.url {
             if url.starts_with("file://") {
                 let path = url.strip_prefix("file://").unwrap();
                 if std::path::Path::new(path).exists() {
-                    (true, None)
+                    let latency = start.elapsed().as_millis();
+                    (true, None, Some(latency))
                 } else {
-                    (false, Some("File not found".to_string()))
+                    (false, Some("File not found".to_string()), None)
+                }
+            } else if url.starts_with("http://") || url.starts_with("https://") {
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_millis(self.timeout_ms))
+                    .build();
+                match client {
+                    Ok(c) => match c.get(url).send().await {
+                        Ok(resp) => {
+                            let latency = start.elapsed().as_millis();
+                            if resp.status().is_success() {
+                                (true, None, Some(latency))
+                            } else {
+                                (
+                                    false,
+                                    Some(format!("HTTP status error: {}", resp.status())),
+                                    Some(latency),
+                                )
+                            }
+                        }
+                        Err(e) => (false, Some(e.to_string()), None),
+                    },
+                    Err(e) => (false, Some(e.to_string()), None),
                 }
             } else {
-                // Default fallback for other protocols in this stub
                 (
                     false,
                     Some("Protocol not supported in status check".to_string()),
+                    None,
                 )
             }
         } else {
             // Sources without URLs (like Mocks or internal) are considered reachable
-            (true, None)
-        };
+            let latency = start.elapsed().as_millis();
+            (true, None, Some(latency))
+        }
+    }
+}
 
+async fn check_sources(config: &SourcesConfig, timeout_ms: u64) -> Vec<SourceDetail> {
+    let checker = DefaultHealthChecker { timeout_ms };
+    check_sources_with_checker(config, &checker).await
+}
+
+async fn check_sources_with_checker(
+    config: &SourcesConfig,
+    checker: &dyn HealthChecker,
+) -> Vec<SourceDetail> {
+    let mut details = Vec::new();
+    for source in &config.sources {
+        let (reachable, error, latency) = checker.check(source).await;
         details.push(SourceDetail {
             name: source.name.to_string(),
             reachable,
-            latency_ms: if reachable { Some(0) } else { None },
+            latency_ms: latency,
             error,
         });
     }

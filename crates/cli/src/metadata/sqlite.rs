@@ -47,6 +47,9 @@ impl SqliteStore {
             std::fs::create_dir_all(parent).context("Failed to create metadata directory")?;
         }
         let conn = Connection::open(path).context("Failed to open SQLite database")?;
+        // Set busy timeout to 5 seconds to prevent database locked errors under concurrent situations
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .context("Failed to set SQLite busy timeout")?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })

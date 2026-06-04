@@ -3,6 +3,7 @@
 //! Isolated from HTTP concerns so it can be unit-tested without a live API.
 
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use strake_common::schema::IntrospectedTable;
 
 /// The system instructions shared by all providers.
@@ -47,8 +48,15 @@ pub(super) fn apply_descriptions(table: &mut IntrospectedTable, json_text: &str)
         .map(str::trim)
         .unwrap_or(json_text);
 
-    let parsed: serde_json::Value =
-        serde_json::from_str(json_text).context("Failed to parse AI JSON response")?;
+    if json_text.len() > 1_000_000 {
+        anyhow::bail!("AI response exceeds maximum size of 1MB");
+    }
+
+    let mut deserializer = serde_json::Deserializer::from_str(json_text);
+    // serde_json deserializer by default limits recursion to 128 (which prevents stack overflow)
+    // we can explicitly deserialize to a Value here
+    let parsed: serde_json::Value = serde_json::Value::deserialize(&mut deserializer)
+        .context("Failed to parse AI JSON response")?;
 
     if let Some(table_desc) = parsed["table_description"].as_str() {
         table.ai_description = Some(table_desc.to_string());

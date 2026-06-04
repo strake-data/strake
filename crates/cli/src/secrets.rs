@@ -1,3 +1,32 @@
+//! # Secrets Resolver
+//!
+//! Parse and resolve secret placeholders in configuration strings.
+//!
+//! ## Overview
+//!
+//! Provides `SecretResolver` to identify segments of text containing secret references
+//! (e.g., `${env:DB_PASS}`, `${dotenv:API_KEY}`, etc.) and resolve them using context
+//! from the environment, `.env` files, or external secret managers.
+//!
+//! ## Usage
+//!
+//! ```ignore
+//! // let resolved = SecretResolver::resolve(input, &ctx)?;
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Scans strings linearly in a single pass. Zero-allocations for pure literal segments.
+//! Zeroizes resolved secrets upon dropping.
+//!
+//! ## Safety
+//!
+//! Zeroizes secret buffers in memory securely using `secrecy` and `zeroize`.
+//!
+//! ## Errors
+//!
+//! Returns `ResolutionError` if a reference is malformed, not found, or unsupported.
+
 use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -138,33 +167,27 @@ impl SecretResolver {
     }
 
     fn parse_reference(inner: &str, raw: &str) -> Option<SecretReference> {
-        if let Some(key) = inner.strip_prefix("env:") {
+        let helper = |provider: SecretProvider, key: &str| -> SecretReference {
             if key.is_empty() {
-                return Some(SecretReference {
+                SecretReference {
                     provider: SecretProvider::Invalid,
                     key: inner.to_string(),
                     raw: raw.to_string(),
-                });
+                }
+            } else {
+                SecretReference {
+                    provider,
+                    key: key.to_string(),
+                    raw: raw.to_string(),
+                }
             }
-            return Some(SecretReference {
-                provider: SecretProvider::Env,
-                key: key.to_string(),
-                raw: raw.to_string(),
-            });
+        };
+
+        if let Some(key) = inner.strip_prefix("env:") {
+            return Some(helper(SecretProvider::Env, key));
         }
         if let Some(key) = inner.strip_prefix("dotenv:") {
-            if key.is_empty() {
-                return Some(SecretReference {
-                    provider: SecretProvider::Invalid,
-                    key: inner.to_string(),
-                    raw: raw.to_string(),
-                });
-            }
-            return Some(SecretReference {
-                provider: SecretProvider::DotEnv,
-                key: key.to_string(),
-                raw: raw.to_string(),
-            });
+            return Some(helper(SecretProvider::DotEnv, key));
         }
         if inner.starts_with("vault://") {
             return Some(SecretReference {
@@ -174,18 +197,7 @@ impl SecretResolver {
             });
         }
         if let Some(key) = inner.strip_prefix("aws:secretsmanager:") {
-            if key.is_empty() {
-                return Some(SecretReference {
-                    provider: SecretProvider::Invalid,
-                    key: inner.to_string(),
-                    raw: raw.to_string(),
-                });
-            }
-            return Some(SecretReference {
-                provider: SecretProvider::Aws,
-                key: key.to_string(),
-                raw: raw.to_string(),
-            });
+            return Some(helper(SecretProvider::Aws, key));
         }
         if inner.contains(':') {
             return Some(SecretReference {
@@ -378,6 +390,16 @@ mod tests {
             } else {
                 panic!("Expected reference segment");
             }
+        }
+
+        #[test]
+        fn test_resolve_adversarial(s in "\\PC*") {
+            let ctx = ResolverContext {
+                system_env: [("KEY".to_string(), "VAL".to_string())].into_iter().collect(),
+                dotenv: [("PASS".to_string(), "SECRET".to_string())].into_iter().collect(),
+                offline: false,
+            };
+            let _ = SecretResolver::resolve(&s, &ctx);
         }
     }
 }

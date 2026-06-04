@@ -1,6 +1,7 @@
+//! Tests for helper functions.
+
 use crate::commands::helpers::{expand_secrets, parse_yaml};
 use crate::secrets::ResolverContext;
-use serial_test::serial;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
@@ -19,30 +20,31 @@ fn get_test_ctx(vars: Vec<(&str, &str)>) -> ResolverContext {
 }
 
 #[test]
-#[serial]
 fn test_expand_secrets_basic() {
     let ctx = get_test_ctx(vec![("TEST_VAR", "secret_value")]);
     let input = "This is a ${TEST_VAR}.";
-    let output = expand_secrets(input, &ctx);
-    assert_eq!(output, "This is a secret_value.");
+    let output = expand_secrets(input.to_string(), &ctx);
+    use secrecy::ExposeSecret;
+    assert_eq!(output.expose_secret(), "This is a secret_value.");
 }
 
 #[test]
-#[serial]
 fn test_expand_secrets_multiple() {
     let ctx = get_test_ctx(vec![("VAR1", "foo"), ("VAR2", "bar")]);
     let input = "${VAR1} and ${VAR2}";
-    let output = expand_secrets(input, &ctx);
-    assert_eq!(output, "foo and bar");
+    let output = expand_secrets(input.to_string(), &ctx);
+    use secrecy::ExposeSecret;
+    assert_eq!(output.expose_secret(), "foo and bar");
 }
 
 #[test]
 fn test_expand_secrets_missing() {
     let ctx = ResolverContext::default();
     let input = "This is ${MISSING_VAR}.";
-    let output = expand_secrets(input, &ctx);
+    let output = expand_secrets(input.to_string(), &ctx);
+    use secrecy::ExposeSecret;
     // Should keep the original placeholder if missing
-    assert_eq!(output, "This is ${MISSING_VAR}.");
+    assert_eq!(output.expose_secret(), "This is ${MISSING_VAR}.");
 }
 
 fn create_temp_config(content: &str) -> PathBuf {
@@ -86,7 +88,6 @@ sources:
 }
 
 #[tokio::test]
-#[serial]
 async fn test_parse_yaml_with_secrets() {
     let ctx = get_test_ctx(vec![("DB_URL", "postgres://secret:5432/db")]);
     let content = r#"

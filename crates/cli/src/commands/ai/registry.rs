@@ -33,49 +33,60 @@ impl AiProviderRegistry {
     ///
     /// Only the `selected` provider is registered to avoid unnecessary errors
     /// (e.g., from missing models) for unused providers with active environment variables.
-    pub fn register_from_env(mut self, config: &AiConfig, selected: &str) -> Result<Self> {
+    pub fn register_from_env(
+        &mut self,
+        config: &AiConfig,
+        selected: &str,
+        ctx: &crate::secrets::ResolverContext,
+    ) -> Result<&mut Self> {
         let client = Client::new(); // one pool, shared by all providers
 
         match selected {
             "gemini" => {
-                if let Ok(key) = std::env::var("GOOGLE_API_KEY") {
-                    let model = resolve_model("gemini", config)?;
-                    let api_key_value = HeaderValue::from_str(&key)
-                        .context("GOOGLE_API_KEY contains characters invalid for an HTTP header")?;
+                let secret_key =
+                    crate::secrets::SecretResolver::resolve("${env:GOOGLE_API_KEY}", ctx)
+                        .context("Provider 'gemini' selected but GOOGLE_API_KEY not set")?;
+                use secrecy::ExposeSecret;
+                let key = secret_key.expose_secret();
+                let model = resolve_model("gemini", config)?;
+                let api_key_value = HeaderValue::from_str(key)
+                    .context("GOOGLE_API_KEY contains characters invalid for an HTTP header")?;
 
-                    self.providers.insert(
-                        "gemini".to_string(),
-                        Box::new(GenericChatProvider {
-                            client,
-                            adapter: gemini::GeminiAdapter {
-                                api_key_value,
-                                model,
-                                temperature: config.temperature.unwrap_or(0.1),
-                                url: config.url.clone(),
-                            },
-                        }),
-                    );
-                }
+                self.providers.insert(
+                    "gemini".to_string(),
+                    Box::new(GenericChatProvider {
+                        client,
+                        adapter: gemini::GeminiAdapter {
+                            api_key_value,
+                            model,
+                            temperature: config.temperature.unwrap_or(0.1),
+                            url: config.url.clone(),
+                        },
+                    }),
+                );
             }
             "openai" => {
-                if let Ok(key) = std::env::var("OPENAI_API_KEY") {
-                    let model = resolve_model("openai", config)?;
-                    let api_key_value = HeaderValue::from_str(&format!("Bearer {}", key))
-                        .context("OPENAI_API_KEY contains characters invalid for an HTTP header")?;
+                let secret_key =
+                    crate::secrets::SecretResolver::resolve("${env:OPENAI_API_KEY}", ctx)
+                        .context("Provider 'openai' selected but OPENAI_API_KEY not set")?;
+                use secrecy::ExposeSecret;
+                let key = secret_key.expose_secret();
+                let model = resolve_model("openai", config)?;
+                let api_key_value = HeaderValue::from_str(&format!("Bearer {}", key))
+                    .context("OPENAI_API_KEY contains characters invalid for an HTTP header")?;
 
-                    self.providers.insert(
-                        "openai".to_string(),
-                        Box::new(GenericChatProvider {
-                            client,
-                            adapter: openai::OpenAiAdapter {
-                                api_key_value,
-                                model,
-                                temperature: config.temperature.unwrap_or(0.1),
-                                url: config.url.clone(),
-                            },
-                        }),
-                    );
-                }
+                self.providers.insert(
+                    "openai".to_string(),
+                    Box::new(GenericChatProvider {
+                        client,
+                        adapter: openai::OpenAiAdapter {
+                            api_key_value,
+                            model,
+                            temperature: config.temperature.unwrap_or(0.1),
+                            url: config.url.clone(),
+                        },
+                    }),
+                );
             }
             other => {
                 bail!("Unknown AI provider '{}'. Supported: gemini, openai", other);

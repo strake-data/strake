@@ -1,5 +1,4 @@
 //! # Discovery Command
-#![allow(clippy::field_reassign_with_default)]
 //!
 //! This module provides commands for discovering, searching, and importing data sources.
 //!
@@ -223,9 +222,11 @@ pub async fn add(options: AddOptions, config: &CliConfig, ctx: &ResolverContext)
             })?;
 
         let ai_config_default = AiConfig::default();
-        let registry = AiProviderRegistry::new().register_from_env(
+        let mut registry = AiProviderRegistry::new();
+        registry.register_from_env(
             config.ai.as_ref().unwrap_or(&ai_config_default),
             &provider_name,
+            ctx,
         )?;
 
         let provider = registry.resolve(&provider_name)?;
@@ -503,22 +504,9 @@ pub(crate) async fn bulk_add(
 
     println!("Importing {} tables...", table_refs.len());
 
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
     let introspector = std::sync::Arc::new(introspector);
-    let mut join_handles = Vec::new();
-
-    for table_ref in table_refs {
-        let perm = semaphore.clone().acquire_owned().await?;
-        let introspector = introspector.clone();
-        let full = options.full;
-
-        let handle = tokio::spawn(async move {
-            let _perm = perm;
-            let res = introspector.introspect_table(&table_ref, full).await;
-            (table_ref, res)
-        });
-        join_handles.push(handle);
-    }
+    let mut successfully_introspected =
+        perform_introspections(introspector.clone(), table_refs, &options).await?;
 
     // AI Provider config
     let mut ai_context: Option<(AiProviderRegistry, String)> = None;
@@ -533,14 +521,16 @@ pub(crate) async fn bulk_add(
             .ok_or_else(|| {
                 anyhow!(
                     "No AI provider configured. \
-                 Set 'STRAKE_AI_PROVIDER' or add 'provider:' under 'ai:' in your config file."
+                  Set 'STRAKE_AI_PROVIDER' or add 'provider:' under 'ai:' in your config file."
                 )
             })?;
 
         let ai_config_default = AiConfig::default();
-        let registry = AiProviderRegistry::new().register_from_env(
+        let mut registry = AiProviderRegistry::new();
+        registry.register_from_env(
             config.ai.as_ref().unwrap_or(&ai_config_default),
             &provider_name,
+            ctx,
         )?;
 
         // Fail fast if provider cannot be resolved
@@ -549,25 +539,59 @@ pub(crate) async fn bulk_add(
         ai_context = Some((registry, provider_name));
     }
 
+    if !successfully_introspected.is_empty() {
+        enrich_with_ai(&mut successfully_introspected, &ai_context).await?;
+    }
+
+    // Sort introspected results by schema and table name to ensure deterministic merge order
+    successfully_introspected.sort_by(|a, b| a.schema.cmp(&b.schema).then(a.name.cmp(&b.name)));
+
+    // Apply and write config updates
+    merge_and_write_config(&mut current_config, &successfully_introspected, &options).await?;
+
+    if options.to_contracts {
+        for introspected in &successfully_introspected {
+            promote_to_contracts(introspected, &options, ctx).await?;
+        }
+    }
+
+    Ok(exit_codes::EXIT_OK)
+}
+
+/// Helper function to perform introspection on multiple tables concurrently.
+async fn perform_introspections(
+    introspector: std::sync::Arc<
+        Box<dyn strake_connectors::introspect::SchemaIntrospector + Send + Sync>,
+    >,
+    table_refs: Vec<strake_connectors::introspect::TableRef>,
+    options: &AddOptions,
+) -> Result<Vec<strake_common::schema::IntrospectedTable>> {
+    // Compile-time check that the introspector is Send + Sync
+    fn assert_send_sync<T: Send + Sync>(_: &T) {}
+    assert_send_sync(&introspector);
+
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
+    use futures::stream::{FuturesUnordered, StreamExt};
+    let mut tasks = FuturesUnordered::new();
+
+    for table_ref in table_refs {
+        let perm = semaphore.clone().acquire_owned().await?;
+        let introspector = introspector.clone();
+        let full = options.full;
+
+        tasks.push(tokio::spawn(async move {
+            let _perm = perm;
+            let res = introspector.introspect_table(&table_ref, full).await;
+            (table_ref, res)
+        }));
+    }
+
     let mut successfully_introspected = Vec::new();
-    for handle in join_handles {
-        let (table_ref, res) = handle.await?;
+    while let Some(res_task) = tasks.next().await {
+        let (table_ref, res) = res_task?;
         print!("  {} ... ", table_ref);
         match res {
-            Ok(mut introspected) => {
-                if let Some((ref registry, ref name)) = ai_context {
-                    let provider = registry.resolve(name)?;
-                    provider
-                        .enrich_descriptions(&mut introspected)
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "AI enrichment failed for table '{}.{}'",
-                                introspected.schema, introspected.name
-                            )
-                        })?;
-                }
-                merge_introspected(&mut current_config, &options, introspected.clone())?;
+            Ok(introspected) => {
                 successfully_introspected.push(introspected);
                 println!("{}", "done".green());
             }
@@ -576,9 +600,55 @@ pub(crate) async fn bulk_add(
             }
         }
     }
+    Ok(successfully_introspected)
+}
 
-    let mut yaml = serde_yaml::to_string(&current_config)?;
-    yaml = yaml.replace(" [AI_GEN]", " # ai-generated");
+/// Helper function to enrich introspected tables with AI descriptions.
+async fn enrich_with_ai(
+    successfully_introspected: &mut [strake_common::schema::IntrospectedTable],
+    ai_context: &Option<(AiProviderRegistry, String)>,
+) -> Result<()> {
+    if let Some((registry, name)) = ai_context {
+        let provider = registry.resolve(name)?;
+        for introspected in successfully_introspected {
+            provider
+                .enrich_descriptions(introspected)
+                .await
+                .with_context(|| {
+                    format!(
+                        "AI enrichment failed for table '{}.{}'",
+                        introspected.schema, introspected.name
+                    )
+                })?;
+        }
+    }
+    Ok(())
+}
+
+/// Helper function to merge introspections and write back to sources.yaml atomically.
+async fn merge_and_write_config(
+    current_config: &mut strake_common::models::SourcesConfig,
+    successfully_introspected: &[strake_common::schema::IntrospectedTable],
+    options: &AddOptions,
+) -> Result<()> {
+    // Apply config changes sequentially to prevent partial dirty states on error
+    for introspected in successfully_introspected {
+        merge_introspected(current_config, options, introspected.clone())?;
+    }
+
+    let mut yaml = serde_yaml::to_string(current_config)?;
+    // Process line-by-line to properly format comments on lines with [AI_GEN]
+    let mut processed_lines = Vec::new();
+    for line in yaml.lines() {
+        if line.contains(" [AI_GEN]") {
+            let mut cleaned = line.replace(" [AI_GEN]", "");
+            cleaned.push_str(" # ai-generated");
+            processed_lines.push(cleaned);
+        } else {
+            processed_lines.push(line.to_string());
+        }
+    }
+    yaml = processed_lines.join("\n") + "\n";
 
     let file_path = options.file.clone();
     tokio::task::spawn_blocking(move || -> Result<()> {
@@ -593,14 +663,7 @@ pub(crate) async fn bulk_add(
         Ok(())
     })
     .await??;
-
-    if options.to_contracts {
-        for introspected in &successfully_introspected {
-            promote_to_contracts(introspected, &options, ctx).await?;
-        }
-    }
-
-    Ok(exit_codes::EXIT_OK)
+    Ok(())
 }
 
 fn merge_introspected(
@@ -634,43 +697,51 @@ fn merge_introspected(
         .iter_mut()
         .find(|t| t.name == introspected.name && t.schema == introspected.schema)
     {
-        // Update table description if missing
-        if existing_table.description.is_none() {
-            existing_table.description = introspected
+        // Back-fill description only when the entry is currently absent
+        existing_table.description.get_or_insert_with(|| {
+            introspected
                 .ai_description
+                .as_deref()
                 .map(|d| format!("{} [AI_GEN]", d))
-                .or_else(|| introspected.db_comment.clone());
-        }
+                .or_else(|| introspected.db_comment.clone())
+                .unwrap_or_default()
+        });
 
         if options.merge {
             for intro_col in introspected.columns {
-                if let Some(existing_col) = existing_table
+                match existing_table
                     .column_definitions
                     .iter_mut()
                     .find(|c| c.name == intro_col.name)
                 {
-                    // Update if bare type and new is precise
-                    if !existing_col.data_type.contains('(') && intro_col.type_str.contains('(') {
-                        existing_col.data_type = intro_col.type_str;
+                    Some(existing_col) => {
+                        // Prefer the more precise type when the existing one lacks precision
+                        if !existing_col.data_type.contains('(') && intro_col.type_str.contains('(')
+                        {
+                            existing_col.data_type = intro_col.type_str;
+                        }
+                        existing_col.not_null = !intro_col.nullable;
+                        if intro_col.is_primary_key {
+                            existing_col.primary_key = true;
+                        }
+                        // Back-fill AI description only when absent
+                        existing_col.description.get_or_insert_with(|| {
+                            intro_col
+                                .ai_description
+                                .map(|d| format!("{} [AI_GEN]", d))
+                                .unwrap_or_default()
+                        });
                     }
-                    existing_col.not_null = !intro_col.nullable;
-                    // Primary key / unique?
-                    if intro_col.is_primary_key {
-                        existing_col.primary_key = true;
-                    }
-                    // AI Description (merge only if missing)
-                    if existing_col.description.is_none() {
-                        existing_col.description =
+                    None => {
+                        let mut col = strake_common::models::ColumnConfig::default();
+                        col.name = intro_col.name;
+                        col.data_type = intro_col.type_str;
+                        col.primary_key = intro_col.is_primary_key;
+                        col.not_null = !intro_col.nullable;
+                        col.description =
                             intro_col.ai_description.map(|d| format!("{} [AI_GEN]", d));
+                        existing_table.column_definitions.push(col);
                     }
-                } else {
-                    let mut col = strake_common::models::ColumnConfig::default();
-                    col.name = intro_col.name;
-                    col.data_type = intro_col.type_str;
-                    col.primary_key = intro_col.is_primary_key;
-                    col.not_null = !intro_col.nullable;
-                    col.description = intro_col.ai_description.map(|d| format!("{} [AI_GEN]", d));
-                    existing_table.column_definitions.push(col);
                 }
             }
         }
@@ -706,7 +777,7 @@ pub(crate) async fn resolve_introspector(
     file_path: &str,
     config: &CliConfig,
     ctx: &ResolverContext,
-) -> Result<Box<dyn strake_connectors::introspect::SchemaIntrospector>> {
+) -> Result<Box<dyn strake_connectors::introspect::SchemaIntrospector + Send + Sync>> {
     let current_config = if std::path::Path::new(file_path).exists() {
         parse_yaml(file_path, ctx).await.ok()
     } else {

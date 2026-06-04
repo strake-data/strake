@@ -1,3 +1,5 @@
+//! Tests for diff command.
+
 use crate::commands::diff::diff_internal;
 use crate::commands::sync::{SyncOptions, sync};
 use crate::config::CliConfig;

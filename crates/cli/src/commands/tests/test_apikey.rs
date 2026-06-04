@@ -21,7 +21,7 @@ async fn test_database_init_and_apikey_lifecycle() {
     assert_eq!(db_init_res.unwrap(), 0);
 
     // 3. Create a new API key
-    let create_options = apikey::ApikeyCreateOptions {
+    let create_options = apikey::ApiKeyCreateOptions {
         name: "Test Grafana Key".to_string(),
         description: Some("Used to query telemetry dashboard".to_string()),
         user_id: "grafana-user".to_string(),

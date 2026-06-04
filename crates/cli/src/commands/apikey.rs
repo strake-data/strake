@@ -10,7 +10,7 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! let opts = apikey::ApikeyCreateOptions {
+//! let opts = apikey::ApiKeyCreateOptions {
 //!     name: "ingest".into(),
 //!     description: None,
 //!     user_id: "svc_01".into(),
@@ -45,7 +45,7 @@ use argon2::{
 use owo_colors::OwoColorize;
 
 /// Command line options for creating a new API key.
-pub struct ApikeyCreateOptions {
+pub struct ApiKeyCreateOptions {
     /// The name of the API key
     pub name: String,
     /// Optional description
@@ -72,13 +72,16 @@ pub struct ApiKeyCreateResult {
 /// Generates a cryptographically secure API key, hashes it, and stores it.
 pub async fn create(
     store: &dyn MetadataStore,
-    options: ApikeyCreateOptions,
+    options: ApiKeyCreateOptions,
     format: OutputFormat,
 ) -> Result<i32> {
     // 1. Generate 32 alphanumeric cryptographically secure random characters using OsRng and rejection sampling
     const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let mut random_str = String::with_capacity(32);
-    while random_str.len() < 32 {
+    const MAX_ATTEMPTS: usize = CHARSET.len() * 10;
+    let mut attempts = 0;
+    while random_str.len() < 32 && attempts < MAX_ATTEMPTS {
+        attempts += 1;
         let mut byte = [0u8; 1];
         OsRng
             .try_fill_bytes(&mut byte)
@@ -89,6 +92,13 @@ pub async fn create(
             let idx = (b % 62) as usize;
             random_str.push(CHARSET[idx] as char);
         }
+    }
+
+    if random_str.len() < 32 {
+        anyhow::bail!(
+            "Failed to generate secure API key after {} attempts",
+            MAX_ATTEMPTS
+        );
     }
 
     let full_key = format!("strk_{}", random_str);
@@ -134,7 +144,7 @@ pub async fn create(
         println!("User ID:     {}", options.user_id);
         println!("Key Prefix:  {}", prefix);
         println!();
-        println!("Please save this API key. It will ");
+        println!("Please save this API key. It will");
         println!("Only be displayed once:");
         println!();
         println!("  {}", full_key.yellow().bold());
@@ -145,12 +155,16 @@ pub async fn create(
 }
 
 /// Helper function to truncate strings with ellipsis.
+///
+/// Note: Truncates at Unicode code-point boundaries. May split complex grapheme clusters.
 fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
-    if s.chars().count() <= max_len {
+    let char_count = s.chars().count();
+    if char_count <= max_len {
         s.to_string()
     } else if max_len <= 3 {
         s.chars().take(max_len).collect()
     } else {
+        // Collect characters cleanly, avoiding stringly parsing penalties
         let truncated: String = s.chars().take(max_len - 3).collect();
         format!("{}...", truncated)
     }

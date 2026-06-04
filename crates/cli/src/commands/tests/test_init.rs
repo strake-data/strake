@@ -1,3 +1,5 @@
+//! Tests for init command.
+
 use crate::output::OutputFormat;
 use crate::secrets::ResolverContext;
 use anyhow::Result;

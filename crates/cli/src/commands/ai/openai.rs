@@ -19,6 +19,12 @@ pub(super) struct OpenAiAdapter {
     pub(super) url: Option<String>,
 }
 
+#[derive(serde::Serialize)]
+struct ResponseFormat {
+    #[serde(rename = "type")]
+    format_type: &'static str,
+}
+
 #[async_trait]
 impl ChatApiAdapter for OpenAiAdapter {
     fn name(&self) -> &'static str {
@@ -39,6 +45,10 @@ impl ChatApiAdapter for OpenAiAdapter {
     }
 
     fn body(&self, system_prompt: &str, user_prompt: &str) -> Value {
+        let response_format = ResponseFormat {
+            format_type: "json_object",
+        };
+
         json!({
             "model": self.model,
             "messages": [
@@ -46,7 +56,7 @@ impl ChatApiAdapter for OpenAiAdapter {
                 { "role": "user", "content": user_prompt }
             ],
             "temperature": self.temperature,
-            "response_format": { "type": "json_object" }
+            "response_format": response_format
         })
     }
 

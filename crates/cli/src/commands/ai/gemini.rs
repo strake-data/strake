@@ -26,7 +26,7 @@ impl ChatApiAdapter for GeminiAdapter {
     }
 
     fn endpoint(&self) -> String {
-        self.url.clone().unwrap_or_else(|| {
+        self.url.as_deref().map(String::from).unwrap_or_else(|| {
             format!(
                 "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
                 self.model

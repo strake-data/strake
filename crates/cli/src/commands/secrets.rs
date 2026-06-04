@@ -1,3 +1,29 @@
+//! # Secret Validation Command
+//!
+//! Validates `${env:...}` and `${dotenv:...}` references in configuration files.
+//!
+//! ## Overview
+//!
+//! Evaluates whether secret placeholders reference existing environment variables.
+//!
+//! ## Usage
+//!
+//! ```ignore
+//! // validate_secrets("sources.yaml", &ctx, format).await?;
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Fast local lookups with zero network overhead in offline mode.
+//!
+//! ## Errors
+//!
+//! Returns `Err` if any secrets cannot be resolved.
+//!
+//! ## References
+//!
+//! - Declarative Secrets Specs
+
 use crate::exit_codes;
 use crate::output::{self, OutputFormat};
 use crate::secrets::{ResolutionError, ResolverContext, SecretResolver, Segment};

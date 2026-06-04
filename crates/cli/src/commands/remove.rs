@@ -1,3 +1,31 @@
+//! # Remove Command
+//!
+//! Handles safe removal of tables from declarative configuration files.
+//!
+//! ## Overview
+//!
+//! Removes table configuration blocks while checking for orphaned data quality contracts or access control policies.
+//!
+//! ## Usage
+//!
+//! Run via the CLI:
+//!
+//! ```bash
+//! strake remove <source> [table]
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Safely reads and rewrites local YAML files using atomically guaranteed writes.
+//!
+//! ## Errors
+//!
+//! Errors if configuration reading or validation fails, or if target table does not exist.
+//!
+//! ## References
+//!
+//! - Strake Declarative Removal Architecture
+
 use crate::commands::helpers::resolve_manifest_paths;
 use crate::exit_codes;
 use crate::output::{self, OutputFormat};
@@ -50,7 +78,7 @@ pub async fn remove(
 
     let table =
         table.ok_or_else(|| anyhow!("Table name is required unless --source-only is used"))?;
-    let manifest_paths = resolve_manifest_paths(file_path).await?;
+    let manifest_paths = resolve_manifest_paths(file_path.map(Path::new)).await?;
     let raw = tokio::fs::read_to_string(&manifest_paths.sources)
         .await
         .with_context(|| format!("Failed to read {}", manifest_paths.sources.display()))?;
@@ -109,7 +137,7 @@ pub async fn remove(
             },
         )?;
         return Ok(exit_codes::EXIT_ERROR);
-    }
+    };
 
     let target = format!("{}.{}", source, table);
     let contract_warnings = contract_warnings(&manifest_paths.contracts, &target).await;

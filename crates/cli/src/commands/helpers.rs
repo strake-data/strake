@@ -6,7 +6,7 @@
 //!
 //! - **Utilities**: `expand_secrets` (env var substitution), `get_client` (authenticated HTTP), `parse_yaml` (helpers).
 //! - **Result Types**: Serializable structs used by commands for machine-readable (JSON/YAML) output.
-//!   Common types include `ValidateResult`, `ApplyResult`, `DiffResult`, etc.
+//!   Common types include `ValidateResult`, `DiffResult`, `SearchResult`, etc.
 //!
 //! ## Usage
 //!
@@ -34,16 +34,19 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Expand secret placeholders in content using the provided context.
-pub fn expand_secrets(content: &str, ctx: &ResolverContext) -> String {
-    // Note: This returns a String because YAML parsing requires a String.
-    // However, the resolver ensures that it only exposes secrets into this String
-    // for the minimum duration required to build the result.
-    match SecretResolver::resolve(content, ctx) {
-        Ok(secret) => {
-            use secrecy::ExposeSecret;
-            secret.expose_secret().to_string()
-        }
-        Err(_) => content.to_string(), // Fallback to raw if resolution fails (e.g. for partial strings)
+///
+/// # SECURITY
+/// The resolved secrets are transiently exposed in heap memory for the duration of
+/// configuration deserialization, and the SecretString is zeroized upon being dropped.
+/// Note that if secret resolution fails, the fallback branch still returns a SecretString
+/// containing the raw input, which is still securely zeroized when dropped.
+pub fn expand_secrets(content: String, ctx: &ResolverContext) -> secrecy::SecretString {
+    if !content.contains('$') {
+        return secrecy::SecretString::from(content);
+    }
+    match SecretResolver::resolve(&content, ctx) {
+        Ok(secret) => secret,
+        Err(_) => secrecy::SecretString::from(content), // Fallback to raw if resolution fails (e.g. for partial strings)
     }
 }
 
@@ -62,12 +65,18 @@ pub fn get_client(config: &CliConfig) -> Result<reqwest::Client> {
 }
 
 /// Parse a YAML configuration file with secret expansion.
-pub async fn parse_yaml(path: &str, ctx: &ResolverContext) -> Result<models::SourcesConfig> {
-    let raw_content = tokio::fs::read_to_string(path)
-        .await
-        .context(format!("Failed to read config file: {}", path))?;
-    let content = expand_secrets(&raw_content, ctx);
-    serde_yaml::from_str(&content).context("Failed to parse YAML structure")
+pub async fn parse_yaml(
+    path: impl AsRef<Path>,
+    ctx: &ResolverContext,
+) -> Result<models::SourcesConfig> {
+    let path_ref = path.as_ref();
+    let raw_content = tokio::fs::read_to_string(path_ref).await.context(format!(
+        "Failed to read config file: {}",
+        path_ref.display()
+    ))?;
+    let content = expand_secrets(raw_content, ctx);
+    use secrecy::ExposeSecret;
+    serde_yaml::from_str(content.expose_secret()).context("Failed to parse YAML structure")
 }
 
 #[allow(dead_code)]
@@ -91,7 +100,7 @@ struct ProjectManifestConfig {
     default_domain: Option<String>,
 }
 
-pub async fn resolve_manifest_paths(explicit_sources: Option<&str>) -> Result<ManifestPaths> {
+pub async fn resolve_manifest_paths(explicit_sources: Option<&Path>) -> Result<ManifestPaths> {
     let config = load_project_manifest_config().await?;
 
     let sources = explicit_sources

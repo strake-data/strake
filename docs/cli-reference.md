@@ -48,7 +48,7 @@ Initialize a new Strake project with a template configuration.
 <span class="type">command</span>
 </div>
 
-Check your configuration for syntax and connectivity errors.
+Verify configuration validity, detect live schema drift, and optionally emit a machine-readable CI receipt or notify a webhook.
 
 **Options:**
 
@@ -56,10 +56,57 @@ Check your configuration for syntax and connectivity errors.
 :   Path to the configuration file to validate.
 
 `--offline` : `bool`, *default: false*
-:   Skip network connectivity checks and perform only local schema validation.
+:   Skip semantic validation (network calls) and perform only local syntax validation.
 
-`--ci` : `bool`, *default: false*
-:   Strict mode: fail on warnings (coercions, drift). Useful for CI/CD pipelines.
+`--fail-on-warnings` : `bool`, *default: false*
+:   Strict mode: treat warnings (coercions, drift) as hard validation failures and exit with code `1`.
+
+`--dry-run` : `bool`, *default: false*
+:   Compute and print the live schema diff, but skip sending webhook notifications. Exits with code `3`.
+
+`--notify-url` : `str`, *optional*
+:   Callback URL to POST the `ValidateReceipt` JSON to on success (only fires if not a dry-run).
+
+---
+
+#### Machine-Readable Output
+
+When running with the global `--output json` flag, `validate` emits a structured JSON receipt (`ValidateReceipt`) that is versioned and ideal for consumption by CI/CD pipelines:
+
+```json
+{
+  "receipt_version": 1,
+  "validated_at": "2026-06-04T19:58:15Z",
+  "actor": "git-sha-or-profile",
+  "domain": "my-domain",
+  "valid": true,
+  "errors": [],
+  "warnings": [],
+  "dry_run": false,
+  "drift_detected": false,
+  "duration_ms": 142
+}
+```
+
+**JSON Fields:**
+- `receipt_version` (`u32`): Schema version of the receipt format (currently `1`).
+- `validated_at` (`string`): ISO 8601 timestamp at which validation completed.
+- `actor` (`string`): Identity derived from the `STRAKE_ACTOR` or `STRAKE_PROFILE` environment variables.
+- `domain` (`string`): Domain name defined in `sources.yaml`, or `"default"` if absent.
+- `valid` (`bool`): Whether the configuration passed all validation checks.
+- `errors` (`array[string]`): List of validation errors, if any.
+- `warnings` (`array[string]`): Non-fatal warnings (e.g., coercible drift, missing optional fields).
+- `dry_run` (`bool`): Indicates if this was run with the `--dry-run` flag.
+- `drift_detected` (`bool`): Whether column/schema drift was detected between the local configuration and live remote databases.
+- `duration_ms` (`u64`): Total execution time of the validation run in milliseconds.
+
+#### Exit Codes
+
+The command returns distinct exit codes for CI integration:
+- `0` (Success): Configuration is valid, with no errors or warnings.
+- `1` (Error): Validation failed, or warnings were treated as errors via `--fail-on-warnings`.
+- `2` (Warnings): Validation passed, but non-fatal warnings/drift were detected.
+- `3` (Dry Run): Command was run with `--dry-run`; diff was printed, webhook skipped.
 
 ---
 

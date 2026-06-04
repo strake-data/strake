@@ -1,3 +1,32 @@
+//! # Semantic Impact Analysis
+//!
+//! Build reference graphs to analyze downstream dependencies on schema changes.
+//!
+//! ## Overview
+//!
+//! Resolves relationships between sources, tables, columns, and verification contracts
+//! or access policies. Predicts severity of change impacts statically.
+//!
+//! ## Usage
+//!
+//! ```ignore
+//! // let graph = ReferenceGraph::build(&sources, &contracts);
+//! // let impact = graph.impact_of(&changes, &sources);
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Constructing the ReferenceGraph has O(N + E) complexity where N is nodes (tables, columns)
+//! and E is edges (contracts, policies). Traverses graphs recursively on change impact triggers.
+//!
+//! ## Safety
+//!
+//! Standard safe Rust.
+//!
+//! ## Errors
+//!
+//! Returns empty predictions or ignores unknown paths on parse failure.
+
 use regex::Regex;
 use serde::Serialize;
 use std::collections::HashMap;
