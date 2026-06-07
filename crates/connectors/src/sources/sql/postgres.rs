@@ -72,7 +72,27 @@ fn build_pg_params(
     for host in config.get_hosts() {
         match host {
             Host::Tcp(h) => {
-                params.insert("host".to_string(), SecretString::from(h.clone()));
+                let resolved_host = if h == "localhost" {
+                    h.clone()
+                } else {
+                    use std::net::ToSocketAddrs;
+                    if let Ok(mut addrs) = (h.as_str(), 0).to_socket_addrs() {
+                        if let Some(addr) = addrs.next() {
+                            let ip = addr.ip().to_string();
+                            tracing::debug!(
+                                "Postgres: resolved host '{}' to '{}' using system DNS",
+                                h,
+                                ip
+                            );
+                            ip
+                        } else {
+                            h.clone()
+                        }
+                    } else {
+                        h.clone()
+                    }
+                };
+                params.insert("host".to_string(), SecretString::from(resolved_host));
             }
             #[cfg(unix)]
             Host::Unix(_) => {
@@ -274,6 +294,27 @@ mod tests {
         assert_eq!(
             params.get("sslmode").map(|s| s.expose_secret()),
             Some("prefer")
+        );
+    }
+
+    #[test]
+    fn test_build_pg_params_dns_resolution() {
+        // If we pass an IP address, it should remain the IP address
+        let conn_str =
+            "postgres://db_user:secure_password@127.0.0.1:5432/production_db?sslmode=prefer";
+        let params = build_pg_params(conn_str, 10).expect("Failed to build params");
+        assert_eq!(
+            params.get("host").map(|s| s.expose_secret()),
+            Some("127.0.0.1")
+        );
+
+        // If we pass localhost, it stays "localhost" due to bypass
+        let conn_str =
+            "postgres://db_user:secure_password@localhost:5432/production_db?sslmode=prefer";
+        let params = build_pg_params(conn_str, 10).expect("Failed to build params");
+        assert_eq!(
+            params.get("host").map(|s| s.expose_secret()),
+            Some("localhost")
         );
     }
 }

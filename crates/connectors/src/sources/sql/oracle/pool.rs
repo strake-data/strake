@@ -80,35 +80,44 @@ impl CustomizeConnection<Arc<Connection>, bb8_oracle::Error> for SetTimezoneCust
     }
 }
 
+fn parse_oracle_connect_string(
+    connection_string: &str,
+) -> std::result::Result<(String, String, String), rust_oracle::Error> {
+    let url = url::Url::parse(connection_string).map_err(|e| {
+        rust_oracle::Error::new(rust_oracle::ErrorKind::InternalError, e.to_string())
+    })?;
+
+    let user = url.username().to_string();
+    let password = url.password().unwrap_or("").to_string();
+    let host = url.host_str().unwrap_or("localhost");
+    let port = url.port();
+    let service_name = url.path().trim_start_matches('/');
+
+    let connect_string = if port.is_none() && service_name.is_empty() {
+        host.to_string()
+    } else {
+        let port = port.unwrap_or(1521);
+        format!("{}:{}/{}", host, port, service_name)
+    };
+
+    Ok((user, password, connect_string))
+}
+
 impl OracleConnectionPool {
     /// Creates a new `OracleConnectionPool` with the given connection string and pool size.
     pub async fn new(connection_string: &str, pool_size: usize) -> Result<Self> {
         tracing::info!("Oracle: creating connection pool");
 
-        // Simple URI parsing for oracle://user:password@host:port/service_name
-        let url = url::Url::parse(connection_string).map_err(|e| {
-            rust_oracle::Error::new(rust_oracle::ErrorKind::InternalError, e.to_string())
-        })?;
-
-        let user = url.username();
-        let password = url.password().unwrap_or("");
-        let host = url.host_str().unwrap_or("localhost");
-        let port = url.port().unwrap_or(1521);
-        let service_name = url.path().trim_start_matches('/');
+        let (user, password, connect_string) = parse_oracle_connect_string(connection_string)
+            .map_err(OraclePoolError::ConnectionError)?;
 
         tracing::debug!(
-            "Oracle: connector params: user={}, host={}, port={}, service={}",
+            "Oracle: connector params: user={}, connect_string={}",
             user,
-            host,
-            port,
-            service_name
+            connect_string
         );
 
-        let connector = Connector::new(
-            user,
-            password,
-            format!("{}:{}/{}", host, port, service_name),
-        );
+        let connector = Connector::new(&user, &password, connect_string);
 
         let manager = OracleConnectionManager::from_connector(connector);
 
@@ -161,5 +170,30 @@ impl
 
     fn join_push_down(&self) -> JoinPushDown {
         JoinPushDown::Disallow
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_oracle_connect_string_ezconnect() {
+        let conn_str = "oracle://system:password123@localhost:1521/FREEPDB1";
+        let (user, password, connect_string) = parse_oracle_connect_string(conn_str).unwrap();
+
+        assert_eq!(user, "system");
+        assert_eq!(password, "password123");
+        assert_eq!(connect_string, "localhost:1521/FREEPDB1");
+    }
+
+    #[test]
+    fn test_parse_oracle_connect_string_tns_alias() {
+        let conn_str = "oracle://system:password123@MY_PROD_DB";
+        let (user, password, connect_string) = parse_oracle_connect_string(conn_str).unwrap();
+
+        assert_eq!(user, "system");
+        assert_eq!(password, "password123");
+        assert_eq!(connect_string, "MY_PROD_DB");
     }
 }
