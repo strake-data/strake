@@ -41,6 +41,10 @@ class SandboxConfig:
     READY_TIMEOUT: float = 10.0
     DEFAULT_POOL_SIZE: int = 2
 
+    enable_fc_pool: bool = False
+    fc_pool_size: int = 2
+    fc_uffd_socket: str | None = None
+
     @property
     def marker_start(self) -> str:
         return self.MARKER_START
@@ -64,7 +68,35 @@ class SandboxConfig:
             logger.warning("Invalid SANDBOX_MEMORY_LIMIT, using default")
             memory = 512 * 1024 * 1024
 
-        return cls(timeout_secs=timeout, memory_limit_bytes=memory)
+        enable_fc_pool = os.environ.get("STRAKE_FC_POOL_ENABLED", "false").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+
+        try:
+            fc_pool_size = int(os.environ.get("STRAKE_FC_POOL_SIZE", "2"))
+        except ValueError:
+            logger.warning("Invalid STRAKE_FC_POOL_SIZE, using default")
+            fc_pool_size = 2
+
+        fc_uffd_socket = os.environ.get("STRAKE_FC_UFFD_SOCKET") or None
+
+        if fc_pool_size < 0:
+            raise ValueError(f"fc_pool_size must be non-negative, got {fc_pool_size}")
+
+        if enable_fc_pool and fc_pool_size == 0:
+            raise ValueError(
+                f"fc_pool_size must be > 0 when pooling is enabled, got {fc_pool_size}"
+            )
+
+        return cls(
+            timeout_secs=timeout,
+            memory_limit_bytes=memory,
+            enable_fc_pool=enable_fc_pool,
+            fc_pool_size=fc_pool_size,
+            fc_uffd_socket=fc_uffd_socket,
+        )
 
 
 @dataclass(frozen=True)
@@ -420,7 +452,6 @@ class NativeOSSandboxManager(SandboxManager):
         # This is a fast-path layer 1 guardrail.
         ast_error = validate_ast(code)
         if ast_error:
-
             logger.warning(
                 "Sandbox security violation: %s (hash=%s)",
                 ast_error,
@@ -450,7 +481,9 @@ class NativeOSSandboxManager(SandboxManager):
 
             loop = asyncio.get_running_loop()
             is_ready = False
-            poll_result = await loop.run_in_executor(None, lambda: parent_conn.poll(10.0))
+            poll_result = await loop.run_in_executor(
+                None, lambda: parent_conn.poll(10.0)
+            )
             if poll_result:
                 msg = parent_conn.recv()
                 if isinstance(msg, dict) and msg.get("status") == "ready":
@@ -594,7 +627,6 @@ class MacOSSandboxManager(NativeOSSandboxManager):
         # 1. AST Validation (Defense in Depth)
         ast_error = validate_ast(code)
         if ast_error:
-
             logger.warning(
                 "Sandbox security violation: %s (hash=%s)",
                 ast_error,
@@ -666,7 +698,9 @@ class MacOSSandboxManager(NativeOSSandboxManager):
 
             # Set parent soft limits to the requested sandbox bounds
             resource.setrlimit(resource.RLIMIT_CPU, (int(timeout) + 2, old_cpu[1]))
-            resource.setrlimit(resource.RLIMIT_AS, (config.memory_limit_bytes, old_mem[1]))
+            resource.setrlimit(
+                resource.RLIMIT_AS, (config.memory_limit_bytes, old_mem[1])
+            )
 
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -750,7 +784,9 @@ class MacOSSandboxManager(NativeOSSandboxManager):
                 f"sandbox-exec not found at {self._SEATBELT_EXECUTABLE}. "
                 "Falling back to rlimit-only sandbox."
             )
-            return await super().run(code, timeout_secs, execution_context=execution_context)
+            return await super().run(
+                code, timeout_secs, execution_context=execution_context
+            )
         except Exception as e:
             logger.error(f"Seatbelt sandbox execution failed: {e}")
             return SandboxResult(

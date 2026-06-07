@@ -4,6 +4,17 @@
 //! agents, handling automatic lifecycle management, health checks,
 //! and jittered exponential backoff retries.
 //!
+//! # Configuration Pipeline
+//!
+//! To prevent sensitive configuration settings (such as endpoint URLs and agent guard modes)
+//! from being exposed in environment variables or command-line flags visible to other processes
+//! on the host machine, the supervisor transmits configurations using a secure standard
+//! input (`stdin`) pipeline.
+//!
+//! When the sidecar is spawned, the supervisor redirects its `stdin` using `Stdio::piped()`,
+//! serializes a [`SidecarConfigPayload`] JSON structure, writes it asynchronously to the
+//! child process, and closes the pipe (EOF) to signal completion.
+//!
 //! # Safety
 //!
 //! The supervisor uses `kill_on_drop(true)` to ensure child processes
@@ -19,6 +30,25 @@ use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::{Instrument, info_span};
+
+/// The configuration payload serialized to JSON and piped into the Python MCP sidecar's stdin.
+#[derive(Debug, Clone, serde::Serialize)]
+struct SidecarConfigPayload {
+    /// The gRPC URL of the Strake server.
+    strake_url: String,
+    /// The environment mode (e.g. "production", "development").
+    strake_env: String,
+    /// Whether Firecracker MicroVMs are enabled for sandboxing.
+    strake_use_firecracker: bool,
+    /// The agent guard safety mode ("disabled", "dry_run", "enforce").
+    strake_agent_guard_mode: String,
+    /// Whether to enable the Firecracker pre-warmed microVM pool.
+    enable_fc_pool: bool,
+    /// The target size of the pre-warmed VM pool.
+    fc_pool_size: usize,
+    /// Path to userfaultfd (UFFD) listener socket for fast paging.
+    fc_uffd_socket: Option<String>,
+}
 
 /// Errors encountered during sidecar process management.
 #[derive(Error, Debug)]
@@ -170,16 +200,26 @@ pub async fn spawn_sidecar(config: &AppConfig) -> anyhow::Result<Option<SidecarH
                     "Starting MCP Sidecar..."
                 );
 
+                let config_payload = SidecarConfigPayload {
+                    strake_url: strake_url.clone(),
+                    strake_env: mcp_config.environment.to_string(),
+                    strake_use_firecracker: mcp_config.use_firecracker,
+                    strake_agent_guard_mode: agent_guard_mode.clone(),
+                    enable_fc_pool: mcp_config.enable_fc_pool,
+                    fc_pool_size: mcp_config.fc_pool_size,
+                    fc_uffd_socket: mcp_config.fc_uffd_socket.clone(),
+                };
+
                 let mut child = match Command::new(&python_bin)
                     .env("PYTHONPATH", &python_path)
-                    .env("STRAKE_URL", &strake_url)
-                    .env("STRAKE_ENV", mcp_config.environment.to_string())
-                    .env("STRAKE_USE_FIRECRACKER", if mcp_config.use_firecracker { "true" } else { "false" })
-                    .env("STRAKE_AGENT_GUARD_MODE", &agent_guard_mode)
                     .arg("-m")
                     .arg("strake.mcp")
                     .arg("--port")
                     .arg(mcp_config.port.to_string())
+                    .arg("--transport")
+                    .arg("sse")
+                    .arg("--stdin-config")
+                    .stdin(Stdio::piped())
                     .stdout(Stdio::inherit())
                     .stderr(Stdio::inherit())
                     .kill_on_drop(true) // Required to prevent process leaks on task abort
@@ -195,6 +235,32 @@ pub async fn spawn_sidecar(config: &AppConfig) -> anyhow::Result<Option<SidecarH
                         continue;
                     }
                 };
+
+                let mut write_failed = false;
+                if let Some(mut stdin) = child.stdin.take() {
+                    match serde_json::to_string(&config_payload) {
+                        Ok(config_json) => {
+                            use tokio::io::AsyncWriteExt;
+                            if let Err(e) = stdin.write_all(config_json.as_bytes()).await {
+                                tracing::error!(error = %e, "Failed to write config JSON to sidecar stdin");
+                                write_failed = true;
+                            } else {
+                                drop(stdin); // Explicitly drop to close the pipe and send EOF
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "Failed to serialize sidecar config payload");
+                            write_failed = true;
+                        }
+                    }
+                }
+
+                if write_failed {
+                    consecutive_failures += 1;
+                    let sleep_ms = calculate_backoff(consecutive_failures);
+                    tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+                    continue;
+                }
 
                 let mut health_interval = tokio::time::interval(Duration::from_millis(mcp_config.health_check_interval_ms));
                 health_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

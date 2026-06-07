@@ -156,3 +156,12 @@ pub(crate) fn default_mcp_health_check_interval_ms() -> u64 {
 pub(crate) fn default_mcp_cooldown_secs() -> u64 {
     30
 }
+pub(crate) fn default_enable_fc_pool() -> bool {
+    false
+}
+pub(crate) fn default_fc_pool_size() -> usize {
+    2
+}
+pub(crate) fn default_fc_uffd_socket() -> Option<String> {
+    None
+}

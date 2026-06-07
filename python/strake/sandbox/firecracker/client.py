@@ -79,8 +79,12 @@ class UnixSocketHttpClient:
 
                     from email.parser import BytesParser
 
+                    # Strip the HTTP status line before parsing headers
+                    header_lines = headers_part.split(b"\r\n", 1)
+                    headers_only = header_lines[1] if len(header_lines) > 1 else b""
+
                     # Use standard library BytesParser to handle HTTP headers in a typed, case-insensitive way
-                    headers = BytesParser().parsebytes(headers_part)
+                    headers = BytesParser().parsebytes(headers_only)
                     content_length_val = headers.get("Content-Length")
                     content_length = None
                     if content_length_val is not None:

@@ -79,6 +79,15 @@ pub struct McpConfig {
     /// Whether to use Firecracker microVMs for sidecar isolation.
     #[serde(default = "default_use_firecracker")]
     pub use_firecracker: bool,
+    /// Whether to enable the Firecracker microVM pre-warmed pool.
+    #[serde(default = "default_enable_fc_pool")]
+    pub enable_fc_pool: bool,
+    /// Target count of pre-warmed VMs to maintain in the pool.
+    #[serde(default = "default_fc_pool_size")]
+    pub fc_pool_size: usize,
+    /// Path to userfaultfd (UFFD) listener socket for fast paging.
+    #[serde(default = "default_fc_uffd_socket")]
+    pub fc_uffd_socket: Option<String>,
 }
 
 impl McpConfig {
@@ -106,6 +115,9 @@ impl Default for McpConfig {
             cooldown_secs: default_mcp_cooldown_secs(),
             health_check_url: None,
             use_firecracker: default_use_firecracker(),
+            enable_fc_pool: default_enable_fc_pool(),
+            fc_pool_size: default_fc_pool_size(),
+            fc_uffd_socket: default_fc_uffd_socket(),
         }
     }
 }

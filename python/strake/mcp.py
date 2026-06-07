@@ -212,7 +212,7 @@ async def get_schema_details(fqn: str) -> Any:
 
     Args:
         fqn: Fully qualified table name (e.g. `schema.table` or `catalog.schema.table`)
-    
+
     Returns:
         List of column metadata dictionaries for the table.
     """
@@ -276,9 +276,7 @@ async def run_python(script: str) -> Any:
     logger.info("Received run_python request")
     try:
         sandbox = await _SERVER.get_sandbox()
-        async with _tool_span(
-            "run_python", **code_field(script)
-        ) as span_meta:
+        async with _tool_span("run_python", **code_field(script)) as span_meta:
             guard_mode = os.environ.get("STRAKE_AGENT_GUARD_MODE", "dry_run")
             result = await sandbox.run(
                 script,
@@ -293,6 +291,47 @@ async def run_python(script: str) -> Any:
         return types.CallToolResult(
             isError=True, content=[types.TextContent(type="text", text=f"Error: {exc}")]
         )
+
+
+STDIN_CONFIG_MAPPING: dict[str, str] = {
+    "strake_url": "STRAKE_URL",
+    "strake_env": "STRAKE_ENV",
+    "strake_use_firecracker": "STRAKE_USE_FIRECRACKER",
+    "strake_agent_guard_mode": "STRAKE_AGENT_GUARD_MODE",
+    "enable_fc_pool": "STRAKE_FC_POOL_ENABLED",
+    "fc_pool_size": "STRAKE_FC_POOL_SIZE",
+    "fc_uffd_socket": "STRAKE_FC_UFFD_SOCKET",
+}
+
+
+def load_stdin_config() -> None:
+    """Reads and applies configuration from the stdin JSON pipeline.
+
+    Injects recognized configuration keys into the local ``os.environ``
+    context to keep downstream modules backward-compatible.
+
+    Raises:
+        json.JSONDecodeError: If standard input contains malformed JSON.
+        OSError: If reading from standard input fails.
+        ValueError: If configuration values are invalid.
+    """
+    import json
+
+    try:
+        data = sys.stdin.read()
+        if data.strip():
+            config = json.loads(data)
+            for json_key, env_var in STDIN_CONFIG_MAPPING.items():
+                if json_key in config and config[json_key] is not None:
+                    val = config[json_key]
+                    if isinstance(val, bool):
+                        os.environ[env_var] = "true" if val else "false"
+                    else:
+                        os.environ[env_var] = str(val)
+            logger.info("Successfully loaded configuration from stdin JSON pipeline")
+    except (json.JSONDecodeError, OSError, ValueError) as e:
+        logger.critical(f"Failed to read or parse stdin config: {e}")
+        raise
 
 
 def main():
@@ -312,8 +351,16 @@ def main():
     parser.add_argument(
         "--config", type=str, help="Path to strake.yaml for embedded execution"
     )
+    parser.add_argument(
+        "--stdin-config",
+        action="store_true",
+        help="Read configuration from standard input JSON pipeline",
+    )
 
     args = parser.parse_args()
+
+    if args.stdin_config:
+        load_stdin_config()
 
     if args.config:
         _SERVER.set_config_path(args.config)

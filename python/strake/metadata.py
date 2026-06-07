@@ -57,7 +57,6 @@ class InformationSchemaEnricher:
         dialects: dict[str, str] = {}
         try:
             if hasattr(self.connection, "list_sources"):
-
                 sources_json = self.connection.list_sources()
                 sources = json.loads(sources_json)
                 for s in sources:
@@ -196,9 +195,7 @@ class InformationSchemaEnricher:
         """
         return self._execute_and_parse(s_source, query)
 
-    def _try_mysql(
-        self, source: str
-    ) -> dict[tuple[str, str, str | None], str] | None:
+    def _try_mysql(self, source: str) -> dict[tuple[str, str, str | None], str] | None:
         # MySQL / MariaDB: COLUMN_COMMENT in information_schema.COLUMNS
         s_source = sanitize_identifier(source)
         query = f"""
@@ -209,9 +206,7 @@ class InformationSchemaEnricher:
         """
         return self._execute_and_parse(s_source, query)
 
-    def _try_sqlite(
-        self, source: str
-    ) -> dict[tuple[str, str, str | None], str] | None:
+    def _try_sqlite(self, source: str) -> dict[tuple[str, str, str | None], str] | None:
         # SQLite: Parse inline -- comments from CREATE TABLE DDL (best-effort)
         # We query sqlite_master for the DDL, then parse it.
         s_source = sanitize_identifier(source)

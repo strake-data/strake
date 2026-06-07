@@ -298,6 +298,8 @@ class MicroVMLifecycle:
         mem_path: str,
         snapshot_created: bool,
         api_timeout: float,
+        *,
+        rootfs_path: Optional[str] = None,
     ) -> None:
         """Restore the microVM state from an existing snapshot, or fallback to cold boot.
 
@@ -308,26 +310,36 @@ class MicroVMLifecycle:
             mem_path: Path to the saved VM memory file.
             snapshot_created: True if the snapshot files have been successfully created.
             api_timeout: Timeout duration for each API call.
+            rootfs_path: Optional path to a cloned rootfs disk image for copy-on-write isolation.
 
         Raises:
             RuntimeError: If any of the setup API requests fail.
         """
+        r_path = rootfs_path or self.rootfs_path
         if (
             snapshot_created
             and os.path.exists(snapshot_path)
-            and os.path.exists(mem_path)
+            and (os.path.exists(mem_path) or self.config.fc_uffd_socket)
         ):
             logger.info("Resuming Firecracker microVM from template snapshot...")
+            snapshot_load_body = {
+                "snapshot_path": snapshot_path,
+                "enable_diff_snapshots": False,
+                "resume_vm": False,
+            }
+            if self.config.fc_uffd_socket:
+                snapshot_load_body["mem_backend"] = {
+                    "backend_path": self.config.fc_uffd_socket,
+                    "backend_type": "Uffd",
+                }
+            else:
+                snapshot_load_body["mem_file_path"] = mem_path
+
             await self.api_request_fn(
                 socket_path,
                 "PUT",
                 "/snapshot/load",
-                {
-                    "snapshot_path": snapshot_path,
-                    "mem_file_path": mem_path,
-                    "enable_diff_snapshots": False,
-                    "resume_vm": False,
-                },
+                snapshot_load_body,
                 timeout=api_timeout,
             )
             await self.api_request_fn(
@@ -336,7 +348,7 @@ class MicroVMLifecycle:
                 "/drives/rootfs",
                 {
                     "drive_id": "rootfs",
-                    "path_on_host": self.rootfs_path,
+                    "path_on_host": r_path,
                 },
                 timeout=api_timeout,
             )
@@ -366,7 +378,7 @@ class MicroVMLifecycle:
                 "/drives/rootfs",
                 {
                     "drive_id": "rootfs",
-                    "path_on_host": self.rootfs_path,
+                    "path_on_host": r_path,
                     "is_root_device": True,
                     "is_read_only": False,
                 },

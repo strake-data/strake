@@ -323,7 +323,9 @@ class StrakeShim:
                                         config["schema_indexing"]["enable_descriptions"]
                                     )
                         except Exception as e:
-                            logger.warning(f"Failed to parse config for schema descriptions: {e}")
+                            logger.warning(
+                                f"Failed to parse config for schema descriptions: {e}"
+                            )
 
                     if enable_descriptions:
                         enricher = InformationSchemaEnricher(conn)
