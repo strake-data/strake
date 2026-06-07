@@ -54,7 +54,7 @@ server:
     cache_ttl_secs: 600
     cache_max_capacity: 20000
 
-  # Audit logging (Enterprise)
+  # Audit logging 
   audit:
     enabled: true
     failure_mode: alert
@@ -259,7 +259,10 @@ Manages the Model Context Protocol (MCP) sidecar process configuration.
 | `mcp.max_output_rows` | `integer` | `1000` | Maximum rows returned in a single MCP interaction block. |
 | `mcp.cooldown_secs` | `integer` | `30` | Cool-down period in seconds after sidecar process crash before attempting reboot. |
 | `mcp.health_check_url` | `string` | `None` | Endpoint for sidecar HTTP ping checks. |
-| `mcp.use_firecracker` | `boolean` | `false` | Enable Firecracker microVM execution for sidecar sandboxing (Enterprise). |
+| `mcp.use_firecracker` | `boolean` | `false` | Enable Firecracker microVM execution for sidecar sandboxing. |
+| `mcp.enable_fc_pool` | `boolean` | `false` | Enable Firecracker microVM pre-warmed pool. |
+| `mcp.fc_pool_size` | `integer` | `2` | Target count of pre-warmed VMs to maintain in the pool. |
+| `mcp.fc_uffd_socket` | `string` | `None` | Path to userfaultfd (UFFD) listener socket for fast paging. |
 
 ---
 
