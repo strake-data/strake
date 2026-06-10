@@ -14,7 +14,7 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 secrecy = { workspace = true, features = ["serde"] }
 config = "0.15"
-validator = { version = "0.19", features = ["derive"] }
+validator = { version = "0.20", features = ["derive"] }
 tracing-subscriber = { workspace = true, features = ["registry"] }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true, features = ["grpc-tonic", "trace", "metrics"] }

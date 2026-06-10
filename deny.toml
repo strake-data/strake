@@ -7,6 +7,7 @@ ignore = [
     "RUSTSEC-2024-0436", # paste unmaintained
     "RUSTSEC-2026-0118", # hickory-proto NSEC3 unbounded loop
     "RUSTSEC-2026-0119", # hickory-proto CPU exhaustion
+    "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained
 ]
 
 [licenses]
