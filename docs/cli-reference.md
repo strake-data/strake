@@ -176,7 +176,7 @@ Aggregated health view of a domain, including source reachability, contract viol
 <span class="type">command</span>
 </div>
 
-Search for tables and schemas in an upstream source.
+Search for tables and schemas in an upstream source. If the source is configured in the local configuration file (e.g., Postgres, MySQL, ClickHouse, SQLite, DuckDB, or Oracle), `search` connects directly to the database using the local introspector. Otherwise, it queries the remote Strake API.
 
 **Options:**
 
