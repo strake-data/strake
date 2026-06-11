@@ -101,6 +101,8 @@ jobs:
       - name: Build (native & aarch64 cross)
         if: matrix.target != 'x86_64-unknown-linux-musl'
         run: cargo build --release -p strake-cli -p strake-server -p strake-enterprise --target ${{ matrix.target }}
+        env:
+          CXXFLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '/std:c++17' || '' }}
         
       - name: Build (x86_64 musl in Docker)
         if: matrix.target == 'x86_64-unknown-linux-musl'
@@ -178,6 +180,8 @@ jobs:
           
       - name: Build Wheels
         uses: PyO3/maturin-action@v1
+        env:
+          CXXFLAGS: ${{ matrix.os == 'windows-latest' && '/std:c++17' || '' }}
         with:
           working-directory: python
           args: --release --out dist --find-interpreter
