@@ -24,8 +24,8 @@ import threading
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, TypeVar
-from ..utils import get_strake_dir
+from typing import Any, Callable, TypeVar
+from strake.utils import get_strake_dir
 
 logger = logging.getLogger("strake.tracing")
 
@@ -68,7 +68,7 @@ class TraceEmitter(ABC):
     """Pluggable sink for trace records."""
 
     @abstractmethod
-    def emit(self, record: Dict[str, Any]) -> None:
+    def emit(self, record: dict[str, Any]) -> None:
         """Persist a single trace record."""
 
     def flush(self) -> None:
@@ -78,7 +78,7 @@ class TraceEmitter(ABC):
 class NullEmitter(TraceEmitter):
     """Drop-all emitter used when tracing is disabled."""
 
-    def emit(self, record: Dict[str, Any]) -> None:
+    def emit(self, record: dict[str, Any]) -> None:
         pass
 
 
@@ -89,11 +89,11 @@ class JsonLinesFileEmitter(TraceEmitter):
     easy correlation and cleanup.
     """
 
-    def __init__(self, trace_dir: Optional[Path] = None):
+    def __init__(self, trace_dir: Path | None = None):
         self._dir = trace_dir or _trace_dir()
         self._dir.mkdir(parents=True, exist_ok=True)
         self._file = None
-        self._path: Optional[Path] = None
+        self._path: Path | None = None
 
     @property
     def trace_dir(self) -> Path:
@@ -106,7 +106,7 @@ class JsonLinesFileEmitter(TraceEmitter):
             self._path = self._dir / f"{today}_{session_id}.jsonl"
             self._file = open(self._path, "a", encoding="utf-8")
 
-    def emit(self, record: Dict[str, Any]) -> None:
+    def emit(self, record: dict[str, Any]) -> None:
         session_id = record.get("session_id", "unknown")
         self._ensure_file(session_id)
         if self._file is None:
@@ -128,11 +128,11 @@ class JsonLinesFileEmitter(TraceEmitter):
 # ---------------------------------------------------------------------------
 
 # Module-level singleton — created lazily.
-_emitter: Optional[TraceEmitter] = None
+_emitter: TraceEmitter | None = None
 _emitter_lock = threading.Lock()
 
 
-def get_emitter(trace_dir: Optional[Path | str] = None) -> TraceEmitter:
+def get_emitter(trace_dir: Path | str | None = None) -> TraceEmitter:
     """Return the module-level emitter, creating or reconfiguring it on call.
 
     If *trace_dir* is provided, the emitter is updated to write to that
@@ -207,19 +207,19 @@ class AgentSession:
 
     def __init__(
         self,
-        emitter: Optional[TraceEmitter] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        emitter: TraceEmitter | None = None,
+        metadata: dict[str, Any] | None = None,
     ):
         self.session_id: str = uuid.uuid4().hex
         self.emitter: TraceEmitter = emitter or get_emitter()
-        self.metadata: Dict[str, Any] = metadata or {}
+        self.metadata: dict[str, Any] = metadata or {}
         self._start_ns: int = 0
         self._terminated = False
         self.termination_reason: str = "natural"
 
     # -- context manager --
 
-    def __enter__(self) -> "AgentSession":
+    def __enter__(self) -> AgentSession:
         self._start_ns = time.monotonic_ns()
         self.emitter.emit(
             {
@@ -249,9 +249,7 @@ class AgentSession:
 
     # -- public helpers --
 
-    def record_event(
-        self, event_type: str, data: Optional[Dict[str, Any]] = None
-    ) -> None:
+    def record_event(self, event_type: str, data: dict[str, Any] | None = None) -> None:
         """Emit an arbitrary event record under this session."""
         self.emitter.emit(
             {
@@ -270,7 +268,7 @@ class AgentSession:
 
 def span(
     span_type: str = "tool_call",
-    name: Optional[str] = None,
+    name: str | None = None,
     capture_args: bool = False,
 ) -> Callable[[F], F]:
     """Decorator that emits a structured span record around a function.
@@ -308,7 +306,7 @@ def span(
                     raise
                 finally:
                     elapsed_ms = (time.monotonic_ns() - start) / 1_000_000
-                    record: Dict[str, Any] = {
+                    record: dict[str, Any] = {
                         "event": "span",
                         "span_type": span_type,
                         "name": label,
@@ -343,7 +341,7 @@ def span(
                     raise
                 finally:
                     elapsed_ms = (time.monotonic_ns() - start) / 1_000_000
-                    record: Dict[str, Any] = {
+                    record: dict[str, Any] = {
                         "event": "span",
                         "span_type": span_type,
                         "name": label,
@@ -373,7 +371,7 @@ def hash_code(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 
-def code_field(code: str) -> Dict[str, Any]:
+def code_field(code: str) -> dict[str, Any]:
     """Return the appropriate code representation based on config.
 
     When ``STRAKE_TRACE_CODE=true`` the full text is included; otherwise only
@@ -393,9 +391,9 @@ def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _summarise_args(args: tuple, kwargs: dict) -> Dict[str, Any]:
+def _summarise_args(args: tuple, kwargs: dict) -> dict[str, Any]:
     """Best-effort JSON-safe summary of call arguments."""
-    summary: Dict[str, Any] = {}
+    summary: dict[str, Any] = {}
     if args:
         safe = []
         for a in args:
@@ -417,7 +415,7 @@ def _summarise_args(args: tuple, kwargs: dict) -> Dict[str, Any]:
     return summary
 
 
-def _add_result_meta(record: Dict[str, Any], result: Any) -> None:
+def _add_result_meta(record: dict[str, Any], result: Any) -> None:
     """Add result metadata (size, type) to a span record without capturing content."""
     if result is None:
         return

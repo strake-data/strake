@@ -1,14 +1,15 @@
-import sys
-import os
-import resource
+# Standard Library
 import json
 import logging
-from typing import Optional
+import os
+import resource
+import sys
 
-from strake.sandbox.core import _sandbox_worker_inner, validate_ast
-from strake.sandbox.base import SandboxResult, SandboxErrorMessages
-from strake.sandbox.native import SandboxConfig
+# Local Application Imports
 from strake import StrakeConnection
+from strake.sandbox.base import SandboxErrorMessages, SandboxResult
+from strake.sandbox.core import _sandbox_worker_inner, validate_ast
+from strake.sandbox.native import SandboxConfig
 
 # Configure secure logging to stderr (which is captured by the parent)
 # Avoid world-writable /tmp files to prevent symlink attacks.

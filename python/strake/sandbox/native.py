@@ -14,7 +14,7 @@ import threading
 import concurrent.futures
 import weakref
 import re
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar
 
 # Local Application Imports
 from strake.sandbox.base import SandboxManager, SandboxResult, SandboxErrorMessages
@@ -241,14 +241,14 @@ class NativeOSSandboxManager(SandboxManager):
     # Class-level pool configuration: per-subclass dict keyed by os_type.
     # [Security/Robustness] This dict is shared across all subclasses.
     # Keys are differentiated by self._get_os_type() to ensure isolation.
-    _pools: ClassVar[Dict[str, List[Tuple[mp.Process, mp.connection.Connection]]]] = {}
+    _pools: ClassVar[dict[str, list[tuple[mp.Process, mp.connection.Connection]]]] = {}
     _pools_lock = threading.Lock()
 
     def __init__(
         self,
         connection,
-        config_path: Optional[str] = None,
-        workspace_root: Optional[str] = None,
+        config_path: str | None = None,
+        workspace_root: str | None = None,
     ):
         super().__init__(connection, config_path)
         self.workspace_root = workspace_root or os.getcwd()
@@ -401,7 +401,7 @@ class NativeOSSandboxManager(SandboxManager):
         cls,
         os_type: str,
         config_path: str | None,
-    ) -> Optional[Tuple[mp.Process, mp.connection.Connection]]:
+    ) -> tuple[mp.Process, mp.connection.Connection] | None:
         pool_key = cls._pool_key(os_type, config_path)
         with cls._pools_lock:
             pool = cls._pools.get(pool_key)
@@ -435,17 +435,17 @@ class NativeOSSandboxManager(SandboxManager):
     def _get_os_type(self) -> str:
         return "none"
 
-    def _get_timeout(self, timeout_secs: Optional[float]) -> float:
+    def _get_timeout(self, timeout_secs: float | None) -> float:
         config = SandboxConfig.from_env()
         return timeout_secs if timeout_secs is not None else config.timeout_secs
 
     async def run(
         self,
         code: str,
-        timeout_secs: Optional[float] = None,
+        timeout_secs: float | None = None,
         *,
-        execution_context: Optional[dict[str, str]] = None,
-    ) -> "SandboxResult":
+        execution_context: dict[str, str] | None = None,
+    ) -> SandboxResult:
         logger.info(f"Initializing {self._get_sandbox_name()}...")
 
         # 1. AST Validation (Defense in Depth)
@@ -615,10 +615,10 @@ class MacOSSandboxManager(NativeOSSandboxManager):
     async def run(
         self,
         code: str,
-        timeout_secs: Optional[float] = None,
+        timeout_secs: float | None = None,
         *,
-        execution_context: Optional[dict[str, str]] = None,
-    ) -> "SandboxResult":
+        execution_context: dict[str, str] | None = None,
+    ) -> SandboxResult:
         """
         Execute code inside a macOS Seatbelt sandbox.
         """
@@ -823,10 +823,10 @@ class WindowsSandboxManager(NativeOSSandboxManager):
     async def run(
         self,
         code: str,
-        timeout_secs: Optional[float] = None,
+        timeout_secs: float | None = None,
         *,
-        execution_context: Optional[dict[str, str]] = None,
-    ) -> "SandboxResult":
+        execution_context: dict[str, str] | None = None,
+    ) -> SandboxResult:
         raise NotImplementedError("WindowsSandboxManager is not yet implemented.")
 
     def _get_sandbox_name(self) -> str:

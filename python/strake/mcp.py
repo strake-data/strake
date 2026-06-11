@@ -1,13 +1,18 @@
+from __future__ import annotations
+
 # Standard Library
 import argparse
 import asyncio
+import contextlib
 import logging
 import os
 import sys
 import threading
 import time
-from typing import Any
-import contextlib
+from typing import Any, Literal, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from strake import StrakeConnection
 
 # Third-party Libraries
 from mcp.server.fastmcp import FastMCP
@@ -83,7 +88,7 @@ class MCPServer:
             raise RuntimeError("Engine already initialized. Cannot set config path.")
         self._config_path = path
 
-    def _init_connection(self) -> Any:
+    def _init_connection(self) -> StrakeConnection:
         """Initializes the StrakeConnection based on configuration."""
         from strake import StrakeConnection
 
@@ -98,7 +103,7 @@ class MCPServer:
         logger.info(f"Connecting to Strake at {url}")
         return StrakeConnection(url, api_key=token)
 
-    def _init_sandbox(self, connection: Any) -> tuple[SandboxManager, str]:
+    def _init_sandbox(self, connection: StrakeConnection) -> tuple[SandboxManager, str]:
         """Creates the appropriate SandboxManager based on environment."""
         env = os.environ.get("STRAKE_ENV", "development").lower()
         if env == "production":
@@ -174,9 +179,9 @@ async def get_sandbox() -> SandboxManager:
 async def search_schemas(
     query: str,
     include_descriptions: bool = True,
-    description_scope: Any = "tables_only",
+    description_scope: Literal["tables_only", "all", "none"] = "tables_only",
     max_description_length: int = 100,
-) -> Any:
+) -> list[dict[str, Any]] | types.CallToolResult:
     """
     Search semantic index of available database schemas (tables and columns).
     Use this to find which tables contain the data you need.
@@ -205,7 +210,7 @@ async def search_schemas(
 
 
 @mcp.tool()
-async def get_schema_details(fqn: str) -> Any:
+async def get_schema_details(fqn: str) -> list[dict[str, Any]] | types.CallToolResult:
     """
     Get the full schema metadata and descriptions for a specific table.
     Use this to inspect a table after discovering it via search_schemas.
@@ -256,7 +261,7 @@ async def get_schema_details(fqn: str) -> Any:
 
 
 @mcp.tool()
-async def run_python(script: str) -> Any:
+async def run_python(script: str) -> str | types.CallToolResult:
     """
     Execute a Python script in the Strake Safe Runtime.
 

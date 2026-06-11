@@ -1,4 +1,4 @@
-from typing import Optional
+from __future__ import annotations
 
 try:
     from ._strake import *
@@ -8,12 +8,12 @@ except ImportError:
 
 
 def connect(
-    dsn_or_config: Optional[str] = None,
-    sources_config: Optional[str] = None,
-    api_key: Optional[str] = None,
-    mode: Optional[str] = None,
-    trace_dir: Optional[str] = None,
-) -> "StrakeConnection":
+    dsn_or_config: str | None = None,
+    sources_config: str | None = None,
+    api_key: str | None = None,
+    mode: str | None = None,
+    trace_dir: str | None = None,
+) -> StrakeConnection:
     """
     Convenience function to connect to Strake.
 

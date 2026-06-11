@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional
+from typing import Any
 
 logger = logging.getLogger("strake.sandbox.policy")
 
@@ -31,7 +31,7 @@ class ScopedToken:
 
     token_str: str
     sandbox_id: str
-    claims: Dict[str, Any] = field(default_factory=dict)
+    claims: dict[str, Any] = field(default_factory=dict)
 
     def is_valid_for(self, sandbox_id: str) -> bool:
         return self.sandbox_id == sandbox_id
@@ -48,8 +48,8 @@ class SandboxAttestation:
     sandbox_id: str
     constraints_applied: list[str]
     timestamp: float
-    landlock_abi_version: Optional[int] = None
-    seatbelt_profile_hash: Optional[str] = None
+    landlock_abi_version: int | None = None
+    seatbelt_profile_hash: str | None = None
 
     def sign(self) -> str:
         """
@@ -84,8 +84,8 @@ class SandboxPolicy:
         memory_limit_mb: int = 256,
         cpu_cores: int = 1,
         strict: bool = False,
-        workspace_root: Optional[str] = None,
-        allowed_read_paths: Optional[list[str]] = None,
+        workspace_root: str | None = None,
+        allowed_read_paths: list[str] | None = None,
     ):
         """
         Defines the resource limits and access constraints for a sandbox.
@@ -105,9 +105,9 @@ class SandboxPolicy:
         self.workspace_root = workspace_root
         self.allowed_read_paths = list(allowed_read_paths or [])
         # Set during to_macos() — path to the generated SBPL profile file.
-        self._seatbelt_profile_path: Optional[str] = None
+        self._seatbelt_profile_path: str | None = None
         # Set during _apply_landlock() — detected ABI version.
-        self._landlock_abi_version: Optional[int] = None
+        self._landlock_abi_version: int | None = None
 
     # ─── Linux: Seccomp-BPF ──────────────────────────────────────────────
 

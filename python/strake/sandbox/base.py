@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 import enum
 from typing import Any
-from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -58,7 +60,7 @@ class SandboxResult:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "SandboxResult":
+    def from_dict(cls, d: dict) -> SandboxResult:
         """Reconstruct from JSON-compatible dictionary with basic validation."""
         if not isinstance(d, dict):
             return cls(

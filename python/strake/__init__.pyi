@@ -1,5 +1,5 @@
-from typing import Optional, Dict, Any, Type
 import pyarrow
+from typing import Any
 
 class StrakeConnection:
     """
@@ -9,8 +9,8 @@ class StrakeConnection:
     def __init__(
         self,
         dsn_or_config: str,
-        sources_config: Optional[str] = None,
-        api_key: Optional[str] = None,
+        sources_config: str | None = None,
+        api_key: str | None = None,
     ) -> None:
         """
         Initialize a new connection.
@@ -25,7 +25,7 @@ class StrakeConnection:
         """
         ...
 
-    def sql(self, query: str, params: Optional[Dict[str, Any]] = None) -> pyarrow.Table:
+    def sql(self, query: str, params: dict[str, Any] | None = None) -> pyarrow.Table:
         """
         Execute a SQL query and return results as a PyArrow Table.
 
@@ -44,7 +44,7 @@ class StrakeConnection:
         """
         ...
 
-    def describe(self, table_name: Optional[str] = None) -> str:
+    def describe(self, table_name: str | None = None) -> str:
         """
         Introspects the engine to list available tables or describe a specific table's schema.
 
@@ -73,9 +73,9 @@ class StrakeConnection:
 
     def __exit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        exc_value: Optional[BaseException],
-        traceback: Optional[Any],
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: Any | None,
     ) -> None:
         """Context manager support."""
         ...

@@ -1,16 +1,23 @@
+from __future__ import annotations
+
+# Standard Library
+import ast
+import contextlib
+import io
+import json
+import logging
 import os
 import sys
-import io
-import contextlib
-import logging
-import json
-import ast
-import types
-import time
 import threading
-from typing import Any, Dict, List, Optional
+import time
+import types
+from typing import Any
+
+# Third-party Libraries
 import pyarrow as pa
-from .base import SandboxResult, SandboxErrorMessages
+
+# Local Application Imports
+from strake.sandbox.base import SandboxErrorMessages, SandboxResult
 
 logger = logging.getLogger("strake.sandbox.core")
 
@@ -56,8 +63,6 @@ ALLOWED_IMPORTS = frozenset(
         # Strake itself — always injected into the context as `strake`, but allow
         # explicit `import strake` too for consistency.
         "strake",
-        # DuckDB for executing local database transformations in benchmarks
-        "duckdb",
     }
 )
 
@@ -75,6 +80,7 @@ except (AttributeError, KeyError, TypeError):
     _REAL_IMPORT = builtins.__import__
 
 _CURRENT_SHIM = None
+
 
 def _safe_import_shim(name, globals=None, locals=None, fromlist=(), level=0):
     """
@@ -109,7 +115,7 @@ class LimitedStringIO(io.StringIO):
         return super().write(s)
 
 
-def validate_ast(code: str) -> Optional[str]:
+def validate_ast(code: str) -> str | None:
     """
     Fast-path import allowlist and code-size check.
 
@@ -242,10 +248,10 @@ class SafeTableProxy:
         for i in range(0, table.num_rows, batch_size):
             yield SafeBatchProxy(table.slice(i, batch_size))
 
-    def to_pylist(self) -> List[Dict[str, Any]]:
+    def to_pylist(self) -> list[dict[str, Any]]:
         return object.__getattribute__(self, "_table").to_pylist()
 
-    def to_pydict(self) -> Dict[str, List[Any]]:
+    def to_pydict(self) -> dict[str, list[Any]]:
         return object.__getattribute__(self, "_table").to_pydict()
 
     @property
@@ -265,7 +271,7 @@ class SafeTableProxy:
         """
         return object.__getattribute__(self, "_table").column(name)
 
-    def column_values(self, name: str) -> List[Any]:
+    def column_values(self, name: str) -> list[Any]:
         """Return a column as a Python list.
 
         WARNING: Materializes the entire column from Arrow memory into a Python
@@ -408,7 +414,7 @@ class StrakeShim:
         output.write("]")
         return output.getvalue()
 
-    def search(self, query: str) -> List[Dict[str, Any]]:
+    def search(self, query: str) -> list[dict[str, Any]]:
         """
         Semantic search for tables using LanceDB vector index.
         Runs inside asyncio.to_thread, so it must be thread-safe for indexer init.
@@ -476,7 +482,7 @@ def _sandbox_worker_inner(code: str, queue: Any, connection: Any) -> None:
         _builtins_dict = (
             __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)  # type: ignore[arg-type]
         )
-        global_context: Dict[str, Any] = {
+        global_context: dict[str, Any] = {
             "__builtins__": {**_builtins_dict, "__import__": _safe_import_shim},
             "__strake_shim__": strake_shim,
             "__name__": "__sandbox__",
