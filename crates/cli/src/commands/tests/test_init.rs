@@ -31,7 +31,7 @@ async fn test_init_creates_all_files() {
     assert!(readme_path.exists());
 
     let sources_content = fs::read_to_string(&sources_path).unwrap();
-    assert!(sources_content.contains("type: JDBC"));
+    assert!(sources_content.contains("type: postgres"));
 
     let config_content = fs::read_to_string(&config_path).unwrap();
     assert!(config_content.contains("backend: sqlite"));

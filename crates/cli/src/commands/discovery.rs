@@ -782,7 +782,15 @@ pub(crate) async fn resolve_introspector(
         .as_ref()
         .and_then(|c| c.sources.iter().find(|s| s.name.as_ref() == source_name))
     {
-        match source.source_type.as_str() {
+        let source_type_str = match source.source_type.as_str() {
+            "sql" => source
+                .config
+                .get("dialect")
+                .and_then(|v| v.as_str())
+                .unwrap_or("postgres"),
+            other => other,
+        };
+        match source_type_str {
             "postgres" => {
                 let conn_str_opt = source.url.clone().or_else(|| {
                     source
