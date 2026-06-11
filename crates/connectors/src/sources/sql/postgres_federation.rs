@@ -280,10 +280,23 @@ fn append_value_to_builder(
             Err(e) => return Err(datafusion::error::DataFusionError::External(Box::new(e))),
         }
     } else if let Some(b) = builder.as_any_mut().downcast_mut::<StringBuilder>() {
-        match row.try_get::<_, Option<String>>(col_idx) {
-            Ok(Some(v)) => b.append_value(v),
-            Ok(None) => b.append_null(),
-            Err(e) => return Err(datafusion::error::DataFusionError::External(Box::new(e))),
+        let pg_type = row.columns()[col_idx].type_();
+        if *pg_type == postgres_types::Type::JSON || *pg_type == postgres_types::Type::JSONB {
+            match row.try_get::<_, Option<serde_json::Value>>(col_idx) {
+                Ok(Some(v)) => {
+                    let s = serde_json::to_string(&v)
+                        .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+                    b.append_value(s);
+                }
+                Ok(None) => b.append_null(),
+                Err(e) => return Err(datafusion::error::DataFusionError::External(Box::new(e))),
+            }
+        } else {
+            match row.try_get::<_, Option<String>>(col_idx) {
+                Ok(Some(v)) => b.append_value(v),
+                Ok(None) => b.append_null(),
+                Err(e) => return Err(datafusion::error::DataFusionError::External(Box::new(e))),
+            }
         }
     } else if let Some(b) = builder.as_any_mut().downcast_mut::<BooleanBuilder>() {
         match row.try_get::<_, Option<bool>>(col_idx) {
@@ -380,6 +393,8 @@ pub fn map_postgres_type(type_str: &str) -> DataType {
         || t.starts_with("char")
         || t.starts_with("character")
         || t == "name"
+        || t == "json"
+        || t == "jsonb"
     {
         DataType::Utf8
     }
@@ -419,6 +434,8 @@ mod tests {
         assert_eq!(map_postgres_type("double precision"), DataType::Float64);
         assert_eq!(map_postgres_type("text"), DataType::Utf8);
         assert_eq!(map_postgres_type("varchar(100)"), DataType::Utf8);
+        assert_eq!(map_postgres_type("json"), DataType::Utf8);
+        assert_eq!(map_postgres_type("jsonb"), DataType::Utf8);
         assert_eq!(map_postgres_type("boolean"), DataType::Boolean);
         assert_eq!(map_postgres_type("date"), DataType::Date32);
         assert_eq!(

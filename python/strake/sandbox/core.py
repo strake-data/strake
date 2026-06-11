@@ -56,6 +56,8 @@ ALLOWED_IMPORTS = frozenset(
         # Strake itself — always injected into the context as `strake`, but allow
         # explicit `import strake` too for consistency.
         "strake",
+        # DuckDB for executing local database transformations in benchmarks
+        "duckdb",
     }
 )
 
@@ -72,6 +74,7 @@ except (AttributeError, KeyError, TypeError):
 
     _REAL_IMPORT = builtins.__import__
 
+_CURRENT_SHIM = None
 
 def _safe_import_shim(name, globals=None, locals=None, fromlist=(), level=0):
     """
@@ -81,6 +84,8 @@ def _safe_import_shim(name, globals=None, locals=None, fromlist=(), level=0):
     Together they provide a layered fast-path rejection with an audit log entry,
     but neither is a substitute for OS-level process isolation.
     """
+    if name == "strake" and _CURRENT_SHIM is not None:
+        return _CURRENT_SHIM
     top = name.split(".")[0]
     if top not in ALLOWED_IMPORTS:
         raise ImportError(SandboxErrorMessages.IMPORT_NOT_PERMITTED.format(name))
@@ -460,6 +465,8 @@ def _sandbox_worker_inner(code: str, queue: Any, connection: Any) -> None:
                 self._indexer_thread_lock = threading.Lock()
 
         strake_shim = StrakeShim(connection, WorkerSandbox())
+        global _CURRENT_SHIM
+        _CURRENT_SHIM = strake_shim
 
         # The sandbox worker uses the full __builtins__. The security boundary is
         # OS-level isolation (seccomp, Landlock, Firecracker), not Python-level

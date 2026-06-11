@@ -93,3 +93,10 @@ cargo-deny-*/
 test_output.log
 test.log
 
+oracle/*
+target_bench/*
+crates/bench/*
+python/google-cloud-sdk/*
+scratch/*
+python/strake/.strake/*
+spider-dbt-strake/*

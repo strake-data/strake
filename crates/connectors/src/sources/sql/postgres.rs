@@ -163,7 +163,8 @@ async fn create_pg_pool(
     let pool = PostgresConnectionPool::new(params)
         .await
         .map_err(|e| anyhow::anyhow!(e))
-        .context("Failed to create Postgres connection pool")?;
+        .context("Failed to create Postgres connection pool")?
+        .with_unsupported_type_action(datafusion_table_providers::UnsupportedTypeAction::String);
     Ok(Arc::new(pool))
 }
 
