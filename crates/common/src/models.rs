@@ -509,6 +509,16 @@ pub struct TableDiscovery {
     pub schema: String,
 }
 
+impl TableDiscovery {
+    /// Creates a new TableDiscovery.
+    pub fn new(schema: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            schema: schema.into(),
+            name: name.into(),
+        }
+    }
+}
+
 /// A request to execute a SQL query.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[non_exhaustive]

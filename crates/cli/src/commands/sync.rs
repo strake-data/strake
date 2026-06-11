@@ -72,7 +72,7 @@ pub async fn sync(
 
     for source in &mut current_config.sources {
         let introspector =
-            match resolve_introspector(source.name.as_ref(), &file_path, config, ctx).await {
+            match resolve_introspector(source.name.as_ref(), &file_path, None, config, ctx).await {
                 Ok(intro) => intro,
                 Err(e) => {
                     return Err(anyhow::anyhow!(

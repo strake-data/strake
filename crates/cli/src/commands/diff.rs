@@ -155,7 +155,9 @@ pub(crate) async fn diff_internal(
 
     for local_source in &local_config.sources {
         let introspector =
-            match resolve_introspector(local_source.name.as_ref(), file_path, config, ctx).await {
+            match resolve_introspector(local_source.name.as_ref(), file_path, None, config, ctx)
+                .await
+            {
                 Ok(intro) => intro,
                 Err(e) => {
                     return Err(anyhow::anyhow!(

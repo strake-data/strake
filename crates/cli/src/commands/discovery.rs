@@ -45,7 +45,6 @@ use crate::secrets::ResolverContext;
 use anyhow::{Context, Result, anyhow};
 use owo_colors::OwoColorize;
 use secrecy::SecretString;
-use strake_common::models::DomainName;
 
 /// Performs a fuzzy search against all configured upstream sources to locate tables.
 ///
@@ -70,7 +69,7 @@ pub async fn search(
     domain: Option<&str>,
     format: OutputFormat,
     config: &CliConfig,
-    _ctx: &ResolverContext,
+    ctx: &ResolverContext,
 ) -> Result<i32> {
     let domain_str = domain.unwrap_or("default");
 
@@ -85,22 +84,16 @@ pub async fn search(
         );
     }
 
-    let domain_name = DomainName::from(domain_str);
-    let client = get_client(config)?;
-    let api_url = &config.api_url;
-
-    let url = format!("{}/introspect/{}/{}", api_url, domain_name, source);
-    let response = client
-        .get(&url)
-        .send()
+    let introspector = resolve_introspector(source, file_path, domain, config, ctx).await?;
+    let table_refs = introspector
+        .list_tables(None)
         .await
-        .context("Failed to connect to Strake API. Ensure the server is running.")?;
+        .map_err(|e| anyhow!("Failed to list tables: {}", e))?;
 
-    if !response.status().is_success() {
-        return Err(anyhow!("Search failed: {}", response.text().await?));
-    }
-
-    let tables: Vec<strake_common::models::TableDiscovery> = response.json().await?;
+    let tables: Vec<strake_common::models::TableDiscovery> = table_refs
+        .into_iter()
+        .map(|t| strake_common::models::TableDiscovery::new(t.schema, t.table))
+        .collect();
 
     if format.is_machine_readable() {
         output::print_success(
@@ -200,7 +193,7 @@ pub async fn add(options: AddOptions, config: &CliConfig, ctx: &ResolverContext)
 
     // Resolve introspector
     let introspector =
-        resolve_introspector(options.source.as_ref(), &options.file, config, ctx).await?;
+        resolve_introspector(options.source.as_ref(), &options.file, None, config, ctx).await?;
     let mut introspected = introspector
         .introspect_table(&table_ref, options.full)
         .await
@@ -435,7 +428,7 @@ pub(crate) async fn bulk_add(
     ctx: &ResolverContext,
 ) -> Result<i32> {
     let introspector =
-        resolve_introspector(options.source.as_ref(), &options.file, config, ctx).await?;
+        resolve_introspector(options.source.as_ref(), &options.file, None, config, ctx).await?;
 
     let mut table_refs = Vec::new();
     if options.all {
@@ -775,6 +768,7 @@ fn merge_introspected(
 pub(crate) async fn resolve_introspector(
     source_name: &str,
     file_path: &str,
+    domain: Option<&str>,
     config: &CliConfig,
     ctx: &ResolverContext,
 ) -> Result<Box<dyn strake_connectors::introspect::SchemaIntrospector + Send + Sync>> {
@@ -838,14 +832,81 @@ pub(crate) async fn resolve_introspector(
                     },
                 ));
             }
+            "mysql" => {
+                let conn_str_opt = source.url.clone().or_else(|| {
+                    source
+                        .config
+                        .get("connection")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                });
+                let conn_str = conn_str_opt
+                    .context("MySQL URL/Connection string is required for introspection")?;
+                return Ok(Box::new(
+                    strake_connectors::sources::sql::mysql::MySqlIntrospector {
+                        connection_string: SecretString::from(conn_str),
+                    },
+                ));
+            }
+            "clickhouse" => {
+                let conn_str_opt = source.url.clone().or_else(|| {
+                    source
+                        .config
+                        .get("connection")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                });
+                let conn_str = conn_str_opt
+                    .context("ClickHouse URL/Connection string is required for introspection")?;
+                return Ok(Box::new(
+                    strake_connectors::sources::sql::clickhouse::ClickHouseIntrospector {
+                        connection_string: SecretString::from(conn_str),
+                    },
+                ));
+            }
+            "oracle" => {
+                let conn_str_opt = source.url.clone().or_else(|| {
+                    source
+                        .config
+                        .get("connection")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                });
+                let conn_str = conn_str_opt
+                    .context("Oracle URL/Connection string is required for introspection")?;
+                let pool_size = source
+                    .config
+                    .get("pool_size")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(10) as usize;
+                let pool = std::sync::Arc::new(
+                    strake_connectors::sources::sql::oracle::pool::OracleConnectionPool::new(
+                        &conn_str, pool_size,
+                    )
+                    .await?,
+                );
+                return Ok(Box::new(
+                    strake_connectors::sources::sql::oracle::OracleIntrospector { pool },
+                ));
+            }
             _ => {}
         }
     }
 
+    let resolved_domain = domain
+        .map(|d| d.to_string())
+        .or_else(|| {
+            current_config
+                .as_ref()
+                .and_then(|c| c.domain.as_ref())
+                .map(|d| d.to_string())
+        })
+        .unwrap_or_else(|| "default".to_string());
+
     // Fallback to API-based introspection for unknown or missing sources
     Ok(Box::new(ApiIntrospector {
         api_url: config.api_url.clone(),
-        domain: "default".to_string(), // TBD: resolve domain correctly
+        domain: resolved_domain,
         source: source_name.to_string(),
         config: config.clone(),
     }))
