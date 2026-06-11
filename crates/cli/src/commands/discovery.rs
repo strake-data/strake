@@ -790,22 +790,32 @@ pub(crate) async fn resolve_introspector(
     {
         match source.source_type.as_str() {
             "postgres" => {
-                let conn_str = source
-                    .url
-                    .as_ref()
-                    .context("Postgres URL is required for introspection")?;
+                let conn_str_opt = source.url.clone().or_else(|| {
+                    source
+                        .config
+                        .get("connection")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                });
+                let conn_str = conn_str_opt
+                    .context("Postgres URL/Connection string is required for introspection")?;
                 return Ok(Box::new(
                     strake_connectors::sources::sql::postgres_introspect::PostgresIntrospector {
-                        connection_string: SecretString::from(conn_str.clone()),
+                        connection_string: SecretString::from(conn_str),
                     },
                 ));
             }
             "sqlite" => {
-                let db_path = source
-                    .url
-                    .as_ref()
-                    .context("SQLite path is required for introspection")?;
-                let clean_path = db_path.strip_prefix("sqlite://").unwrap_or(db_path);
+                let db_path_opt = source.url.clone().or_else(|| {
+                    source
+                        .config
+                        .get("connection")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                });
+                let db_path = db_path_opt
+                    .context("SQLite path/Connection string is required for introspection")?;
+                let clean_path = db_path.strip_prefix("sqlite://").unwrap_or(&db_path);
                 return Ok(Box::new(
                     strake_connectors::sources::sql::sqlite_introspect::SqliteIntrospector {
                         db_path: SecretString::from(clean_path.to_string()),
@@ -813,13 +823,18 @@ pub(crate) async fn resolve_introspector(
                 ));
             }
             "duckdb" => {
-                let db_path = source
-                    .url
-                    .as_ref()
-                    .context("DuckDB path is required for introspection")?;
+                let db_path_opt = source.url.clone().or_else(|| {
+                    source
+                        .config
+                        .get("connection")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                });
+                let db_path = db_path_opt
+                    .context("DuckDB path/Connection string is required for introspection")?;
                 return Ok(Box::new(
                     strake_connectors::sources::sql::duckdb_introspect::DuckDBIntrospector {
-                        db_path: SecretString::from(db_path.clone()),
+                        db_path: SecretString::from(db_path),
                     },
                 ));
             }

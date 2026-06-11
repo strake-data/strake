@@ -75,8 +75,8 @@ impl SourceProvider for SqlSourceProvider {
     ) -> Result<()> {
         #[derive(serde::Deserialize)]
         struct SqlConfig {
-            dialect: SqlDialect,
-            connection: String,
+            dialect: Option<SqlDialect>,
+            connection: Option<String>,
             #[serde(default = "default_pool_size")]
             pool_size: usize,
             #[serde(default)]
@@ -88,8 +88,44 @@ impl SourceProvider for SqlSourceProvider {
             10
         }
 
-        let sql_config: SqlConfig = serde_json::from_value(config.config.clone())
-            .context("Failed to parse SQL source configuration")?;
+        let sql_config: SqlConfig =
+            serde_json::from_value(config.config.clone()).unwrap_or_else(|_| SqlConfig {
+                dialect: None,
+                connection: None,
+                pool_size: default_pool_size(),
+                retry: None,
+                tables: None,
+            });
+
+        let dialect = if let Some(d) = sql_config.dialect {
+            d
+        } else {
+            match &config.source_type {
+                strake_common::models::SourceType::Postgres => SqlDialect::Postgres,
+                strake_common::models::SourceType::Mysql => SqlDialect::MySql,
+                strake_common::models::SourceType::Sqlite => SqlDialect::Sqlite,
+                strake_common::models::SourceType::Clickhouse => SqlDialect::Clickhouse,
+                strake_common::models::SourceType::Duckdb => SqlDialect::DuckDB,
+                strake_common::models::SourceType::Other(s) => match s.to_lowercase().as_str() {
+                    "postgres" => SqlDialect::Postgres,
+                    "mysql" => SqlDialect::MySql,
+                    "sqlite" => SqlDialect::Sqlite,
+                    "clickhouse" => SqlDialect::Clickhouse,
+                    "duckdb" => SqlDialect::DuckDB,
+                    "oracle" => SqlDialect::Oracle,
+                    _ => anyhow::bail!(
+                        "SQL dialect must be explicitly configured or inferred from the source type (e.g. 'postgres')"
+                    ),
+                },
+                other => anyhow::bail!("Cannot infer SQL dialect for source type: {:?}", other),
+            }
+        };
+
+        let connection_string = config
+            .url
+            .clone()
+            .or_else(|| sql_config.connection.clone())
+            .context("Connection string/URL is required for SQL source registration (specify either 'url' or 'connection')")?;
 
         let effective_retry = sql_config.retry.unwrap_or(self.global_retry);
 
@@ -112,8 +148,8 @@ impl SourceProvider for SqlSourceProvider {
             context: Arc::new(context.clone()),
             catalog_name: catalog_name.to_string(),
             name: config.name.to_string(),
-            dialect: sql_config.dialect,
-            connection_string: sql_config.connection.clone(),
+            dialect,
+            connection_string,
             pool_size: sql_config.pool_size,
             explicit_tables: Arc::new(explicit_tables),
             retry: effective_retry,

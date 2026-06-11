@@ -139,11 +139,12 @@ async fn introspect_tables(
         .map(|s| s.source_type.clone())
         .unwrap_or_else(|| SourceType::Other("sql".to_string()));
     source.url = engine_source.as_ref().and_then(|s| {
-        // Internal config stores the connection string in the 'config' field for SQL sources
-        s.config
-            .get("connection")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+        s.url.clone().or_else(|| {
+            s.config
+                .get("connection")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
     });
     source.config = serde_json::Value::Null;
 
@@ -207,11 +208,12 @@ async fn list_sources(State(state): State<Arc<QueryState>>) -> Json<SourcesConfi
             let mut sc = strake_common::models::SourceConfig::default();
             sc.name = s.name;
             sc.source_type = s.source_type;
-            sc.url = s
-                .config
-                .get("connection")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            sc.url = s.url.clone().or_else(|| {
+                s.config
+                    .get("connection")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            });
             sc.config = serde_json::Value::Null;
             sc
         })
