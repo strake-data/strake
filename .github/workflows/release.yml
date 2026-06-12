@@ -28,7 +28,7 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-pc-windows-msvc
-            os: windows-latest
+            os: windows-2022
     steps:
       - name: Generate Token
         id: generate-token
@@ -102,7 +102,7 @@ jobs:
         if: matrix.target != 'x86_64-unknown-linux-musl'
         run: cargo build --release -p strake-cli -p strake-server -p strake-enterprise --target ${{ matrix.target }}
         env:
-          CXXFLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '/std:c++17 /D_SECURE_SCL=0 /DFMT_SECURE_SCL=0' || '' }}
+          CXXFLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '/std:c++17' || '' }}
         
       - name: Build (x86_64 musl in Docker)
         if: matrix.target == 'x86_64-unknown-linux-musl'
@@ -132,7 +132,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-2022, macos-latest]
     steps:
       - name: Generate Token
         id: generate-token
@@ -181,7 +181,7 @@ jobs:
       - name: Build Wheels
         uses: PyO3/maturin-action@v1
         env:
-          CXXFLAGS: ${{ matrix.os == 'windows-latest' && '/std:c++17 /D_SECURE_SCL=0 /DFMT_SECURE_SCL=0' || '' }}
+          CXXFLAGS: ${{ matrix.os == 'windows-2022' && '/std:c++17' || '' }}
         with:
           working-directory: python
           args: --release --out dist --find-interpreter
