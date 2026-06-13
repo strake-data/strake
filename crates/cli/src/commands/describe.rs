@@ -4,10 +4,9 @@
 //! Useful for debugging and understanding the current state.
 //!
 //! # Commands
-//! - **describe**: Shows a detailed view of the *current configuration* stored in the metadata DB.
-//!   This is the "source of truth" for the server.
+//! - **describe**: Shows a detailed view of the local configuration.
 //! - **test_connection**: Reads the *local* `sources.yaml` and attempts to connect to every defined
-//!   source to verify credentials and network reachability. Useful before running `apply`.
+//!   source to verify credentials and network reachability. Useful before starting the server.
 
 use super::helpers::{TestConnectionResult, TestConnectionSummary};
 use super::validate::validate_source;

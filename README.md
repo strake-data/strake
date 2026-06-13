@@ -90,8 +90,8 @@ strake-cli init
 # Validate configuration
 strake-cli validate sources.yaml
 
-# Apply to the metadata store (Sync)
-strake-cli apply sources.yaml --force
+# Sync configuration with live database schemas
+strake-cli sync
 ```
 
 ### 3. Query with Python

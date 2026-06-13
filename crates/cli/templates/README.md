@@ -15,12 +15,12 @@ This workspace was initialized with `strake-cli init`.
 strake-cli validate
 ```
 
-### 3. Apply Configuration
+### 3. Sync Live Database Schema
 
-Apply your sources to the metadata store:
+Sync your local schema configuration with the remote databases:
 
 ```bash
-strake-cli apply
+strake-cli sync
 ```
 
 ### 4. Start Querying
@@ -57,7 +57,7 @@ print(df)
 
 ## Common Commands
 
-- `strake-cli domain list` — List all domains
+- `strake-cli sync` — Sync schemas from live databases into sources.yaml
 - `strake-cli search <source>` — Discover tables in a source
 - `strake-cli add <source> <table>` — Add a table to sources.yaml
 - `strake-cli diff` — Preview configuration changes
