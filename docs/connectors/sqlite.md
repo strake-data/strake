@@ -6,27 +6,27 @@ Strake supports querying local SQLite databases natively. SQLite is ideal for hi
 
 ## 1. Connection Syntax
 
-SQLite connection string points directly to a local database file on your system using the `sqlite://` scheme:
+SQLite connection string points directly to a local database file on your system using the `url` (or `connection`) field with the `sqlite://` scheme:
 
 ```yaml
-connection: "sqlite:///<absolute_path_to_db_file>"
+url: "sqlite:///<absolute_path_to_db_file>"
 ```
 
 ### Connection Example
 ```yaml
-connection: "sqlite:///workspaces/rust-postgres/data/app_cache.db"
+url: "sqlite:///workspaces/rust-postgres/data/app_cache.db"
 ```
 
 ---
 
 ## 2. Configuration Parameters
 
-The SQLite database is registered as a `sql` source type with `dialect: sqlite`:
+The SQLite database is configured as a `sqlite` source type (or `sql` with `dialect: sqlite`):
 
 | Parameter | Type | Required | Default | Description |
 |:---|:---|:---|:---|:---|
-| `dialect` | string | **Yes** | - | Must be `sqlite`. |
-| `connection` | string | **Yes** | - | Absolute local file URI pointing to your `.db` file. |
+| `type` | string | **Yes** | - | Must be `sqlite` (or `sql` with `dialect: sqlite`). |
+| `url` | string | **Yes** | - | Absolute local file URI pointing to your `.db` file. Also accepts `connection` as a fallback. |
 
 ---
 
@@ -37,8 +37,6 @@ Add the following block to your `sources.yaml` to register a local SQLite source
 ```yaml
 sources:
   - name: cache_sqlite
-    type: sql
-    config:
-      dialect: sqlite
-      connection: "sqlite:///workspaces/rust-postgres/data/app_cache.db"
+    type: sqlite
+    url: "sqlite:///workspaces/rust-postgres/data/app_cache.db"
 ```

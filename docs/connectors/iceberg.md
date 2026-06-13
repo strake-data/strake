@@ -32,12 +32,11 @@ Add the following block to your `sources.yaml` to register an experimental Icebe
 sources:
   - name: analytics_iceberg
     type: iceberg_rest
-    config:
-      catalog_uri: "http://polaris:8181/api/catalog"
-      warehouse: "s3://my-iceberg-lakehouse/"
-      region: "us-east-1"
-      oauth_client_id: "strake-client"
-      oauth_client_secret: "super_secret_oauth_token"
-      oauth_token_url: "http://polaris:8181/api/catalog/v1/oauth/tokens"
-      s3_endpoint: "http://minio:9000"
+    catalog_uri: "http://polaris:8181/api/catalog"
+    warehouse: "s3://my-iceberg-lakehouse/"
+    region: "us-east-1"
+    oauth_client_id: "strake-client"
+    oauth_client_secret: "super_secret_oauth_token"
+    oauth_token_url: "http://polaris:8181/api/catalog/v1/oauth/tokens"
+    s3_endpoint: "http://minio:9000"
 ```

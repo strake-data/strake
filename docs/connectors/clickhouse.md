@@ -26,7 +26,7 @@ ClickHouse database is registered as a `sql` source type with `dialect: clickhou
 | Parameter | Type | Required | Default | Description |
 |:---|:---|:---|:---|:---|
 | `dialect` | string | **Yes** | - | Must be `clickhouse`. |
-| `connection` | string | **Yes** | - | ClickHouse connection URI containing host, credentials, and port. |
+| `url` | string | **Yes** | - | ClickHouse connection URI containing host, credentials, and port. |
 | `pool_size` | integer | No | `10` | Maximum size of the query connection pool. |
 
 ---
@@ -39,11 +39,10 @@ Add the following block to your `sources.yaml` to register a ClickHouse source:
 sources:
   - name: warehouse_clickhouse
     type: sql
-    config:
-      dialect: clickhouse
-      connection: "clickhouse://default:secure_password@localhost:8123/default"
-      pool_size: 15
-      tables:
-        - name: events
-          schema: analytical_logs
+    dialect: clickhouse
+    url: "clickhouse://default:secure_password@localhost:8123/default"
+    pool_size: 15
+    tables:
+      - name: events
+        schema: analytical_logs
 ```

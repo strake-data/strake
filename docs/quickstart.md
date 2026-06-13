@@ -39,7 +39,7 @@ sources:
     type: sql
     dialect: postgres
     # Example connection string
-    connection: "postgres://postgres:postgres@localhost:5432/postgres"
+    url: "postgres://postgres:postgres@localhost:5432/postgres"
 ```
 
 ## 3. Query Data (Embedded Mode)
@@ -54,7 +54,7 @@ import pandas as pd
 
 # 1. Connect (Embedded Mode)
 # We pass the path to our config directly
-conn = strake.StrakeConnection("./sources.yaml")
+conn = strake.StrakeConnection("sources.yaml")
 
 print("Connected to Strake Embedded Engine")
 

@@ -6,46 +6,62 @@ Strake supports querying MySQL and MariaDB transactional databases. It manages c
 
 ## 1. Connection Syntax
 
-The MySQL connection string is defined under the `connection` field of your SQL configuration. It supports standard MySQL URI formats:
+The MySQL connection string is defined under the `url` (or `connection`) field of your configuration. It supports standard MySQL URI formats. You can set credentials either by embedding them in the URI or separating them into top-level parameters:
 
+### Method 1: Embedded in the URI URL
 ```yaml
-connection: "mysql://<username>:<password>@<host>:<port>/<database_name>"
+url: "mysql://db_user:secure_password@mysql-host:3306/sales_db"
 ```
 
-### Connection Example
+### Method 2: Separated Top-Level Parameters (Safe for Environment Variables)
 ```yaml
-connection: "mysql://db_user:secure_password@mysql-host:3306/sales_db"
+url: "mysql://mysql-host:3306/sales_db"
+username: "db_user"
+password: "${env:MYSQL_PASSWORD}"
 ```
 
 ---
 
 ## 2. Configuration Parameters
 
-The MySQL database is configured as a `sql` source type with `dialect: mysql`:
+The MySQL database is configured as a `mysql` source type (or `sql` with `dialect: mysql`):
 
 | Parameter | Type | Required | Default | Description |
 |:---|:---|:---|:---|:---|
-| `dialect` | string | **Yes** | - | Must be `mysql`. |
-| `connection` | string | **Yes** | - | MySQL connection URI containing credentials. |
+| `type` | string | **Yes** | - | Must be `mysql` (or `sql` with `dialect: mysql`). |
+| `url` | string | **Yes** | - | MySQL connection URI. Also accepts `connection` as a fallback. |
+| `username` | string | No | - | Optional username if not embedded in the connection URL. |
+| `password` | string | No | - | Optional password. Supports environment variables via `${env:VAR}` format. |
 | `pool_size` | integer | No | `10` | Maximum size of the asynchronous connection pool. |
 
 ---
 
-## 3. Configuration Snippet
+## 3. Configuration Snippets
 
-Add the following block to your `sources.yaml` to register a MySQL database:
-
+### Option A: Embedded Credentials
 ```yaml
 sources:
   - name: store_mysql
-    type: sql
-    config:
-      dialect: mysql
-      connection: "mysql://db_user:secure_password@localhost:3306/ecom_store"
-      pool_size: 10
-      tables:
-        - name: products
-          schema: store
-        - name: inventory
-          schema: store
+    type: mysql
+    url: "mysql://db_user:secure_password@localhost:3306/ecom_store"
+    pool_size: 10
+    tables:
+      - name: products
+        schema: store
+      - name: inventory
+        schema: store
+```
+
+### Option B: Separated Credentials (Environment Variables)
+```yaml
+sources:
+  - name: store_mysql_secure
+    type: mysql
+    url: "mysql://localhost:3306/ecom_store"
+    username: "db_user"
+    password: "${env:MYSQL_PASSWORD}"
+    pool_size: 10
+    tables:
+      - name: products
+        schema: store
 ```

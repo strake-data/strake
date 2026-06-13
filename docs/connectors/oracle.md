@@ -6,15 +6,18 @@ Strake supports high-performance querying of Oracle databases. It connects using
 
 ## 1. Connection Syntax
 
-Strake parses all database connection strings using URL schemas. For Oracle databases, the connection string **must** be a valid URL prefixed with the `oracle://` scheme:
+Strake parses all database connection strings using URL schemas. For Oracle databases, the connection string is defined under the `url` (or `connection`) field and **must** be a valid URL prefixed with the `oracle://` scheme. You can set credentials either by embedding them in the URI or separating them into top-level parameters:
 
+### Method 1: Embedded in the URI URL
 ```yaml
-connection: "oracle://<username>:<password>@<host>:<port>/<service_name>"
+url: "oracle://system:OraclePassword123@oracle-free:1521/FREEPDB1"
 ```
 
-### Connection Example
+### Method 2: Separated Top-Level Parameters (Safe for Environment Variables)
 ```yaml
-connection: "oracle://system:OraclePassword123@oracle-free:1521/FREEPDB1"
+url: "oracle://oracle-free:1521/FREEPDB1"
+username: "system"
+password: "${env:ORACLE_PASSWORD}"
 ```
 
 ---
@@ -61,22 +64,33 @@ ln -s libclntsh.so.21.1 libclntsh.so
 
 ---
 
-## 3. Configuration Snippet
+## 3. Configuration Snippets
 
-Add the following block to your `sources.yaml` to register an Oracle database:
-
+### Option A: Embedded Credentials
 ```yaml
 sources:
   - name: legacy_oracle
-    type: sql
-    config:
-      dialect: oracle
-      # Strict URL format containing the oracle:// scheme
-      connection: "oracle://system:OraclePassword123@oracle-free:1521/FREEPDB1"
-      pool_size: 10
-      tables:
-        - name: orders
-          schema: sales
-        - name: invoices
-          schema: billing
+    type: oracle
+    # Strict URL format containing the oracle:// scheme
+    url: "oracle://system:OraclePassword123@oracle-free:1521/FREEPDB1"
+    pool_size: 10
+    tables:
+      - name: orders
+        schema: sales
+      - name: invoices
+        schema: billing
+```
+
+### Option B: Separated Credentials (Environment Variables)
+```yaml
+sources:
+  - name: legacy_oracle_secure
+    type: oracle
+    url: "oracle://oracle-free:1521/FREEPDB1"
+    username: "system"
+    password: "${env:ORACLE_PASSWORD}"
+    pool_size: 10
+    tables:
+      - name: orders
+        schema: sales
 ```

@@ -107,20 +107,19 @@ Add the following block to your `sources.yaml` to register a REST API connector:
 sources:
   - name: stripe_api
     type: rest
-    config:
-      base_url: "https://api.stripe.com/v1/charges"
-      method: "GET"
-      headers:
-        Accept: "application/json"
-      auth:
-        type: bearer
-        token: "sk_test_51Nz..."
-      pagination:
-        type: token
-        token_path: "next_page_token"
-        param_name: "starting_after"
-      pushdown:
-        - column: "customer_id"
-          operator: "="
-          param: "customer"
+    url: "https://api.stripe.com/v1/charges"
+    method: "GET"
+    headers:
+      Accept: "application/json"
+    auth:
+      type: bearer
+      token: "sk_test_51Nz..."
+    pagination:
+      type: token
+      token_path: "next_page_token"
+      param_name: "starting_after"
+    pushdown:
+      - column: "customer_id"
+        operator: "="
+        param: "customer"
 ```

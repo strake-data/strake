@@ -6,50 +6,66 @@ Strake connects natively to PostgreSQL databases using an asynchronous, pooled w
 
 ## 1. Connection Syntax
 
-The PostgreSQL connection string is defined under the `connection` field of your SQL configuration. It supports standard PostgreSQL URI formats:
+The PostgreSQL connection string is defined under the `url` (or `connection`) field of your configuration. It supports standard PostgreSQL URI formats. You can set credentials either by embedding them in the URI or separating them into top-level parameters:
 
+### Method 1: Embedded in the URI URL
 ```yaml
-connection: "postgres://<username>:<password>@<host>:<port>/<database_name>?sslmode=<prefer|require|disable>"
+url: "postgres://db_user:secure_password@localhost:5432/production_db?sslmode=prefer"
 ```
 
-### Connection Example
+### Method 2: Separated Top-Level Parameters (Safe for Environment Variables)
 ```yaml
-connection: "postgres://db_user:secure_password@localhost:5432/production_db?sslmode=prefer"
+url: "postgres://localhost:5432/production_db?sslmode=prefer"
+username: "db_user"
+password: "${env:POSTGRES_PASSWORD}"
 ```
 
 ---
 
 ## 2. Configuration Parameters
 
-The PostgreSQL database is configured as a `sql` source type with `dialect: postgres`:
+The PostgreSQL database is configured as a `postgres` source type (or `sql` with `dialect: postgres`):
 
 | Parameter | Type | Required | Default | Description |
 |:---|:---|:---|:---|:---|
-| `dialect` | string | **Yes** | - | Must be `postgres`. |
-| `connection` | string | **Yes** | - | PostgreSQL connection URI containing credentials. |
+| `type` | string | **Yes** | - | Must be `postgres` (or `sql` with `dialect: postgres`). |
+| `url` | string | **Yes** | - | PostgreSQL connection URI. Also accepts `connection` as a fallback. |
+| `username` | string | No | - | Optional username if not embedded in the connection URL. |
+| `password` | string | No | - | Optional password. Supports environment variables via `${env:VAR}` format. |
 | `pool_size` | integer | No | `10` | Maximum size of the asynchronous connection pool. |
 | `retry` | object | No | - | Retry settings for queries and pool connection. |
 
 ---
 
-## 3. Configuration Snippet
+## 3. Configuration Snippets
 
-Add the following block to your `sources.yaml` to register a PostgreSQL source:
-
+### Option A: Embedded Credentials
 ```yaml
 sources:
   - name: internal_pg
-    type: sql
-    config:
-      dialect: postgres
-      connection: "postgres://db_user:secure_password@localhost:5432/production_db?sslmode=prefer"
-      pool_size: 15
-      retry:
-        max_attempts: 3
-        initial_backoff_ms: 100
-      tables:
-        - name: users
-          schema: public
-        - name: telemetry
-          schema: public
+    type: postgres
+    url: "postgres://db_user:secure_password@localhost:5432/production_db?sslmode=prefer"
+    pool_size: 15
+    retry:
+      max_attempts: 3
+      initial_backoff_ms: 100
+    tables:
+      - name: users
+        schema: public
+      - name: telemetry
+        schema: public
+```
+
+### Option B: Separated Credentials (Environment Variables)
+```yaml
+sources:
+  - name: internal_pg_secure
+    type: postgres
+    url: "postgres://localhost:5432/production_db?sslmode=prefer"
+    username: "db_user"
+    password: "${env:POSTGRES_PASSWORD}"
+    pool_size: 15
+    tables:
+      - name: users
+        schema: public
 ```

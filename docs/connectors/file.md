@@ -47,14 +47,13 @@ sources:
     type: file
     source_type: parquet
     predicate_cache: true
-    config:
-      path: "s3://my-company-analytics-bucket/logs/"
-      options:
-        aws_access_key_id: "AKIAIOSFODNN7EXAMPLE"
-        aws_secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-        region: "us-west-2"
-      tables:
-        - name: clickstream
-          schema: public
-          path: "s3://my-company-analytics-bucket/logs/clickstream.parquet"
+    path: "s3://my-company-analytics-bucket/logs/"
+    options:
+      aws_access_key_id: "AKIAIOSFODNN7EXAMPLE"
+      aws_secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+      region: "us-west-2"
+    tables:
+      - name: clickstream
+        schema: public
+        path: "s3://my-company-analytics-bucket/logs/clickstream.parquet"
 ```

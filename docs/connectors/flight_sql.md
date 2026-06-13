@@ -37,6 +37,5 @@ Add the following block to your `sources.yaml` to register a Flight SQL source:
 sources:
   - name: warehouse_flight
     type: flight_sql
-    config:
-      url: "grpc://localhost:32010"
+    url: "grpc://localhost:32010"
 ```

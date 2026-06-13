@@ -43,15 +43,14 @@ Add the following block to your `sources.yaml` to register a gRPC microservice c
 sources:
   - name: user_service_grpc
     type: grpc
-    config:
-      url: "http://user-service.internal:50051"
-      service: "my.company.UserService"
-      method: "GetActiveUsers"
-      descriptor_set: "/workspaces/rust-postgres/data/user_service_desc.bin"
-      request_body: '{"status": "ACTIVE"}'
-      columns:
-        - name: "user_id"
-          type: "Int64"
-        - name: "email"
-          type: "Utf8"
+    url: "http://user-service.internal:50051"
+    service: "my.company.UserService"
+    method: "GetActiveUsers"
+    descriptor_set: "/workspaces/rust-postgres/data/user_service_desc.bin"
+    request_body: '{"status": "ACTIVE"}'
+    columns:
+      - name: "user_id"
+        type: "Int64"
+      - name: "email"
+        type: "Utf8"
 ```

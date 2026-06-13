@@ -163,7 +163,7 @@ import strake
 import pandas as pd
 
 def main():
-    config_path = "./sources.yaml"
+    config_path = "sources.yaml"
     
     if not os.path.exists(config_path):
         print(f"Error: Configuration file '{config_path}' not found.", file=sys.stderr)
