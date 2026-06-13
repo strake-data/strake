@@ -276,7 +276,7 @@ EOF
     fi
     
     echo ""
-    echo "Documentation: ${BLUE}https://docs.strakedata.com${NC}"
+    echo "Documentation: ${BLUE}https://strake-data.github.io/strake/${NC}"
 }
 
 main

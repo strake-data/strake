@@ -64,5 +64,5 @@ print(df)
 
 ## Learn More
 
-- [Documentation](https://docs.strake.dev)
+- [Documentation](https://strake-data.github.io/strake/)
 - [GitHub](https://github.com/strake-project/strake)
