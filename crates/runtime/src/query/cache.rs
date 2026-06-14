@@ -71,6 +71,7 @@ use parquet::file::properties::WriterProperties;
 
 /// Configuration for the query result cache
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CacheConfig {
     /// Whether the cache is enabled.
     pub enabled: bool,
@@ -593,6 +594,17 @@ impl QueryCache {
 }
 
 impl QueryCache {
+    /// Invalidate all entries in the cache.
+    ///
+    /// This method is synchronous because it instantly clears the in-memory index in the Moka
+    /// cache. Moka's background eviction pool then runs the registered eviction listener
+    /// asynchronously to delete the associated Parquet files from disk. This ensures that:
+    /// 1. Stale cache entries immediately become unreachable (cache miss) for new queries.
+    /// 2. The calling/reload thread is not blocked by disk IO during cache clearing.
+    pub fn invalidate_all(&self) {
+        self.cache.invalidate_all();
+    }
+
     /// Get cache statistics
     pub async fn stats(&self) -> CacheStats {
         CacheStats {
@@ -605,6 +617,7 @@ impl QueryCache {
 
 /// Cache statistics
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CacheStats {
     /// Whether the cache is enabled.
     pub enabled: bool,

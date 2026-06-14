@@ -48,8 +48,11 @@ const DRIVER_VERSION: &str = "17.0.0";
 /// - Metadata queries (catalogs, schemas, tables, type info)
 /// - SQL info capabilities reporting
 pub struct StrakeFlightSqlService {
+    /// The underlying federation engine instance.
     pub engine: Arc<FederationEngine>,
+    /// The name identifying this server.
     pub server_name: String,
+    /// Cache containing current license state.
     pub license_cache: Arc<LicenseCache>,
 }
 
@@ -335,7 +338,7 @@ impl FlightSqlService for StrakeFlightSqlService {
         _request: Request<Ticket>,
     ) -> Result<Response<<Self as gRPCFlightService>::DoGetStream>, Status> {
         let schema = Self::catalogs_schema();
-        let catalogs = StringArray::from(vec![self.engine.catalog_name.clone()]);
+        let catalogs = StringArray::from(vec![self.engine.catalog_name().to_string()]);
         let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(catalogs)])
             .map_err(|e| Status::internal(e.to_string()))?;
 
@@ -375,7 +378,7 @@ impl FlightSqlService for StrakeFlightSqlService {
         let catalog = query
             .catalog
             .as_deref()
-            .unwrap_or(&self.engine.catalog_name);
+            .unwrap_or(self.engine.catalog_name());
         let batch = self
             .build_schemas_batch(catalog)
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -612,10 +615,10 @@ impl StrakeFlightSqlService {
     fn build_schemas_batch(&self, catalog: &str) -> anyhow::Result<RecordBatch> {
         let mut builder = StringBuilder::new();
 
-        if catalog == self.engine.catalog_name {
+        if catalog == self.engine.catalog_name() {
             let catalog_provider = self
                 .ctx()
-                .catalog(&self.engine.catalog_name)
+                .catalog(self.engine.catalog_name())
                 .ok_or(anyhow::anyhow!("Catalog not found"))?;
             for schema_name in catalog_provider.schema_names() {
                 builder.append_value(schema_name);
@@ -643,7 +646,7 @@ impl StrakeFlightSqlService {
         let target_catalog = query
             .catalog
             .as_deref()
-            .unwrap_or(&self.engine.catalog_name);
+            .unwrap_or(self.engine.catalog_name());
 
         // Match SQL LIKE patterns (% = any, _ = single char)
         let matches_like_pattern = |value: &str, pattern: Option<&String>| -> bool {
@@ -663,10 +666,13 @@ impl StrakeFlightSqlService {
             }
         };
 
-        if matches_like_pattern(&self.engine.catalog_name, Some(&target_catalog.to_string())) {
+        if matches_like_pattern(
+            self.engine.catalog_name(),
+            Some(&target_catalog.to_string()),
+        ) {
             let catalog_provider = self
                 .ctx()
-                .catalog(&self.engine.catalog_name)
+                .catalog(self.engine.catalog_name())
                 .ok_or(anyhow::anyhow!("Catalog not found"))?;
 
             for schema_name in catalog_provider.schema_names() {
@@ -690,7 +696,7 @@ impl StrakeFlightSqlService {
                             continue;
                         }
 
-                        catalog_builder.append_value(&self.engine.catalog_name);
+                        catalog_builder.append_value(self.engine.catalog_name());
                         schema_builder.append_value(&schema_name);
                         table_builder.append_value(&table_name);
                         type_builder.append_value("TABLE");

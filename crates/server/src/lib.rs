@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Strake Server: The HTTP and gRPC API layer.
 //!
 //! Exposes the Federation Engine via:
@@ -20,12 +21,13 @@ use tonic::transport::{Identity, ServerTlsConfig};
 use tracing::info;
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
-// Global metrics registry
+/// Global metrics registry
 pub static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
 
+/// Time interval to refresh system memory and query count metrics.
 pub const METRICS_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
-// Example metrics
+/// Example metrics - Total query counter
 pub static QUERY_COUNT: Lazy<IntCounter> = Lazy::new(|| {
     let opts = Opts::new("strake_queries_total", "Total number of queries executed");
     let counter = IntCounter::with_opts(opts).unwrap();
@@ -33,6 +35,7 @@ pub static QUERY_COUNT: Lazy<IntCounter> = Lazy::new(|| {
     counter
 });
 
+/// Example metrics - Active queries gauge
 pub static ACTIVE_QUERIES: Lazy<IntGauge> = Lazy::new(|| {
     let opts = Opts::new(
         "strake_active_queries",
@@ -43,10 +46,13 @@ pub static ACTIVE_QUERIES: Lazy<IntGauge> = Lazy::new(|| {
     gauge
 });
 
-// Re-export modules so they are available
+/// Re-export modules so they are available
 pub mod api;
+/// Re-export authorization modules
 pub mod auth;
+/// Re-export concurrency control modules
 pub mod concurrency;
+/// Re-export Flight SQL services
 pub mod flight_sql;
 
 pub use auth::{ApiKeyAuthenticator, AuthLayer, Authenticator};
@@ -54,11 +60,15 @@ pub use concurrency::{ConcurrencyLayer, ConnectionSlotManager};
 use flight_sql::StrakeFlightSqlService;
 pub use strake_common::auth::AuthenticatedUser;
 
+/// Re-export license cache and monitors
 pub mod license;
 use license::{LicenseCache, LicenseValidator};
 
+/// The main server struct for Strake.
+///
+/// Configures and runs the Flight SQL and Axum REST API servers.
 pub struct StrakeServer {
-    config_path: String,
+    config_path: std::path::PathBuf,
     app_config_path: String,
     authenticator: Option<Arc<dyn Authenticator>>,
     concurrency_manager: Option<Arc<dyn ConnectionSlotManager>>,
@@ -75,7 +85,7 @@ pub struct StrakeServer {
 impl Default for StrakeServer {
     fn default() -> Self {
         Self {
-            config_path: "config/sources.yaml".to_string(),
+            config_path: std::path::PathBuf::from("config/sources.yaml"),
             app_config_path: "config/strake.yaml".to_string(),
             authenticator: None,
             concurrency_manager: None,
@@ -91,40 +101,48 @@ impl Default for StrakeServer {
 }
 
 impl StrakeServer {
+    /// Create a new StrakeServer instance with default configurations.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Set the configuration path for the server.
     pub fn with_config(mut self, config_path: &str) -> Self {
-        self.config_path = config_path.to_string();
+        self.config_path = std::path::PathBuf::from(config_path);
         self
     }
 
+    /// Set the application configuration path.
     pub fn with_app_config(mut self, app_config_path: &str) -> Self {
         self.app_config_path = app_config_path.to_string();
         self
     }
 
+    /// Set the authenticator for the server.
     pub fn with_authenticator(mut self, auth: Arc<dyn Authenticator>) -> Self {
         self.authenticator = Some(auth);
         self
     }
 
+    /// Set the connection slots/concurrency manager.
     pub fn with_concurrency_manager(mut self, manager: Arc<dyn ConnectionSlotManager>) -> Self {
         self.concurrency_manager = Some(manager);
         self
     }
 
+    /// Enable or disable observability.
     pub fn with_observability(mut self, enabled: bool) -> Self {
         self.observability_enabled = enabled;
         self
     }
 
+    /// Enable or disable audit logging.
     pub fn with_audit_logging(mut self, enabled: bool) -> Self {
         self.audit_logging_enabled = enabled;
         self
     }
 
+    /// Add an extra source provider.
     pub fn with_source_provider(
         mut self,
         provider: Box<dyn strake_connectors::sources::SourceProvider>,
@@ -133,6 +151,7 @@ impl StrakeServer {
         self
     }
 
+    /// Add extra optimizer rules.
     pub fn with_optimizer_rules(
         mut self,
         rules: Vec<Arc<dyn datafusion::optimizer::optimizer::OptimizerRule + Send + Sync>>,
@@ -141,21 +160,25 @@ impl StrakeServer {
         self
     }
 
+    /// Set the API router.
     pub fn with_api_router(mut self, router: Router) -> Self {
         self.api_router = router;
         self
     }
 
-    pub fn with_config_path(mut self, path: impl Into<String>) -> Self {
+    /// Set the config path using Into<PathBuf>.
+    pub fn with_config_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.config_path = path.into();
         self
     }
 
+    /// Set the license validator.
     pub fn with_license_validator(mut self, validator: Arc<dyn LicenseValidator>) -> Self {
         self.license_validator = Some(validator);
         self
     }
 
+    /// Start the health, Prometheus, and Flight SQL services.
     pub async fn run(self) -> anyhow::Result<()> {
         // Critical Security Check: Governance Rules vs Authentication
         // If governance rules (RLS/Contracts) are present, we MUST have an Enterprise-capable authenticator.
@@ -179,7 +202,7 @@ impl StrakeServer {
         // 0. Initialize Telemetry (OpenTelemetry) if enabled
         use strake_common::config::AppConfig;
         let app_config = AppConfig::from_file(&self.app_config_path)?;
-        let config = Config::from_file(&self.config_path)?;
+        let config = Config::from_file(self.config_path.to_str().unwrap_or_default())?;
 
         let otel_layer = if self.observability_enabled {
             strake_common::telemetry::init_telemetry(
@@ -304,7 +327,13 @@ impl StrakeServer {
             health_app = health_app.route("/metrics", get(metrics_handler));
         }
 
-        let base_api_router = api::create_api_router(engine.clone(), self.license_cache.clone());
+        let reload_state = Arc::new(api::ReloadState::new(
+            engine.clone(),
+            Some(self.config_path.clone()),
+            app_config.server.enable_sources_reload,
+        ));
+        let base_api_router =
+            api::create_api_router(engine.clone(), self.license_cache.clone(), reload_state);
         let mut final_v1 = base_api_router.merge(self.api_router);
 
         if let Some(auth) = &final_authenticator {
@@ -485,3 +514,5 @@ async fn metrics_handler() -> impl IntoResponse {
 
 #[cfg(test)]
 mod metrics_tests;
+#[cfg(test)]
+mod reload_tests;

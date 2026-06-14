@@ -2,14 +2,19 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// The current validation state of a license.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum LicenseState {
+    /// The license is valid and fully active.
     Valid = 0,
+    /// The license is degraded (e.g. grace period).
     Degraded = 1,
+    /// The license is invalid or expired.
     Invalid = 2,
 }
 
+/// Thread-safe in-memory cache for the license state.
 pub struct LicenseCache {
     state: AtomicU8,
     last_check: AtomicU64,
@@ -22,6 +27,7 @@ impl Default for LicenseCache {
 }
 
 impl LicenseCache {
+    /// Create a new LicenseCache with default state (Valid).
     pub fn new() -> Self {
         Self {
             state: AtomicU8::new(LicenseState::Valid as u8),
@@ -38,6 +44,7 @@ impl LicenseCache {
         }
     }
 
+    /// Update the cached license state.
     pub fn update_state(&self, state: LicenseState) {
         self.state.store(state as u8, Ordering::Release);
         let now = SystemTime::now()
@@ -48,8 +55,10 @@ impl LicenseCache {
     }
 }
 
+/// Validator trait for checking license validity status.
 #[async_trait::async_trait]
 pub trait LicenseValidator: Send + Sync {
+    /// Validate the license state.
     async fn validate(&self) -> anyhow::Result<LicenseState>;
 }
 

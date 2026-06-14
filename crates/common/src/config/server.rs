@@ -87,6 +87,10 @@ pub struct ServerSettings {
     /// Audit logging settings.
     #[serde(default)]
     pub audit: AuditSettings,
+
+    /// Whether the sources reload API endpoint is enabled.
+    #[serde(default)]
+    pub enable_sources_reload: bool,
 }
 
 impl Default for ServerSettings {
@@ -104,6 +108,7 @@ impl Default for ServerSettings {
             datafusion_config: HashMap::new(),
             name: default_server_name(),
             audit: AuditSettings::default(),
+            enable_sources_reload: false,
         }
     }
 }

@@ -20,6 +20,7 @@ pub trait ConnectionSlotManager: Send + Sync {
     fn max_connections(&self) -> usize;
 }
 
+/// A slot reservation for a concurrent connection.
 pub struct ConnectionSlot {
     /// Opaque guard that holds the license slot.
     /// Access to the underlying resource is abstracted.
@@ -27,28 +28,35 @@ pub struct ConnectionSlot {
     pub guard: Box<dyn SlotGuard>,
 }
 
+/// Marker trait representing a guard for a connection slot.
 pub trait SlotGuard: Send + Sync {}
 // Implement for OwnedSemaphorePermit? No, it's external.
 // Wrapper struct `LocalPermit(OwnedSemaphorePermit)` implements SlotGuard.
 
 impl ConnectionSlot {
+    /// Create a new ConnectionSlot.
     pub fn new(guard: Box<dyn SlotGuard>) -> Self {
         Self { guard }
     }
 }
 
+/// Errors returned during connection slot acquisition.
 #[derive(Debug, thiserror::Error)]
 pub enum SlotError {
+    /// Connection queue timeout waiting for slot.
     #[error("Connection queue timeout waiting for slot")]
     QueueTimeout,
+    /// License connection limit exceeded.
     #[error("License connection limit exceeded")]
     LicenseExceeded,
+    /// Internal concurrency error.
     #[error("Internal concurrency error: {0}")]
     Internal(String),
 }
 
 const DEFAULT_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Layer that manages connection slot acquisition limits.
 #[derive(Clone)]
 pub struct ConcurrencyLayer {
     slot_manager: Option<Arc<dyn ConnectionSlotManager>>,
@@ -56,6 +64,7 @@ pub struct ConcurrencyLayer {
 }
 
 impl ConcurrencyLayer {
+    /// Create a new ConcurrencyLayer.
     pub fn new(slot_manager: Option<Arc<dyn ConnectionSlotManager>>) -> Self {
         Self {
             slot_manager,
@@ -63,6 +72,7 @@ impl ConcurrencyLayer {
         }
     }
 
+    /// Set the queue timeout duration for slot acquisition.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.queue_timeout = timeout;
         self
@@ -81,6 +91,7 @@ impl<S> Layer<S> for ConcurrencyLayer {
     }
 }
 
+/// Service that enforces slot/concurrency limits.
 #[derive(Clone)]
 pub struct ConcurrencyService<S> {
     inner: S,

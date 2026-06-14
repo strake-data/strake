@@ -121,19 +121,31 @@ use tokio::sync::Semaphore;
 
 /// The main engine for executing federated queries.
 pub struct FederationEngine {
+    /// The DataFusion session context used to organize catalog registration, plan queries, and optimize plans.
     context: SessionContext,
+    /// An atomic counter tracking the number of queries currently executing.
     active_queries: Arc<AtomicUsize>,
-    _registry: SourceRegistry,
-    /// Name of the federated catalog.
-    pub catalog_name: String,
+    /// The registry mapping source types/schemes to their corresponding catalog provider builders.
+    registry: SourceRegistry,
+    /// The name of the catalog managed by this engine instance.
+    catalog_name: String,
+    /// A global semaphore limiting the number of concurrent connections across all active queries.
     connection_budget: Arc<Semaphore>,
+    /// The query result cache structure for caching query plan outputs.
     cache: QueryCache,
-    /// Per-source configurations for cache overrides
-    source_configs: HashMap<SourceName, SourceConfig>,
+    /// Per-source configurations for cache overrides.
+    ///
+    /// NOTE: Uses `parking_lot::RwLock` for performance. Under sustained high
+    /// query throughput, writer (reload) acquisition may be delayed. If reload
+    /// latency becomes problematic, consider `tokio::sync::RwLock` with
+    /// write-priority fair scheduling.
+    source_configs: parking_lot::RwLock<HashMap<SourceName, SourceConfig>>,
     /// Global cache configuration (default)
     global_cache_config: strake_common::config::QueryCacheConfig,
-    /// Query execution limits
+    /// Threshold configurations for preventing execution of overly complex or expensive queries.
     query_limits: strake_common::config::QueryLimits,
+    /// Mutex for synchronizing hot-reload processes.
+    reload_lock: tokio::sync::Mutex<()>,
 }
 
 /// Configuration options for initializing the `FederationEngine`.
@@ -212,29 +224,113 @@ impl FederationEngine {
         Ok(Self {
             context,
             active_queries: Arc::new(AtomicUsize::new(0)),
-            _registry: registry,
+            registry,
             catalog_name: options.catalog_name,
             connection_budget: Arc::new(Semaphore::new(options.global_budget)),
             cache,
-            source_configs: options
-                .config
-                .sources
-                .iter()
-                .map(|s| (s.name.clone(), s.clone()))
-                .collect(),
+            source_configs: parking_lot::RwLock::new(
+                options
+                    .config
+                    .sources
+                    .iter()
+                    .map(|s| (s.name.clone(), s.clone()))
+                    .collect(),
+            ),
             global_cache_config: options.config.cache.clone(),
             query_limits: options.query_limits,
+            reload_lock: tokio::sync::Mutex::new(()),
         })
     }
 
+    /// Get the catalog name managed by this engine.
+    pub fn catalog_name(&self) -> &str {
+        &self.catalog_name
+    }
+
+    /// Get the global cache configuration.
+    pub fn global_cache_config(&self) -> &strake_common::config::QueryCacheConfig {
+        &self.global_cache_config
+    }
+
     /// Get the configuration for a specific data source.
-    pub fn get_source_config(&self, name: &SourceName) -> Option<&SourceConfig> {
-        self.source_configs.get(name)
+    pub fn get_source_config(&self, name: &SourceName) -> Option<SourceConfig> {
+        self.source_configs.read().get(name).cloned()
     }
 
     /// List all registered data sources.
     pub fn list_sources(&self) -> Vec<SourceConfig> {
-        self.source_configs.values().cloned().collect()
+        self.source_configs.read().values().cloned().collect()
+    }
+
+    /// Reload sources from a new config on the fly.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Schema registration in the new catalog fails.
+    /// - Any source registration fails catastrophically.
+    ///
+    /// # Panics
+    ///
+    /// Cannot panic.
+    pub async fn reload_sources(&self, new_sources: Vec<SourceConfig>) -> Result<()> {
+        let _lock_guard = self.reload_lock.lock().await;
+
+        // 1. Create a fresh catalog provider and populate it offline in a temporary context
+        // using a clone of the live state configuration to preserve RuntimeEnv, optimizers, etc.
+        let catalog = Arc::new(datafusion::catalog::MemoryCatalogProvider::new());
+        catalog.register_schema(
+            "public",
+            Arc::new(datafusion::catalog::MemorySchemaProvider::new()),
+        )?;
+
+        // Build the temp context with an independent CatalogList to avoid mutating the live context
+        // during registration (atomic rollback guarantee).
+        //
+        // NOTE: The temp context shares the live RuntimeEnv (memory pool, disk manager).
+        // Source registration that allocates from the memory pool will compete with
+        // live queries. If this becomes problematic under memory pressure, construct
+        // an independent RuntimeEnv here.
+        let independent_catalog_list =
+            Arc::new(datafusion::catalog::MemoryCatalogProviderList::new());
+        let temp_state = SessionStateBuilder::new_from_existing(self.context.state())
+            .with_catalog_list(independent_catalog_list)
+            .with_query_planner(Arc::new(crate::query::planner::QueryPlanner::new()))
+            .build();
+        let temp_context = SessionContext::new_with_state(temp_state);
+        temp_context.register_catalog(&self.catalog_name, catalog.clone());
+
+        // 2. Register the new sources using the existing registry under the temp context.
+        // If any source fails to connect, we error out without mutating the live catalog (atomic rollback).
+        Self::register_sources_strict(
+            &temp_context,
+            &self.catalog_name,
+            &new_sources,
+            &self.registry,
+        )
+        .await?;
+
+        // 3. Update the catalog and source configurations atomically under write lock.
+        // We build the new map outside the write lock to prevent partial state on panic.
+        let new_map: HashMap<SourceName, SourceConfig> = new_sources
+            .into_iter()
+            .map(|s| (s.name.clone(), s))
+            .collect();
+
+        {
+            // NOTE: There is a brief window between register_catalog and *guard = new_map
+            // where the catalog reflects the new sources but source_configs does not yet.
+            // Queries that check source_configs (e.g., should_cache_query) are protected
+            // by the write lock, but direct catalog access is not.
+            let mut guard = self.source_configs.write();
+            self.context.register_catalog(&self.catalog_name, catalog);
+            *guard = new_map;
+        }
+
+        // 4. Invalidate the query cache since source endpoints or credentials may have changed.
+        self.cache.invalidate_all();
+
+        Ok(())
     }
 
     /// Builds a configured DataFusion SessionContext with Strake's optimizer pipeline.
@@ -407,8 +503,9 @@ impl FederationEngine {
 
         physical_optimizers.push(cost_validator);
 
-        // IMPORTANT: Build state in a single chain to preserve QueryPlanner registration.
-        // Calling SessionStateBuilder::new_from_existing twice would lose the query planner.
+        // NOTE: SessionStateBuilder::new_from_existing does not preserve a custom QueryPlanner.
+        // When using new_from_existing outside this initial build, the planner must be
+        // re-registered via .with_query_planner(). See reload_sources() for an example.
         let state = SessionStateBuilder::new_from_existing(state)
             .with_optimizer_rules(rules)
             .with_query_planner(Arc::new(crate::query::planner::QueryPlanner::new()))
@@ -425,29 +522,74 @@ impl FederationEngine {
         Ok(SessionContext::new_with_state(state))
     }
 
+    /// A core helper to register multiple data sources concurrently, returning any
+    /// compilation/registration errors mapping source names to the error.
+    async fn register_sources_core(
+        context: &SessionContext,
+        catalog: &str,
+        sources: &[SourceConfig],
+        registry: &SourceRegistry,
+    ) -> Vec<(SourceName, anyhow::Error)> {
+        let futures = sources
+            .iter()
+            .map(|source| registry.register_source(context, catalog, source));
+        let results = futures::future::join_all(futures).await;
+        results
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, res)| res.err().map(|e| (sources[i].name.clone(), e)))
+            .collect()
+    }
+
+    /// Registers data sources and logs error messages on failure.
     async fn register_sources(
         context: &SessionContext,
         catalog: &str,
         sources: &[SourceConfig],
         registry: &SourceRegistry,
     ) -> Result<()> {
-        let futures = sources
-            .iter()
-            .map(|source| registry.register_source(context, catalog, source));
+        let errors = Self::register_sources_core(context, catalog, sources, registry).await;
+        for (name, err) in &errors {
+            tracing::error!("Failed to register source '{}': {:#}", name, err);
+        }
+        Ok(())
+    }
 
-        let results = futures::future::join_all(futures).await;
-        for (i, res) in results.into_iter().enumerate() {
-            if let Err(e) = res {
-                tracing::error!("Failed to register source '{}': {:#}", sources[i].name, e);
-                // We continue, allowing the server to start even if some sources are down
+    /// Strict registration that fails if any source cannot be registered.
+    /// Used during hot-reload where partial state is unacceptable.
+    async fn register_sources_strict(
+        context: &SessionContext,
+        catalog: &str,
+        sources: &[SourceConfig],
+        registry: &SourceRegistry,
+    ) -> Result<()> {
+        let errors = Self::register_sources_core(context, catalog, sources, registry).await;
+        if let Some((name, first_err)) = errors.first() {
+            for (curr_name, err) in &errors {
+                tracing::error!(
+                    "Strict registration failed for source '{}': {:#}",
+                    curr_name,
+                    err
+                );
             }
+            anyhow::bail!(
+                "Failed to register source '{}': {:#} ({} of {} sources failed)",
+                name,
+                first_err,
+                errors.len(),
+                sources.len()
+            );
         }
         Ok(())
     }
 
     /// Determine if query should be cached based on configuration
     fn should_cache_query(&self, plan: &LogicalPlan) -> bool {
-        should_cache_plan(plan, self.global_cache_config.enabled, &self.source_configs)
+        should_cache_plan(
+            plan,
+            self.global_cache_config.enabled,
+            &self.source_configs.read(),
+        )
     }
 
     /// Execute a SQL query and return all results as record batches.

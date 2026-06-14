@@ -1,5 +1,5 @@
-//! # Strake REST API
 #![allow(clippy::field_reassign_with_default)]
+//! # Strake REST API
 //!
 //! Implementation of the Strake control plane and query API via Axum.
 //!
@@ -26,43 +26,99 @@ use strake_runtime::federation::FederationEngine;
 
 use crate::license::{LicenseCache, LicenseState};
 
+/// Shared state for query-related Axum routes.
+#[non_exhaustive]
 #[derive(Clone)]
 pub struct QueryState {
+    /// The federated query engine.
     pub engine: Arc<FederationEngine>,
+    /// Cached license validation state.
     pub license_cache: Arc<LicenseCache>,
 }
 
+/// Shared state for reload-related Axum routes.
+#[non_exhaustive]
+#[derive(Clone)]
+pub struct ReloadState {
+    engine: Arc<FederationEngine>,
+    config_path: Option<std::path::PathBuf>,
+    enable_sources_reload: bool,
+}
+
+impl ReloadState {
+    /// Create a new ReloadState.
+    #[must_use]
+    pub fn new(
+        engine: Arc<FederationEngine>,
+        config_path: Option<std::path::PathBuf>,
+        enable_sources_reload: bool,
+    ) -> Self {
+        Self {
+            engine,
+            config_path,
+            enable_sources_reload,
+        }
+    }
+
+    /// Access the underlying engine.
+    pub fn engine(&self) -> &Arc<FederationEngine> {
+        &self.engine
+    }
+
+    /// Access the config path.
+    pub fn config_path(&self) -> Option<&std::path::Path> {
+        self.config_path.as_deref()
+    }
+
+    /// Check if sources reload is enabled.
+    pub fn enable_sources_reload(&self) -> bool {
+        self.enable_sources_reload
+    }
+}
+
+/// Create the base control plane and query API router.
 pub fn create_api_router(
     engine: Arc<FederationEngine>,
     license_cache: Arc<LicenseCache>,
+    reload_state: Arc<ReloadState>,
 ) -> Router {
     Router::new()
         .merge(create_validation_router(engine.clone()))
         .merge(create_introspection_router(engine.clone()))
-        .merge(create_query_router(engine, license_cache))
+        .merge(create_query_router(engine, license_cache, reload_state))
 }
 
+/// Create the query-specific sub-router.
 pub fn create_query_router(
     engine: Arc<FederationEngine>,
     license_cache: Arc<LicenseCache>,
+    reload_state: Arc<ReloadState>,
 ) -> Router {
-    let state = Arc::new(QueryState {
+    let query_state = Arc::new(QueryState {
         engine,
         license_cache,
     });
 
     Router::new()
-        .route("/sources", get(list_sources))
-        .route("/query", post(execute_query))
-        .with_state(state)
+        .route(
+            "/sources",
+            get(list_sources).with_state(query_state.clone()),
+        )
+        .route(
+            "/sources/reload",
+            post(reload_sources).with_state(reload_state),
+        )
+        .route("/query", post(execute_query).with_state(query_state))
 }
 
+/// Create the config validation API router.
 pub fn create_validation_router(engine: Arc<FederationEngine>) -> Router {
     Router::new()
         .route("/validate", post(validate_config))
         .with_state(engine)
 }
 
+/// Create the metadata introspection API router.
 pub fn create_introspection_router(engine: Arc<FederationEngine>) -> Router {
     Router::new()
         .route("/introspect/{domain}/{source}", get(list_tables))
@@ -103,7 +159,7 @@ async fn list_tables(
 ) -> Json<Vec<TableDiscovery>> {
     let mut discovered = Vec::new();
 
-    if let Some(catalog) = engine.context().catalog(&engine.catalog_name)
+    if let Some(catalog) = engine.context().catalog(engine.catalog_name())
         && let Some(schema) = catalog.schema(&source_name)
     {
         for table_name in schema.table_names() {
@@ -161,13 +217,15 @@ async fn introspect_tables(
         // Use the engine's catalog name and SOURCE NAME as the schema (Strake convention)
         let table_ref = format!(
             "\"{}\".\"{}\".\"{}\"",
-            engine.catalog_name, source_name, name
+            engine.catalog_name(),
+            source_name,
+            name
         );
 
         match engine.context().table_provider(table_ref.clone()).await {
             Ok(provider) => {
-                let schema = provider.schema();
-                for field in schema.fields().iter() {
+                let provider_schema = provider.schema();
+                for field in provider_schema.fields().iter() {
                     let mut col = ColumnConfig::default();
                     col.name = field.name().clone();
                     col.data_type = field.data_type().to_string();
@@ -220,7 +278,7 @@ async fn list_sources(State(state): State<Arc<QueryState>>) -> Json<SourcesConfi
         .collect();
 
     let mut sc = SourcesConfig::default();
-    sc.domain = Some(state.engine.catalog_name.clone().into());
+    sc.domain = Some(state.engine.catalog_name().to_string().into());
     sc.sources = api_sources;
     Json(sc)
 }
@@ -295,6 +353,118 @@ async fn execute_query(
             resp.data = None;
             resp.message = Some(e.to_string());
             Json(resp)
+        }
+    }
+}
+
+/// Response body for the `/sources/reload` endpoint.
+#[derive(serde::Serialize)]
+#[non_exhaustive]
+struct ReloadResponse {
+    /// Response status indicator ("success" or "error").
+    status: &'static str,
+    /// Human-readable message describing the outcome.
+    message: String,
+}
+
+// TODO(security): Replace with proper role check once RBAC is implemented (e.g. user.has_role("sources:write")).
+async fn reload_sources(
+    State(state): State<Arc<ReloadState>>,
+    Extension(_user): Extension<strake_common::auth::AuthenticatedUser>,
+) -> impl axum::response::IntoResponse {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    // Check if the reload endpoint is enabled in the configuration
+    if !state.enable_sources_reload() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ReloadResponse {
+                status: "error",
+                message: "Sources reload endpoint is disabled".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let config_path = match state.config_path() {
+        Some(path) => path,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ReloadResponse {
+                    status: "error",
+                    message: "No sources configuration path configured for engine".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Load and parse the new configuration file using blocking IO offloaded to Tokio
+    let config_path_clone = config_path.to_path_buf();
+    let new_config_res = tokio::task::spawn_blocking(move || {
+        let path_str = config_path_clone.to_str().unwrap_or_default();
+        strake_common::config::Config::from_file(path_str)
+    })
+    .await;
+
+    let new_config = match new_config_res {
+        Ok(Ok(cfg)) => cfg,
+        Ok(Err(e)) => {
+            tracing::error!("Failed to parse configuration for hot-reload: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ReloadResponse {
+                    status: "error",
+                    message: format!("Configuration parsing error: {}", e),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("Blocking reload task join error: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ReloadResponse {
+                    status: "error",
+                    message: format!("Reload task failed: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Warn operator if non-source config is modified in the new file
+    if &new_config.cache != state.engine().global_cache_config() {
+        tracing::warn!(
+            "Cache configuration changed in config file but requires server restart to take effect"
+        );
+    }
+
+    // Reload the sources in the FederationEngine
+    match state.engine().reload_sources(new_config.sources).await {
+        Ok(_) => {
+            tracing::info!("Successfully reloaded sources configuration");
+            (
+                StatusCode::OK,
+                Json(ReloadResponse {
+                    status: "success",
+                    message: "Sources reloaded successfully".to_string(),
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to reload sources: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ReloadResponse {
+                    status: "error",
+                    message: format!("Failed to reload sources: {}", e),
+                }),
+            )
+                .into_response()
         }
     }
 }

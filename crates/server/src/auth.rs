@@ -18,20 +18,24 @@ use moka::future::Cache;
 use std::time::Duration;
 use strake_common::auth::{AuthenticatedUser, PermissionSet};
 
+/// Length of the prefix of API keys stored in the database.
 pub const API_KEY_PREFIX_LENGTH: usize = 8;
 
+/// Trait defining authentication behavior for server requests.
 #[async_trait]
 pub trait Authenticator: Send + Sync {
+    /// Authenticate a request based on metadata headers.
     async fn authenticate(&self, metadata: &MetadataMap) -> Result<AuthenticatedUser, Status>;
 }
 
-// OSS Implementation: Database-backed API Keys with Argon2
+/// A database-backed API key authenticator using Argon2.
 pub struct ApiKeyAuthenticator {
     pool: Pool,
     cache: Cache<String, AuthenticatedUser>,
 }
 
 impl ApiKeyAuthenticator {
+    /// Create a new ApiKeyAuthenticator.
     pub fn new(pool: Pool, ttl_secs: u64, capacity: u64) -> Self {
         let cache = Cache::builder()
             .time_to_live(Duration::from_secs(ttl_secs))
@@ -147,13 +151,14 @@ pub async fn verify_api_key_credentials(
     Err(Status::unauthenticated("Invalid API Key"))
 }
 
-// Tower Middleware for Async Auth (Unchanged from previous successful version)
+/// Tower middleware layer for authenticating Flight SQL / gRPC requests.
 #[derive(Clone)]
 pub struct AuthLayer {
     authenticator: Arc<dyn Authenticator>,
 }
 
 impl AuthLayer {
+    /// Create a new AuthLayer.
     pub fn new(authenticator: Arc<dyn Authenticator>) -> Self {
         Self { authenticator }
     }
@@ -170,6 +175,7 @@ impl<S> Layer<S> for AuthLayer {
     }
 }
 
+/// Tower service wrapping a service with an Authenticator.
 #[derive(Clone)]
 pub struct AuthService<S> {
     inner: S,
@@ -212,6 +218,7 @@ where
     }
 }
 
+/// Axum middleware for REST endpoint authentication.
 pub async fn axum_auth_middleware(
     req: AxumRequest<AxumBody>,
     next: Next,

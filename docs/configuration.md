@@ -59,6 +59,9 @@ server:
     enabled: true
     failure_mode: alert
 
+  # Hot reload for sources via REST API endpoint
+  enable_sources_reload: false
+
 # Query optimization & resource controls
 resources:
   memory_limit_mb: 8192         # Limits query RAM usage; spills to disk when exceeded
@@ -141,6 +144,7 @@ Configures the primary gRPC API, health checks, catalog identification, and stor
 | `server.global_connection_budget` | `integer` | `100` | Maximum number of concurrent connections allowed across all federated sources. |
 | `server.database_url` | `string` | `""` | Connection URL for the PostgreSQL metadata database (required for GitOps & multi-node deployments). |
 | `server.datafusion_config` | `map[string]string` | `{}` | Key-value pairs to pass raw configuration overrides directly to the underlying Apache DataFusion SessionContext. |
+| `server.enable_sources_reload` | `boolean` | `false` | Enable the sources hot reload REST API endpoint (`POST /api/v1/sources/reload`). |
 
 #### `server.tls` Settings
 | Parameter | Type | Default | Description |
