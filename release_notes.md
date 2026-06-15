@@ -1,17 +1,22 @@
-## [v0.2.6-rc1]
+## [v0.2.7]
 
 ### Added
 - **Core: Firecracker Sandbox integration** — Added support for a Firecracker VM pool, userfaultfd (UFFD) memory demand paging, and secure stdin configuration.
 - **Core: Python Sandbox `strptime` import** — Added `strptime` to sandbox imports to support datetime parsing.
+- **Core: Postgres JSONB support** — Added support for querying and mapping Postgres JSONB data fields.
+- **Core: Hot reload of data sources config** — Added support for hot-reloading configurations for data sources on the fly.
 - **CLI: Metadata DB & Authentication key commands** — Added `init db` command to initialize metadata database and `auth keys` command for key management.
 - **CLI: Streamlined CLI and metadata sync** — Refactored and streamlined CLI options and consolidated metadata database schemas.
+- **CLI: Default source template** — Added/updated the default template configuration for data sources.
 
 ### Fixed
 - **Core: Connection and pooling issues** — Resolved connection and pooling bugs across various database/session engines.
 - **Core: Flight table metadata** — Fixed table metadata display when querying via Flight.
+- **CLI: Streamlined sources parameters** — Fixed and aligned CLI parameters for configuring data sources.
+- **CLI: Table introspection** — Fixed table introspection queries in the CLI.
 
 ### Changed
-- **Chore: Dependency updates** — Updated dependencies to resolve security alerts.
+- **Chore: Dependency updates** — Updated multiple dependencies to resolve security alerts and cargo deny warnings.
 - **Refactor: CLI command validation** — Removed the `apply` command and migrated its configuration validation logic into `validate`.
 - **Refactor: Firecracker modularization** — Modularized the Firecracker sandbox internals and references.
 
@@ -19,6 +24,7 @@
 - **Docs: Sandbox documentation** — Created comprehensive guides for sandbox usage and configuration.
 - **Docs: Firecracker parameters** — Documented all Firecracker VM configurations and parameters.
 - **Docs: CLI sync command** — Added reference documentation for the CLI synchronization command.
+- **Docs: Updated templates and config references** — Refreshed CLI templates, readme templates, and docs references.
 
 ## [v0.2.5]
 

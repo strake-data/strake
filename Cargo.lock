@@ -3417,9 +3417,9 @@ checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
 name = "fastnum"
-version = "0.7.5"
+version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "020d1b59a944bc239d79903fbac2eda2365138b44890c27979562f6592059dcd"
+checksum = "4089ab2dfd45d8ddc92febb5ca80644389d5ebb954f40231274a3f18341762e2"
 dependencies = [
  "bnum 0.12.1",
  "num-integer",
@@ -8088,7 +8088,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "strake-cli"
-version = "0.2.6-rc2"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "argon2",
@@ -8129,7 +8129,7 @@ dependencies = [
 
 [[package]]
 name = "strake-common"
-version = "0.2.6-rc2"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8164,7 +8164,7 @@ dependencies = [
 
 [[package]]
 name = "strake-connectors"
-version = "0.2.6-rc2"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "arrow",
@@ -8230,7 +8230,7 @@ dependencies = [
 
 [[package]]
 name = "strake-enterprise"
-version = "0.2.6-rc2"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "argon2",
@@ -8273,7 +8273,7 @@ dependencies = [
 
 [[package]]
 name = "strake-error"
-version = "0.2.6-rc2"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "datafusion",
@@ -8287,7 +8287,7 @@ dependencies = [
 
 [[package]]
 name = "strake-python"
-version = "0.2.6-rc2"
+version = "0.2.7"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -8311,7 +8311,7 @@ dependencies = [
 
 [[package]]
 name = "strake-runtime"
-version = "0.2.6-rc2"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "arrow",
@@ -8354,7 +8354,7 @@ dependencies = [
 
 [[package]]
 name = "strake-server"
-version = "0.2.6-rc2"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "argon2",
@@ -8399,7 +8399,7 @@ dependencies = [
 
 [[package]]
 name = "strake-sql"
-version = "0.2.6-rc2"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "arrow",
@@ -8422,7 +8422,7 @@ dependencies = [
 
 [[package]]
 name = "strake-tpch-smoke-test"
-version = "0.2.6-rc2"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "arrow",
