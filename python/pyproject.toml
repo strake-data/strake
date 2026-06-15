@@ -14,7 +14,7 @@ classifiers = [
     "Topic :: Database :: Database Engines/Servers",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-version = "0.2.6-rc2"
+version = "0.2.7"
 description = "The AI Data Layer: Secure, sandboxed environment for AI agents to query and process data."
 readme = "../README.md"
 authors = [
