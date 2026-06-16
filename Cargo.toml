@@ -96,3 +96,9 @@ debug = false
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
+
+[patch."https://github.com/apache/iceberg-rust"]
+iceberg = { path = "../iceberg-rust/crates/iceberg" }
+iceberg-catalog-rest = { path = "../iceberg-rust/crates/catalog/rest" }
+iceberg-datafusion = { path = "../iceberg-rust/crates/integrations/datafusion" }
+iceberg-storage-opendal = { path = "../iceberg-rust/crates/storage/opendal" }

@@ -5,7 +5,8 @@ license.workspace = true
 edition = "2024"
 
 [features]
-# experimental-iceberg = ["dep:iceberg", "dep:iceberg-catalog-rest", "dep:iceberg-datafusion"]
+default = ["iceberg"]
+iceberg = ["dep:iceberg", "dep:iceberg-catalog-rest", "dep:iceberg-datafusion", "dep:iceberg-storage-opendal"]
 experimental-iceberg = ["dep:iceberg", "dep:iceberg-catalog-rest", "dep:iceberg-datafusion"]
 
 [dependencies]
@@ -66,6 +67,7 @@ bb8-oracle = { workspace = true }
 iceberg = { git = "https://github.com/apache/iceberg-rust", branch = "main", optional = true }
 iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust", branch = "main", optional = true }
 iceberg-datafusion = { git = "https://github.com/apache/iceberg-rust", branch = "main", optional = true }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", branch = "main", features = ["opendal-all"], optional = true }
 aws-config = "1.8.14"
 aws-credential-types = "1.2.12"
 dashmap = "6.1.0"

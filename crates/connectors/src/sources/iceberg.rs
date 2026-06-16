@@ -20,6 +20,7 @@
 //!       # Or static token (not recommended for production)
 //!       # token: "${STATIC_TOKEN}"
 //! ```
+#![allow(missing_docs)]
 use crate::sources::iceberg::error::IcebergConnectorError;
 use anyhow::{Context, Result};
 use async_trait::async_trait;

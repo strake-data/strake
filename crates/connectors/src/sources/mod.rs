@@ -84,12 +84,12 @@ mod tests {
     }
 }
 
-// #[cfg(feature = "iceberg")]
-// pub mod iceberg;
 pub mod federated;
 pub mod file;
 pub mod flight;
 pub mod grpc;
+#[cfg(feature = "iceberg")]
+pub mod iceberg;
 pub mod predicate_caching;
 pub mod rest;
 pub mod rest_auth;
@@ -178,9 +178,9 @@ impl SourceRegistry {
         let type_name = match raw_type {
             "parquet" | "csv" | "json" => "file",
             "postgres" | "mysql" | "sqlite" | "duckdb" | "clickhouse" | "oracle" => "sql",
-            // #[cfg(feature = "iceberg")]
-            // "iceberg" => "iceberg_rest",
-            // #[cfg(not(feature = "iceberg"))]
+            #[cfg(feature = "iceberg")]
+            "iceberg" => "iceberg_rest",
+            #[cfg(not(feature = "iceberg"))]
             "iceberg" => {
                 anyhow::bail!(
                     "Iceberg support is disabled in this build. Resolve DataFusion 53 conflicts to enable it."
@@ -214,13 +214,11 @@ pub fn default_registry(global_retry: strake_common::config::RetrySettings) -> S
         schema_cache: Arc::new(dashmap::DashMap::new()),
     }));
     registry.register_provider(Box::new(grpc::GrpcSourceProvider { global_retry }));
-    /*
     #[cfg(feature = "iceberg")]
     registry.register_provider(Box::new(iceberg::IcebergSourceProvider {
         global_retry,
         predicate_cache: cache,
     }));
-    */
 
     registry
 }
