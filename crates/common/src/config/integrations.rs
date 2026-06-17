@@ -159,3 +159,58 @@ impl Default for TelemetryConfig {
         }
     }
 }
+
+/// Defines which source database schemas are treated as "default" and omitted from pushdown SQL.
+///
+/// ## Overview
+///
+/// When Strake generates pushdown SQL for a federated SQL source, it must decide whether to
+/// qualify table references with their schema (e.g. `"GWS_DWH"."GWS_WAFERS"`) or use bare
+/// names (e.g. `"orders"`). This struct configures which schemas are considered "default"
+/// for a given source, and are therefore omitted from generated SQL.
+///
+/// ## Usage
+///
+/// ```yaml
+/// sources:
+///   - name: oracle_prod
+///     type: oracle
+///     url: oracle://...
+///     schema_mapping:
+///       default_schemas: []   # Oracle always qualifies; no schema is "default"
+/// ```
+///
+/// ## Safety
+///
+/// This module contains no unsafe code.
+///
+/// ## Errors
+///
+/// This module does not return errors.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct SchemaMappingConfig {
+    /// Schemas treated as "default" by the source database.
+    ///
+    /// Tables in these schemas are pushed down without schema qualification.
+    /// Schema comparison is case-insensitive.
+    #[serde(default = "default_standard_schemas")]
+    pub default_schemas: Vec<String>,
+}
+
+impl Default for SchemaMappingConfig {
+    fn default() -> Self {
+        Self {
+            default_schemas: default_standard_schemas(),
+        }
+    }
+}
+
+impl SchemaMappingConfig {
+    /// Creates a `SchemaMappingConfig` with an explicit list of default schemas.
+    ///
+    /// Useful for testing or constructing configs programmatically outside of YAML parsing.
+    pub fn with_schemas(default_schemas: Vec<String>) -> Self {
+        Self { default_schemas }
+    }
+}

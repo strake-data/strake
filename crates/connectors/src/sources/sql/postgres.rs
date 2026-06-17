@@ -51,7 +51,7 @@ pub async fn register_postgres(params: SqlSourceParams) -> Result<()> {
             connection_string: SecretString::from(connection_string.clone()),
         }),
         factory: Arc::new(factory),
-        schema_mapping: SchemaMappingRule::Standard,
+        schema_mapping: SchemaMappingRule::standard(&params.schema_mapping),
     };
 
     connector.register(params).await

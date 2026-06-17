@@ -57,6 +57,8 @@ sources:
       # Strict URL format containing the oracle:// scheme
       connection: "oracle://system:OraclePassword123@oracle-free:1521/FREEPDB1"
       pool_size: 10
+      # Non-default schemas (e.g. GWS_DWH) are automatically qualified in SQL.
+      # Use schema_mapping.default_schemas: [] to force qualification for all schemas.
       tables:
         - name: orders
           schema: sales

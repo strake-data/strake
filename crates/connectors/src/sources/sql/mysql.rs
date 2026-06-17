@@ -122,7 +122,7 @@ pub async fn register_mysql(params: SqlSourceParams) -> Result<()> {
             connection_string: SecretString::from(connection_string.clone()),
         }),
         factory: Arc::new(factory_wrapper),
-        schema_mapping: SchemaMappingRule::Standard,
+        schema_mapping: SchemaMappingRule::standard(&params.schema_mapping),
     };
 
     connector.register(params).await
