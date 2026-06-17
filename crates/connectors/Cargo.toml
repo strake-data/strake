@@ -42,8 +42,8 @@ rust_decimal = { workspace = true }
 mysql_async = "0.36.1"
 rusqlite = { version = "0.37", features = ["bundled"] }
 # object_store = "0.12.4" moved to workspace above
-opendal = { git = "https://github.com/apache/opendal", branch = "main", features = ["services-s3", "services-azblob", "services-gcs", "services-http", "services-ftp"] }
-object_store_opendal = { git = "https://github.com/apache/opendal", branch = "main" }
+opendal = { version = "0.57", features = ["services-s3", "services-azblob", "services-gcs", "services-http", "services-ftp"] }
+object_store_opendal = "0.57"
 jsonwebtoken = { workspace = true }
 base64 = "0.22"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
@@ -64,10 +64,10 @@ rust-oracle = { workspace = true }
 bb8 = { workspace = true }
 bb8-oracle = { workspace = true }
 # Apache Iceberg integration
-iceberg = { git = "https://github.com/apache/iceberg-rust", branch = "main", optional = true }
-iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust", branch = "main", optional = true }
-iceberg-datafusion = { git = "https://github.com/apache/iceberg-rust", branch = "main", optional = true }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", branch = "main", features = ["opendal-all"], optional = true }
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "662ac7bddb0a906f4c97b0b65ad7ef5dde32557a", optional = true }
+iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust", rev = "662ac7bddb0a906f4c97b0b65ad7ef5dde32557a", optional = true }
+iceberg-datafusion = { git = "https://github.com/apache/iceberg-rust", rev = "662ac7bddb0a906f4c97b0b65ad7ef5dde32557a", optional = true }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "662ac7bddb0a906f4c97b0b65ad7ef5dde32557a", features = ["opendal-all"], optional = true }
 aws-config = "1.8.14"
 aws-credential-types = "1.2.12"
 dashmap = "6.1.0"
