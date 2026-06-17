@@ -83,6 +83,12 @@ impl SourceProvider for SqlSourceProvider {
             retry: Option<RetrySettings>,
             #[serde(default)]
             tables: Option<Vec<TableConfig>>,
+            #[serde(default)]
+            username: Option<String>,
+            #[serde(default)]
+            password: Option<String>,
+            #[serde(default)]
+            schema_mapping: strake_common::config::SchemaMappingConfig,
         }
         fn default_pool_size() -> usize {
             10
@@ -95,6 +101,9 @@ impl SourceProvider for SqlSourceProvider {
                 pool_size: default_pool_size(),
                 retry: None,
                 tables: None,
+                username: None,
+                password: None,
+                schema_mapping: strake_common::config::SchemaMappingConfig::default(),
             });
 
         let dialect = if let Some(d) = sql_config.dialect {
@@ -121,11 +130,17 @@ impl SourceProvider for SqlSourceProvider {
             }
         };
 
-        let connection_string = config
+        let mut connection_string = config
             .url
             .clone()
             .or_else(|| sql_config.connection.clone())
             .context("Connection string/URL is required for SQL source registration (specify either 'url' or 'connection')")?;
+
+        connection_string = common::merge_credentials_into_url(
+            &connection_string,
+            sql_config.username.as_deref(),
+            sql_config.password.as_deref(),
+        );
 
         let effective_retry = sql_config.retry.unwrap_or(self.global_retry);
 
@@ -154,6 +169,7 @@ impl SourceProvider for SqlSourceProvider {
             explicit_tables: Arc::new(explicit_tables),
             retry: effective_retry,
             max_concurrent_queries: config.max_concurrent_queries.unwrap_or(0),
+            schema_mapping: sql_config.schema_mapping,
         })
         .await
     }
@@ -175,6 +191,7 @@ pub async fn register_sql_source(options: common::SqlRegistrationOptions) -> Res
         explicit_tables: options.explicit_tables,
         retry: options.retry,
         max_concurrent_queries: options.max_concurrent_queries,
+        schema_mapping: options.schema_mapping,
     };
 
     match options.dialect {

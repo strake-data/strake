@@ -711,7 +711,7 @@ pub async fn register_duckdb(params: SqlSourceParams) -> Result<()> {
             db_path: SecretString::from(connection_string.clone()),
         }),
         factory: Arc::new(factory),
-        schema_mapping: SchemaMappingRule::Standard,
+        schema_mapping: SchemaMappingRule::sqlite(&params.schema_mapping),
     };
 
     connector.register(params).await
