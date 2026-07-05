@@ -67,7 +67,7 @@ bb8-oracle = { workspace = true }
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "662ac7bddb0a906f4c97b0b65ad7ef5dde32557a", optional = true }
 iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust", rev = "662ac7bddb0a906f4c97b0b65ad7ef5dde32557a", optional = true }
 iceberg-datafusion = { git = "https://github.com/apache/iceberg-rust", rev = "662ac7bddb0a906f4c97b0b65ad7ef5dde32557a", optional = true }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "662ac7bddb0a906f4c97b0b65ad7ef5dde32557a", features = ["opendal-all"], optional = true }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "662ac7bddb0a906f4c97b0b65ad7ef5dde32557a", features = ["opendal-s3"], optional = true }
 aws-config = "1.8.14"
 aws-credential-types = "1.2.12"
 dashmap = "6.1.0"
