@@ -73,9 +73,9 @@ curl -sSfL https://strakedata.com/install.sh | sh -s -- --musl
 ## 3. Building from Source
 To build the Python bindings locally:
 
-1.  Navigate to the `strake-python` directory:
+1.  Navigate to the `python` directory:
     ```bash
-    cd strake-python
+    cd python
     ```
 2.  Create a virtual environment:
     ```bash
