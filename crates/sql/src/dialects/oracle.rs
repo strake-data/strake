@@ -11,7 +11,7 @@
 //! ## Usage
 //!
 //! ```rust
-//! use strake_sql::dialects::oracle::OracleDialect;
+//! use strake_sql::dialects::OracleDialect;
 //! let dialect = OracleDialect::new();
 //! ```
 //!
@@ -52,7 +52,7 @@ impl OracleDialect {
     /// # Examples
     ///
     /// ```rust
-    /// use strake_sql::dialects::oracle::OracleDialect;
+    /// use strake_sql::dialects::OracleDialect;
     /// let dialect = OracleDialect::new();
     /// ```
     pub fn new() -> Self {

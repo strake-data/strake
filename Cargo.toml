@@ -18,7 +18,6 @@ description = "The AI Data Layer: Secure, sandboxed environment for AI agents to
 openssl = { version = "0.10.79", features = ["vendored"] }
 arrow = "58.0.0"
 datafusion = "53.1.0"
-datafusion-python = "53.1.0"
 datafusion-federation = { version = "0.5.3", features = ["sql"] }
 datafusion-table-providers = { version = "0.11.0", features = ["postgres", "mysql", "sqlite", "flight", "clickhouse"] }
 arrow-flight = { version = "58.0.0", features = ["flight-sql-experimental"] }
@@ -33,10 +32,6 @@ axum = "0.8.1"
 reqwest = { version = "0.12", features = ["json"] }
 oauth2 = "5.0"
 jsonwebtoken = "10.3"
-rmcp = { version = "0.12", features = ["server", "transport-io"] }
-rmcp-macros = "0.12"
-# MCP dependencies
-mcp-core = { version = "0.1" }
 clap = { version = "4.5", features = ["derive", "env"] }
 dashmap = "6.1.0"
 roaring = "0.10"
