@@ -10,6 +10,8 @@ ignore = [
     "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained fork
     "RUSTSEC-2026-0177", # pyo3 missing Sync bound on new_closure
     "RUSTSEC-2026-0176", # pyo3 out-of-bounds read in nth / nth_back
+    "RUSTSEC-2026-0194", # quick-xml quadratic duplicate attribute checks
+    "RUSTSEC-2026-0195", # quick-xml unbounded namespace allocation in NsReader
 ]
 
 [licenses]
