@@ -8,7 +8,7 @@ use serde_json::json;
 use std::sync::Arc;
 use strake_common::config::{RetrySettings, TableConfig};
 use strake_connectors::sources::iceberg::IcebergRestConfig;
-use strake_connectors::sources::iceberg::provider::register_iceberg_rest;
+use strake_connectors::sources::iceberg::provider::{IcebergRegistration, register_iceberg_rest};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -125,16 +125,16 @@ async fn test_iceberg_partition_pruning_support() -> Result<()> {
     let tables = Arc::new(vec![t]);
     let cfg = Arc::new(cfg);
 
-    register_iceberg_rest(
-        Arc::clone(&ctx),
-        "strake".to_string(),
-        "iceberg_source".to_string(),
-        Arc::clone(&cfg),
-        Arc::clone(&tables),
-        RetrySettings::default(),
-        Arc::new(strake_common::predicate_cache::PredicateCache::new()),
-        true,
-    )
+    register_iceberg_rest(IcebergRegistration {
+        ctx: Arc::clone(&ctx),
+        catalog_name: "strake".to_string(),
+        source_name: "iceberg_source".to_string(),
+        cfg: Arc::clone(&cfg),
+        tables: Arc::clone(&tables),
+        retry_settings: RetrySettings::default(),
+        predicate_cache: Arc::new(strake_common::predicate_cache::PredicateCache::new()),
+        predicate_cache_enabled: true,
+    })
     .await?;
 
     let provider = ctx

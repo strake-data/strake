@@ -39,9 +39,9 @@ sources:
   # ----------------------------------------------------
   - name: internal_pg
     type: sql
+    url: "postgres://db_user:secure_password@localhost:5432/production_db?sslmode=prefer"
     config:
       dialect: postgres
-      connection: "postgres://db_user:secure_password@localhost:5432/production_db?sslmode=prefer"
       pool_size: 15
       tables:
         - name: users
@@ -52,10 +52,9 @@ sources:
   # ----------------------------------------------------
   - name: legacy_oracle
     type: sql
+    url: "oracle://system:OraclePassword123@oracle-free:1521/FREEPDB1"
     config:
       dialect: oracle
-      # Strict URL format containing the oracle:// scheme
-      connection: "oracle://system:OraclePassword123@oracle-free:1521/FREEPDB1"
       pool_size: 10
       # Non-default schemas (e.g. GWS_DWH) are automatically qualified in SQL.
       # Use schema_mapping.default_schemas: [] to force qualification for all schemas.
@@ -68,19 +67,19 @@ sources:
   # ----------------------------------------------------
   - name: cache_sqlite
     type: sql
+    url: "sqlite:///workspaces/rust-postgres/data/app_cache.db"
     config:
       dialect: sqlite
-      connection: "sqlite:///workspaces/rust-postgres/data/app_cache.db"
 
   # ----------------------------------------------------
   # 4. Amazon S3 Parquet (Files & Cloud Storage)
   # ----------------------------------------------------
   - name: telemetry_s3
     type: file
-    source_type: parquet
+    format: parquet
     predicate_cache: true
+    url: "s3://my-company-analytics-bucket/logs/"
     config:
-      path: "s3://my-company-analytics-bucket/logs/"
       options:
         aws_access_key_id: "AKIAIOSFODNN7EXAMPLE"
         aws_secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"

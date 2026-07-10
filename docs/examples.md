@@ -19,18 +19,18 @@ Your enterprise analytics team has:
 sources:
   - name: internal_pg
     type: sql
+    url: "postgres://db_user:secure_password@localhost:5432/production_db?sslmode=prefer"
     config:
       dialect: postgres
-      connection: "postgres://db_user:secure_password@localhost:5432/production_db?sslmode=prefer"
       tables:
         - name: users
           schema: public
 
   - name: telemetry_s3
     type: file
-    source_type: parquet
+    format: parquet
+    url: "s3://my-company-analytics-bucket/logs/"
     config:
-      path: "s3://my-company-analytics-bucket/logs/"
       options:
         aws_access_key_id: "AKIAIOSFODNN7EXAMPLE"
         aws_secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"

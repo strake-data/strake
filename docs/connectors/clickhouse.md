@@ -6,15 +6,15 @@ Strake supports querying high-performance ClickHouse OLAP databases. It leverage
 
 ## 1. Connection Syntax
 
-ClickHouse connection URI is defined under the `connection` field of your SQL configuration, supporting ClickHouse wire and HTTP connections:
+ClickHouse connection URI is defined under the `url` field of your SQL configuration, supporting ClickHouse wire and HTTP connections:
 
 ```yaml
-connection: "clickhouse://<username>:<password>@<host>:<port>/<database_name>"
+url: "clickhouse://<username>:<password>@<host>:<port>/<database_name>"
 ```
 
 ### Connection Example
 ```yaml
-connection: "clickhouse://default:secure_password@clickhouse-server:8123/default"
+url: "clickhouse://default:secure_password@clickhouse-server:8123/default"
 ```
 
 ---

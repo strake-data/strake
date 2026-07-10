@@ -30,6 +30,7 @@ pub struct IcebergExecutor {
 }
 
 impl IcebergExecutor {
+    /// Creates a new `IcebergExecutor`.
     pub fn new(catalog: Arc<CachedRestCatalog>, warehouse: String) -> Self {
         Self { catalog, warehouse }
     }

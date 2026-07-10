@@ -26,6 +26,7 @@ pub struct CachedRestCatalog {
 }
 
 impl CachedRestCatalog {
+    /// Creates a new `CachedRestCatalog`.
     pub fn new(inner: RestCatalog, config: CacheConfig) -> Self {
         Self {
             inner: Arc::new(inner),

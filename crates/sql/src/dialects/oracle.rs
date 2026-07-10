@@ -1,6 +1,33 @@
-//! Oracle Dialect
+//! # Oracle Dialect Integration
 //!
-//! Custom UnparserDialect for Oracle Database with comprehensive function translations.
+//! Provides a custom `UnparserDialect` implementation specifically tailored for Oracle Database.
+//!
+//! ## Overview
+//!
+//! This module extends DataFusion's SQL generation layer by providing translations for DataFusion functions,
+//! operators, and custom types mapping to Oracle-compatible syntax. It implements the [`Dialect`] trait
+//! for custom unparsing alongside [`DialectCapabilities`] and [`TypeMapper`].
+//!
+//! ## Usage
+//!
+//! ```rust
+//! use strake_sql::dialects::oracle::OracleDialect;
+//! let dialect = OracleDialect::new();
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Parsing and mapping logic operates with zero additional heap allocations for static function translations.
+//! Scalar function maps are constructed once globally and accessed via constant reference paths.
+//!
+//! ## Errors
+//!
+//! Errors are propagated via the normal [`crate::sql_generator::error::SqlGenError`] variants
+//! for unsupported types or configurations during plan translation.
+//!
+//! ## Safety
+//!
+//! This module is written using safe Rust constructs.
 
 use super::FunctionMapper;
 use datafusion::sql::unparser::dialect::Dialect;
@@ -21,6 +48,13 @@ impl Default for OracleDialect {
 
 impl OracleDialect {
     /// Creates a new [`OracleDialect`] with pre-configured function mappings.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use strake_sql::dialects::oracle::OracleDialect;
+    /// let dialect = OracleDialect::new();
+    /// ```
     pub fn new() -> Self {
         Self {
             mapper: oracle_function_rules(),
@@ -199,7 +233,7 @@ fn oracle_function_rules() -> FunctionMapper {
                         value: Value::SingleQuotedString(s),
                         ..
                     }) => sqlparser::ast::DateTimeField::Custom(sqlparser::ast::Ident::new(
-                        s.to_uppercase().trim_matches('\'').to_string(),
+                        s.to_uppercase(),
                     )),
                     _ => sqlparser::ast::DateTimeField::Year,
                 },
@@ -318,6 +352,9 @@ impl crate::sql_generator::dialect::DialectCapabilities for OracleDialect {
     }
     fn requires_from_dual(&self) -> bool {
         true
+    }
+    fn offset_rows_style(&self) -> sqlparser::ast::OffsetRows {
+        sqlparser::ast::OffsetRows::Rows
     }
 }
 

@@ -143,7 +143,7 @@ pub(crate) fn handle_limit(
         validate_limit_offset_expr(skip)?;
         Some(Offset {
             value: translator.expr_to_sql(skip)?,
-            rows: sqlparser::ast::OffsetRows::None,
+            rows: translator.dialect.capabilities.offset_rows_style(),
         })
     } else {
         None

@@ -9,6 +9,24 @@
 //! delegates to specific dialect implementations while providing common
 //! infrastructure for connection pooling, circuit breaking, and concurrency control.
 //!
+//! ## Usage
+//!
+//! ```rust
+//! use datafusion::prelude::SessionContext;
+//! use strake_connectors::sources::SourceProvider;
+//! use strake_connectors::sources::sql::SqlSourceProvider;
+//! use strake_common::config::RetrySettings;
+//!
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let ctx = SessionContext::new();
+//! let provider = SqlSourceProvider {
+//!     global_retry: RetrySettings::default(),
+//! };
+//! assert_eq!(provider.type_name(), "sql");
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! ## Errors
 //!
 //! - `anyhow::Error` for configuration parsing failures or unsupported dialects.
@@ -76,7 +94,8 @@ impl SourceProvider for SqlSourceProvider {
         #[derive(serde::Deserialize)]
         struct SqlConfig {
             dialect: Option<SqlDialect>,
-            connection: Option<String>,
+            #[serde(alias = "connection")]
+            url: Option<String>,
             #[serde(default = "default_pool_size")]
             pool_size: usize,
             #[serde(default)]
@@ -94,17 +113,8 @@ impl SourceProvider for SqlSourceProvider {
             10
         }
 
-        let sql_config: SqlConfig =
-            serde_json::from_value(config.config.clone()).unwrap_or_else(|_| SqlConfig {
-                dialect: None,
-                connection: None,
-                pool_size: default_pool_size(),
-                retry: None,
-                tables: None,
-                username: None,
-                password: None,
-                schema_mapping: strake_common::config::SchemaMappingConfig::default(),
-            });
+        let sql_config: SqlConfig = serde_json::from_value(config.config.clone())
+            .context("Failed to parse SQL source configuration")?;
 
         let dialect = if let Some(d) = sql_config.dialect {
             d
@@ -133,14 +143,24 @@ impl SourceProvider for SqlSourceProvider {
         let mut connection_string = config
             .url
             .clone()
-            .or_else(|| sql_config.connection.clone())
+            .or_else(|| sql_config.url.clone())
             .context("Connection string/URL is required for SQL source registration (specify either 'url' or 'connection')")?;
 
-        connection_string = common::merge_credentials_into_url(
-            &connection_string,
-            sql_config.username.as_deref(),
-            sql_config.password.as_deref(),
-        );
+        let username = config
+            .username
+            .as_deref()
+            .or(sql_config.username.as_deref());
+        let password = config
+            .password
+            .as_ref()
+            .map(|p| {
+                use secrecy::ExposeSecret;
+                p.expose_secret()
+            })
+            .or(sql_config.password.as_deref());
+
+        connection_string =
+            common::merge_credentials_into_url(&connection_string, username, password);
 
         let effective_retry = sql_config.retry.unwrap_or(self.global_retry);
 

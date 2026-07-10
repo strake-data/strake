@@ -84,60 +84,57 @@ use moka::future::Cache as MokaCache;
 use parquet::file::metadata::ParquetMetaData;
 use strake_common::predicate_cache::PredicateCache;
 
+/// Configuration and context for registering an Iceberg REST catalog source.
+#[derive(Clone)]
+pub struct IcebergRegistration {
+    /// DataFusion session context.
+    pub ctx: Arc<SessionContext>,
+    /// Target catalog name.
+    pub catalog_name: String,
+    /// Name of the source.
+    pub source_name: String,
+    /// Parsed Iceberg REST config.
+    pub cfg: Arc<IcebergRestConfig>,
+    /// Tables configuration to register.
+    pub tables: Arc<Vec<TableConfig>>,
+    /// Global retry settings.
+    pub retry_settings: RetrySettings,
+    /// Shared predicate cache.
+    pub predicate_cache: Arc<PredicateCache>,
+    /// Whether predicate cache is enabled.
+    pub predicate_cache_enabled: bool,
+}
+
 /// Register Iceberg tables with DataFusion context
-#[allow(clippy::too_many_arguments)]
-pub async fn register_iceberg_rest(
-    ctx: Arc<SessionContext>,
-    catalog_name: String,
-    source_name: String,
-    cfg: Arc<IcebergRestConfig>,
-    tables: Arc<Vec<TableConfig>>,
-    retry_settings: RetrySettings,
-    predicate_cache: Arc<PredicateCache>,
-    predicate_cache_enabled: bool,
-) -> Result<()> {
+pub async fn register_iceberg_rest(reg: IcebergRegistration) -> Result<()> {
     let cb = Arc::new(AdaptiveCircuitBreaker::new(CircuitBreakerConfig::default()));
+    let retry_settings = reg.retry_settings;
+    let source_name = reg.source_name.clone();
 
     retry_async(
         format!("iceberg_register({})", source_name),
         retry_settings,
         move || {
             let cb = cb.clone();
-            let predicate_cache = predicate_cache.clone();
-            let catalog_name = catalog_name.clone();
-            let source_name = source_name.clone();
-            let cfg = cfg.clone();
-            let tables = tables.clone();
-            let ctx = ctx.clone();
-            async move {
-                try_register_iceberg_rest(
-                    ctx.clone(),
-                    catalog_name.clone(),
-                    source_name.clone(),
-                    cfg.clone(),
-                    tables.clone(),
-                    cb.clone(),
-                    predicate_cache.clone(),
-                    predicate_cache_enabled,
-                )
-                .await
-            }
+            let reg = reg.clone();
+            async move { try_register_iceberg_rest(reg, cb).await }
         },
     )
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn try_register_iceberg_rest(
-    ctx: Arc<SessionContext>,
-    catalog_name: String,
-    source_name: String,
-    cfg: Arc<IcebergRestConfig>,
-    tables: Arc<Vec<TableConfig>>,
+    reg: IcebergRegistration,
     cb: Arc<AdaptiveCircuitBreaker>,
-    predicate_cache: Arc<PredicateCache>,
-    predicate_cache_enabled: bool,
 ) -> Result<()> {
+    let cfg = &reg.cfg;
+    let ctx = &reg.ctx;
+    let tables = &reg.tables;
+    let catalog_name = reg.catalog_name.as_str();
+    let source_name = reg.source_name.as_str();
+    let predicate_cache = &reg.predicate_cache;
+    let predicate_cache_enabled = reg.predicate_cache_enabled;
+
     // 1. Setup Auth
     let rest_auth: Option<Box<dyn IcebergAuthProvider>> = if let Some(token) = &cfg.token {
         Some(Box::new(StaticTokenAuth::new(token.clone())))
@@ -170,7 +167,7 @@ async fn try_register_iceberg_rest(
     let auth: Arc<dyn IcebergAuthProvider> = Arc::new(CompositeAuth::new(rest_auth, s3_auth));
 
     // 2. Create catalog with caching
-    let rest_catalog = create_rest_catalog(&source_name, &cfg, &auth).await?;
+    let rest_catalog = create_rest_catalog(source_name, cfg, &auth).await?;
     let cache_config = cfg.cache.clone().unwrap_or_default();
     let iceberg_catalog = Arc::new(CachedRestCatalog::new(rest_catalog, cache_config));
 
@@ -180,10 +177,10 @@ async fn try_register_iceberg_rest(
 
     // 3. Ensure target catalog exists in DataFusion
     let catalog = ctx
-        .catalog(&catalog_name)
+        .catalog(catalog_name)
         .ok_or_else(|| anyhow::anyhow!("Catalog '{}' not found", catalog_name))?;
 
-    let schema_name = cfg.namespace.as_deref().unwrap_or(&source_name);
+    let schema_name = cfg.namespace.as_deref().unwrap_or(source_name);
 
     if catalog.schema(schema_name).is_none() {
         tracing::debug!(
@@ -196,17 +193,17 @@ async fn try_register_iceberg_rest(
 
     // Register dedicated catalog using source_name if different from catalog_name
     if catalog_name != source_name {
-        if ctx.catalog(&source_name).is_none() {
+        if ctx.catalog(source_name).is_none() {
             tracing::info!(
                 "Catalog '{}' not found, registering new MemoryCatalogProvider for Iceberg source",
                 source_name
             );
             ctx.register_catalog(
-                &source_name,
+                source_name,
                 Arc::new(datafusion::catalog::MemoryCatalogProvider::new()),
             );
         }
-        let source_catalog = ctx.catalog(&source_name).unwrap();
+        let source_catalog = ctx.catalog(source_name).unwrap();
         if source_catalog.schema(schema_name).is_none() {
             source_catalog.register_schema(schema_name, Arc::new(MemorySchemaProvider::new()))?;
         }
@@ -268,7 +265,7 @@ async fn try_register_iceberg_rest(
         // Use SQLTableSource for federation logic
         let sql_source = datafusion_federation::sql::SQLTableSource::new_with_schema(
             federation_provider.clone(),
-            TableReference::full(catalog_name.clone(), schema_name, table_cfg.name.as_str()).into(),
+            TableReference::full(catalog_name, schema_name, table_cfg.name.as_str()).into(),
             schema.clone(),
         );
 
@@ -280,18 +277,16 @@ async fn try_register_iceberg_rest(
 
         let enriched_provider = wrap_provider(federated_provider, cb.clone(), false);
         let limited_provider = wrap_concurrent(enriched_provider, max_concurrency);
-        let qualified =
-            TableReference::full(catalog_name.clone(), schema_name, table_cfg.name.as_str());
+        let qualified = TableReference::full(catalog_name, schema_name, table_cfg.name.as_str());
         ctx.register_table(qualified, limited_provider)?;
 
         // Note: we track registration metric immediately as we don't load anymore
-        IcebergTelemetry::table_registered(&catalog_name, schema_name, &table_cfg.name);
+        IcebergTelemetry::table_registered(catalog_name, schema_name, &table_cfg.name);
 
         if catalog_name != source_name {
             let source_sql_source = datafusion_federation::sql::SQLTableSource::new_with_schema(
                 federation_provider.clone(),
-                TableReference::full(source_name.clone(), schema_name, table_cfg.name.as_str())
-                    .into(),
+                TableReference::full(source_name, schema_name, table_cfg.name.as_str()).into(),
                 schema,
             );
             let source_federated_provider =
@@ -304,9 +299,9 @@ async fn try_register_iceberg_rest(
             let source_limited_provider =
                 wrap_concurrent(source_enriched_provider, max_concurrency);
             let source_qualified =
-                TableReference::full(source_name.clone(), schema_name, table_cfg.name.as_str());
+                TableReference::full(source_name, schema_name, table_cfg.name.as_str());
             ctx.register_table(source_qualified, source_limited_provider)?;
-            IcebergTelemetry::table_registered(&source_name, schema_name, &table_cfg.name);
+            IcebergTelemetry::table_registered(source_name, schema_name, &table_cfg.name);
         }
     }
 
@@ -332,6 +327,7 @@ pub struct LazyIcebergTableProvider {
 }
 
 impl LazyIcebergTableProvider {
+    /// Creates a new `LazyIcebergTableProvider`.
     pub fn new(
         catalog: Arc<CachedRestCatalog>,
         ident: TableIdent,

@@ -261,7 +261,7 @@ async def get_schema_details(fqn: str) -> list[dict[str, Any]] | types.CallToolR
 
 
 @mcp.tool()
-async def run_python(script: str) -> str | types.CallToolResult:
+async def run_python(script: str) -> Any:
     """
     Execute a Python script in the Strake Safe Runtime.
 
@@ -378,6 +378,105 @@ def main():
         uvicorn.run(app, host=args.host, port=args.port)
     else:
         mcp.run()
+
+
+class MCPRegistry:
+    """Registry for discovering and managing MCP tools."""
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        """List all available tools in the registry with their schemas.
+
+        Returns:
+            A list of dictionary schemas describing tool names, descriptions, and inputs.
+        """
+        tools = []
+        from strake.mcp import mcp
+        # NOTE: FastMCP does not expose a public tool listing API as of mcp v0.1.0.
+        # Accessing _tool_manager directly; pin mcp version in requirements.
+        try:
+            raw_tools = mcp._tool_manager.list_tools()
+        except AttributeError:
+            raw_tools = []
+        for t in raw_tools:
+            tools.append({
+                "name": getattr(t, "name", "unknown"),
+                "description": getattr(t, "description", "") or "",
+                "input_schema": getattr(t, "parameters", None) or getattr(t, "inputSchema", {}),
+            })
+        if not any(t["name"] == "sql_query" for t in tools):
+            tools.append({
+                "name": "sql_query",
+                "description": "Execute a SQL query against the federated database engine.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The SQL query to execute"
+                        },
+                        "config_path": {
+                            "type": "string",
+                            "description": "Optional path to the configuration yaml file"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            })
+        return tools
+
+
+async def execute_tool(payload: dict) -> dict:
+    """Execute an MCP tool or sql_query dynamically by name.
+
+    Args:
+        payload: A dictionary containing "tool" and "parameters".
+
+    Returns:
+        A dictionary with "status" and either "data" or "error".
+    """
+    tool_name = payload.get("tool")
+    parameters = payload.get("parameters", {})
+    if tool_name == "sql_query":
+        query = parameters.get("query")
+        config_path = parameters.get("config_path")
+        async with _tool_span("sql_query", query=query):
+            try:
+                if config_path:
+                    def _run_standalone():
+                        from strake import StrakeConnection
+                        conn = StrakeConnection(config_path)
+                        return conn.sql(query).to_pylist()
+                    data = await asyncio.to_thread(_run_standalone)
+                else:
+                    await _SERVER.get_sandbox()  # Ensure server and connection are initialized
+                    def _run_shared():
+                        conn = _SERVER._connection
+                        if conn is None:
+                            raise RuntimeError("Strake connection not initialized")
+                        return conn.sql(query).to_pylist()
+                    data = await asyncio.to_thread(_run_shared)
+                return {
+                    "status": "success",
+                    "data": data
+                }
+            except Exception as e:
+                return {
+                    "status": "error",
+                    "error": str(e)
+                }
+    else:
+        from strake.mcp import mcp
+        try:
+            res = await mcp.call_tool(tool_name, parameters)
+            return {
+                "status": "success",
+                "data": res
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e)
+            }
 
 
 if __name__ == "__main__":
