@@ -95,9 +95,6 @@ impl SourceProvider for MockDriftedProvider {
 
         #[async_trait]
         impl TableProvider for FakeAtRestProvider {
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
             fn schema(&self) -> Arc<Schema> {
                 self.schema.clone()
             }

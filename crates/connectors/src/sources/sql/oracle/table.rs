@@ -34,7 +34,6 @@ use datafusion::physical_plan::{
 };
 use datafusion::sql::TableReference;
 use futures::TryStreamExt;
-use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
@@ -75,10 +74,6 @@ impl OracleTable {
 
 #[async_trait]
 impl TableProvider for OracleTable {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -202,10 +197,6 @@ impl DisplayAs for OracleSQLExec {
 impl ExecutionPlan for OracleSQLExec {
     fn name(&self) -> &str {
         "OracleSQLExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn schema(&self) -> SchemaRef {

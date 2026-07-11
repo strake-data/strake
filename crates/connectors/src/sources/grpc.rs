@@ -204,9 +204,6 @@ impl GrpcTableProvider {
 
 #[async_trait]
 impl TableProvider for GrpcTableProvider {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
     fn schema(&self) -> arrow::datatypes::SchemaRef {
         self.schema.clone()
     }
@@ -301,9 +298,7 @@ impl ExecutionPlan for GrpcExec {
     fn name(&self) -> &str {
         "GrpcExec"
     }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
+
     fn schema(&self) -> arrow::datatypes::SchemaRef {
         self.schema.clone()
     }
@@ -499,10 +494,10 @@ impl ExecutionPlan for GrpcExec {
     fn partition_statistics(
         &self,
         _partition: Option<usize>,
-    ) -> datafusion::error::Result<datafusion::physical_plan::Statistics> {
-        Ok(datafusion::physical_plan::Statistics::new_unknown(
+    ) -> datafusion::error::Result<Arc<datafusion::common::Statistics>> {
+        Ok(Arc::new(datafusion::common::Statistics::new_unknown(
             &self.schema,
-        ))
+        )))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

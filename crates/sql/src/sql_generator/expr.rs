@@ -167,7 +167,7 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
 
             Expr::Cast(cast) => {
                 let sql_inner = self.expr_to_sql(&cast.expr)?;
-                let sql_type = self.dialect.type_mapper.map_type(&cast.data_type)?;
+                let sql_type = self.dialect.type_mapper.map_type(cast.field.data_type())?;
                 Ok(sqlparser::ast::Expr::Cast {
                     expr: Box::new(sql_inner),
                     data_type: sql_type,
@@ -179,7 +179,7 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
 
             Expr::TryCast(cast) => {
                 let sql_inner = self.expr_to_sql(&cast.expr)?;
-                let sql_type = self.dialect.type_mapper.map_type(&cast.data_type)?;
+                let sql_type = self.dialect.type_mapper.map_type(cast.field.data_type())?;
                 Ok(sqlparser::ast::Expr::Cast {
                     expr: Box::new(sql_inner),
                     data_type: sql_type,

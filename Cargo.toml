@@ -16,18 +16,18 @@ description = "The AI Data Layer: Secure, sandboxed environment for AI agents to
 [workspace.dependencies]
 # Pin exact versions to avoid dependency hell
 openssl = { version = "0.10.79", features = ["vendored"] }
-arrow = "58.0.0"
-datafusion = "53.1.0"
-datafusion-federation = { version = "0.5.3", features = ["sql"] }
-datafusion-table-providers = { version = "0.11.0", features = ["postgres", "mysql", "sqlite", "flight", "clickhouse"] }
-arrow-flight = { version = "58.0.0", features = ["flight-sql-experimental"] }
-arrow-json = "58.0.0"
-parquet = "58.0.0"
-datafusion-datasource-parquet = "53.1.0"
-datafusion-datasource = "53.1.0"
+arrow = "58.3.0"
+datafusion = "54.0.0"
+datafusion-federation = { git = "https://github.com/datafusion-contrib/datafusion-federation.git", rev = "65820f2caf408facc6134dc68913e7d3720d6959", features = ["sql"] }
+datafusion-table-providers = { version = "0.12.0", features = ["postgres", "mysql", "sqlite", "flight", "clickhouse"] }
+arrow-flight = { version = "58.3.0", features = ["flight-sql-experimental"] }
+arrow-json = "58.3.0"
+parquet = "58.3.0"
+datafusion-datasource-parquet = "54.0.0"
+datafusion-datasource = "54.0.0"
 object_store = "0.14.0"
 sqlparser = "0.61.0"
-datafusion-substrait = "53.1.0"
+datafusion-substrait = "54.0.0"
 axum = "0.8.1"
 reqwest = { version = "0.12", features = ["json"] }
 oauth2 = "5.0"

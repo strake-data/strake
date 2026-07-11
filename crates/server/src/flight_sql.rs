@@ -709,7 +709,6 @@ impl StrakeFlightSqlService {
                                 // schema mismatch errors, but for Flight SQL GetTables we want
                                 // the full schema including ARROW:FLIGHT:SQL:REMARKS etc.
                                 let schema = table
-                                    .as_any()
                                     .downcast_ref::<strake_connectors::sources::sql::wrappers::SchemaAdaptingTableProvider>()
                                     .map(|s| s.enriched_schema())
                                     .unwrap_or_else(|| table.schema());

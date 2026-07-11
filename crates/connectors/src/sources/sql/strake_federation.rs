@@ -190,20 +190,7 @@ fn is_federated_plan(plan: &LogicalPlan, provider_name: &str) -> datafusion::err
             let mut is_match = false;
 
             fn check_provider(provider: &Arc<dyn TableProvider>, provider_name: &str) -> bool {
-                let any = provider.as_any();
-
-                if let Some(source) =
-                    any.downcast_ref::<datafusion_federation::sql::SQLTableSource>()
-                    && source.federation_provider().name() == provider_name
-                {
-                    return true;
-                }
-                if let Some(source) = any.downcast_ref::<StrakeTableSource>()
-                    && source.federation_provider().name() == provider_name
-                {
-                    return true;
-                }
-                if let Some(adaptor) = any.downcast_ref::<FederatedTableProviderAdaptor>() {
+                if let Some(adaptor) = provider.downcast_ref::<FederatedTableProviderAdaptor>() {
                     if adaptor.source.federation_provider().name() == provider_name {
                         return true;
                     }
@@ -220,35 +207,25 @@ fn is_federated_plan(plan: &LogicalPlan, provider_name: &str) -> datafusion::err
                 false
             }
 
-            if let Some(default_source) =
-                scan.source
-                    .as_any()
-                    .downcast_ref::<datafusion::datasource::DefaultTableSource>()
+            if let Some(default_source) = scan
+                .source
+                .downcast_ref::<datafusion::datasource::DefaultTableSource>()
                 && check_provider(&default_source.table_provider, provider_name)
             {
                 is_match = true;
-            } else if let Some(adaptor) = scan
+            } else if let Some(source) = scan
                 .source
-                .as_any()
-                .downcast_ref::<FederatedTableProviderAdaptor>()
-                && adaptor.source.federation_provider().name() == provider_name
-            {
-                is_match = true;
-            } else if let Some(source) =
-                scan.source
-                    .as_any()
-                    .downcast_ref::<datafusion_federation::sql::SQLTableSource>()
+                .downcast_ref::<datafusion_federation::sql::SQLTableSource>()
                 && source.federation_provider().name() == provider_name
             {
                 is_match = true;
-            } else if let Some(source) =
-                scan.source
-                    .as_any()
-                    .downcast_ref::<crate::sources::sql::duckdb::DuckDBTableSource>()
+            } else if let Some(source) = scan
+                .source
+                .downcast_ref::<crate::sources::sql::duckdb::DuckDBTableSource>()
                 && source.federation_provider().name() == provider_name
             {
                 is_match = true;
-            } else if let Some(source) = scan.source.as_any().downcast_ref::<StrakeTableSource>()
+            } else if let Some(source) = scan.source.downcast_ref::<StrakeTableSource>()
                 && source.federation_provider().name() == provider_name
             {
                 is_match = true;
@@ -330,10 +307,6 @@ impl datafusion::physical_plan::DisplayAs for StrakeFederationExec {
 impl ExecutionPlan for StrakeFederationExec {
     fn name(&self) -> &str {
         "StrakeFederationExec"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 
     fn schema(&self) -> datafusion::arrow::datatypes::SchemaRef {
@@ -424,9 +397,6 @@ impl StrakeTableSource {
 }
 
 impl datafusion::logical_expr::TableSource for StrakeTableSource {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
     fn schema(&self) -> datafusion::arrow::datatypes::SchemaRef {
         self.schema.clone()
     }
@@ -477,9 +447,6 @@ mod tests {
         }
         #[async_trait]
         impl TableProvider for MockFedTable {
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
             fn schema(&self) -> SchemaRef {
                 self.schema.clone()
             }
@@ -515,9 +482,6 @@ mod tests {
         }
         // Need to implement TableSource for MockFedTable to use it in TableScan
         impl datafusion::logical_expr::TableSource for MockFedTable {
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
             fn schema(&self) -> SchemaRef {
                 self.schema.clone()
             }

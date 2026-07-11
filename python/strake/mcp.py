@@ -181,7 +181,7 @@ async def search_schemas(
     include_descriptions: bool = True,
     description_scope: Literal["tables_only", "all", "none"] = "tables_only",
     max_description_length: int = 100,
-) -> list[dict[str, Any]] | types.CallToolResult:
+) -> Any:
     """
     Search semantic index of available database schemas (tables and columns).
     Use this to find which tables contain the data you need.
@@ -210,7 +210,7 @@ async def search_schemas(
 
 
 @mcp.tool()
-async def get_schema_details(fqn: str) -> list[dict[str, Any]] | types.CallToolResult:
+async def get_schema_details(fqn: str) -> Any:
     """
     Get the full schema metadata and descriptions for a specific table.
     Use this to inspect a table after discovering it via search_schemas.

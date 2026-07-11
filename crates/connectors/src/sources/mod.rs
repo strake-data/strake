@@ -51,23 +51,21 @@ pub trait WrappingTableProvider: TableProvider {
 /// Failure to register a new wrapper will cause the `is_federated_plan` logic to
 /// stop at that wrapper, potentially missing federated nodes further down the chain.
 pub fn as_wrapping(provider: &dyn TableProvider) -> Option<&dyn WrappingTableProvider> {
-    let any = provider.as_any();
-
-    if let Some(w) = any.downcast_ref::<sql::wrappers::SchemaAdaptingTableProvider>() {
+    if let Some(w) = provider.downcast_ref::<sql::wrappers::SchemaAdaptingTableProvider>() {
         return Some(w);
     }
-    if let Some(w) = any.downcast_ref::<sql::wrappers::ConcurrencyLimitedTableProvider>() {
+    if let Some(w) = provider.downcast_ref::<sql::wrappers::ConcurrencyLimitedTableProvider>() {
         return Some(w);
     }
     if let Some(w) =
-        any.downcast_ref::<crate::resilience::circuit_breaker::CircuitBreakerTableProvider>()
+        provider.downcast_ref::<crate::resilience::circuit_breaker::CircuitBreakerTableProvider>()
     {
         return Some(w);
     }
-    if let Some(w) = any.downcast_ref::<schema_drift::SchemaDriftTableProvider>() {
+    if let Some(w) = provider.downcast_ref::<schema_drift::SchemaDriftTableProvider>() {
         return Some(w);
     }
-    if let Some(w) = any.downcast_ref::<predicate_caching::CachingTableProvider>() {
+    if let Some(w) = provider.downcast_ref::<predicate_caching::CachingTableProvider>() {
         return Some(w);
     }
 

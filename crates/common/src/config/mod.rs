@@ -247,6 +247,48 @@ impl Config {
         let cfg = builder.build()?;
         let config: Config = cfg.try_deserialize()?;
 
+        // Validate format for "file" sources
+        for source in &config.sources {
+            if let crate::models::SourceType::Other(s) = &source.source_type
+                && s == "file"
+            {
+                let format_val = source
+                    .config
+                    .get("format")
+                    .or_else(|| source.config.get("source_type"))
+                    .or_else(|| {
+                        source
+                            .config
+                            .get("config")
+                            .and_then(|v| v.get("format").or_else(|| v.get("source_type")))
+                    })
+                    .and_then(|v| v.as_str());
+
+                match format_val {
+                    Some(f) => {
+                        use std::str::FromStr;
+                        let st = crate::models::SourceType::from_str(f).unwrap();
+                        match st {
+                            crate::models::SourceType::Parquet
+                            | crate::models::SourceType::Csv
+                            | crate::models::SourceType::Json => {}
+                            _ => {
+                                return Err(ConfigError::Custom(format!(
+                                    "Cannot infer file source type from format '{}'. Expected one of: parquet, csv, json",
+                                    f
+                                )));
+                            }
+                        }
+                    }
+                    None => {
+                        return Err(ConfigError::Custom(
+                            "Cannot infer file source type from format. Expected one of: parquet, csv, json".to_string()
+                        ));
+                    }
+                }
+            }
+        }
+
         Ok(config)
     }
 }

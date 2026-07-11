@@ -110,7 +110,6 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, Partitioning, PlanProperties};
-use std::any::Any;
 
 /// DuckDB connection pool type.
 ///
@@ -176,10 +175,6 @@ impl DisplayAs for DuckDBScanExec {
 impl ExecutionPlan for DuckDBScanExec {
     fn name(&self) -> &str {
         "DuckDBScanExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
@@ -525,10 +520,6 @@ pub fn map_duckdb_type(type_str: &str) -> DataType {
 
 #[async_trait]
 impl TableProvider for DuckDBTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -668,10 +659,6 @@ impl DuckDBTableSource {
 }
 
 impl datafusion::logical_expr::TableSource for DuckDBTableSource {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn schema(&self) -> datafusion::arrow::datatypes::SchemaRef {
         self.table_provider.schema()
     }

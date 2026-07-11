@@ -101,22 +101,53 @@ impl SourceProvider for FileSourceProvider {
         let mut source_type = config.source_type.clone();
         if let SourceType::Other(s) = &source_type
             && s == "file"
-            && let Some(format_val) = config
+        {
+            let format_val = config
                 .config
                 .get("format")
                 .or_else(|| config.config.get("source_type"))
-                .and_then(|v| v.as_str())
+                .or_else(|| {
+                    config
+                        .config
+                        .get("config")
+                        .and_then(|v| v.get("format").or_else(|| v.get("source_type")))
+                })
+                .and_then(|v| v.as_str());
+
+            if let Some(format_val) = format_val {
+                use std::str::FromStr;
+                let st = SourceType::from_str(format_val).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Cannot infer file source type from format '{}': {}. \
+                         Expected one of: parquet, csv, json",
+                        format_val,
+                        e
+                    )
+                })?;
+                match st {
+                    SourceType::Parquet | SourceType::Csv | SourceType::Json => {
+                        source_type = st;
+                    }
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "Cannot infer file source type from format '{}'. \
+                             Expected one of: parquet, csv, json",
+                            format_val
+                        ));
+                    }
+                }
+            }
+        }
+
+        let mut final_config = config.config.clone();
+        if let Some(nested_cfg) = config.config.get("config").and_then(|v| v.as_object())
+            && let Some(final_map) = final_config.as_object_mut()
         {
-            use std::str::FromStr;
-            let st = SourceType::from_str(format_val).map_err(|e| {
-                anyhow::anyhow!(
-                    "Cannot infer file source type from format '{}': {}. \
-                     Expected one of: parquet, csv, json",
-                    format_val,
-                    e
-                )
-            })?;
-            source_type = st;
+            for (k, v) in nested_cfg {
+                if !final_map.contains_key(k) {
+                    final_map.insert(k.clone(), v.clone());
+                }
+            }
         }
 
         match &source_type {
@@ -131,7 +162,7 @@ impl SourceProvider for FileSourceProvider {
                     #[serde(default)]
                     tables: Option<Vec<TableConfig>>,
                 }
-                let cfg: ParquetConfig = serde_json::from_value(config.config.clone())
+                let cfg: ParquetConfig = serde_json::from_value(final_config.clone())
                     .context("Failed to parse Parquet source configuration")?;
 
                 let path = config.url.clone()
@@ -175,7 +206,7 @@ impl SourceProvider for FileSourceProvider {
                     #[serde(default)]
                     tables: Option<Vec<TableConfig>>,
                 }
-                let cfg: CsvConfig = serde_json::from_value(config.config.clone())
+                let cfg: CsvConfig = serde_json::from_value(final_config.clone())
                     .context("Failed to parse CSV source configuration")?;
 
                 let path = config.url.clone().or_else(|| cfg.url.clone()).context(
@@ -211,7 +242,7 @@ impl SourceProvider for FileSourceProvider {
                     #[serde(default)]
                     tables: Option<Vec<TableConfig>>,
                 }
-                let cfg: JsonConfig = serde_json::from_value(config.config.clone())
+                let cfg: JsonConfig = serde_json::from_value(final_config.clone())
                     .context("Failed to parse JSON source configuration")?;
 
                 let path = config.url.clone().or_else(|| cfg.url.clone()).context(

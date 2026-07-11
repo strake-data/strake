@@ -27,7 +27,6 @@ use crate::sources::sql::wrappers::{wrap_concurrent, wrap_provider};
 use datafusion_federation::FederatedTableProviderAdaptor;
 use iceberg::{Catalog, NamespaceIdent, TableIdent};
 use iceberg_datafusion::IcebergStaticTableProvider;
-use std::any::Any;
 use std::time::Instant;
 use strake_common::circuit_breaker::{AdaptiveCircuitBreaker, CircuitBreakerConfig};
 use strake_common::config::RetrySettings;
@@ -575,9 +574,6 @@ impl LazyIcebergTableProvider {
 // FIXME: DynamicFilterSource (#812) not implemented for lazy provider.
 // This prevents runtime join filter pushdown until the table is loaded.
 impl TableProvider for LazyIcebergTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
     fn schema(&self) -> SchemaRef {
         // Guaranteed to be present by constructor
         self.schema_cache
