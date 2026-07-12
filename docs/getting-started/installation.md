@@ -124,4 +124,4 @@ The Strake Server can be configured via environment variables or a `.env` file. 
 | `STRAKE_RETRY__MAX_ATTEMPTS` | `5` | Max retries for establishing upstream connections |
 | `STRAKE_QUERY_LIMITS__MAX_OUTPUT_ROWS` | `None` | Hard limit on rows returned by a query |
 
-For detailed instructions on setting up database-backed authentication and generating keys, see the [Authentication Guide](./authentication.md).
+For detailed instructions on setting up database-backed authentication and generating keys, see the [Authentication Guide](../user-guide/authentication.md).

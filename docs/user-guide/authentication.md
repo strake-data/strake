@@ -81,4 +81,4 @@ server:
 
 Enterprise features like **Row-Level Security (RLS)** and **Column Masking** are automatically applied based on the claims (roles/groups) present in the OIDC token.
 
-For more details, see the [Enterprise Documentation](./enterprise.md).
+For more details, see the [Enterprise Documentation](../advanced/enterprise.md).

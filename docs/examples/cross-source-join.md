@@ -1,10 +1,6 @@
-# Examples
+# Cross-Source Join: Postgres + S3 Parquet
 
-Practical, real-world examples demonstrating how to write federated SQL queries and orchestrate diverse data sources.
-
----
-
-## 1. Cross-Source Join: Postgres + S3 Parquet
+Practical example demonstrating how to write federated SQL queries that join tables across PostgreSQL and AWS S3 object store.
 
 Join hot transactional user records stored in a local **PostgreSQL** database with historical clickstream logs stored in **AWS S3** as Parquet files.
 
