@@ -11,35 +11,53 @@ extra_css = ["stylesheets/extra.css"]
 
 nav = [
     { "Home" = "index.md" },
-    { "User Guides" = [
-        { "Quickstart" = "quickstart.md" },
-        { "Installation" = "install.md" },
-        { "Core Concepts" = "concepts.md" },
-        { "Examples & Joins" = "examples.md" },
-        { "Query Profiling & Tuning" = "query-profiling.md" },
-        { "Sandbox Metering" = "sandbox-metering.md" }
+    { "Getting Started" = [
+        { "Overview" = "getting-started/index.md" },
+        { "Quickstart" = "getting-started/quickstart.md" },
+        { "Installation" = "getting-started/installation.md" },
+        { "Core Concepts" = "getting-started/core-concepts.md" }
     ] },
-    { "Connectors" = [
-        { "Overview" = "connectors.md" },
-        { "PostgreSQL" = "connectors/postgres.md" },
-        { "MySQL" = "connectors/mysql.md" },
-        { "SQLite" = "connectors/sqlite.md" },
-        { "DuckDB" = "connectors/duckdb.md" },
-        { "ClickHouse" = "connectors/clickhouse.md" },
-        { "Oracle" = "connectors/oracle.md" },
-        { "Files & Cloud Storage" = "connectors/file.md" },
-        { "Apache Iceberg" = "connectors/iceberg.md" },
-        { "Arrow Flight SQL" = "connectors/flight_sql.md" },
-        { "REST APIs & SaaS" = "connectors/rest.md" },
-        { "gRPC Services" = "connectors/grpc.md" }
+    { "User Guide" = [
+        { "Configuration" = "user-guide/configuration.md" },
+        { "Data Sources (Connectors)" = [
+            { "Overview" = "user-guide/sources/index.md" },
+            { "PostgreSQL" = "user-guide/sources/postgres.md" },
+            { "MySQL" = "user-guide/sources/mysql.md" },
+            { "SQLite" = "user-guide/sources/sqlite.md" },
+            { "DuckDB" = "user-guide/sources/duckdb.md" },
+            { "ClickHouse" = "user-guide/sources/clickhouse.md" },
+            { "Oracle" = "user-guide/sources/oracle.md" },
+            { "Files & Cloud Storage" = "user-guide/sources/file.md" },
+            { "Apache Iceberg" = "user-guide/sources/iceberg.md" },
+            { "Arrow Flight SQL" = "user-guide/sources/flight_sql.md" },
+            { "REST APIs" = "user-guide/sources/rest.md" },
+            { "gRPC Services" = "user-guide/sources/grpc.md" }
+        ] },
+        { "Command Line Interface" = [
+            { "Overview" = "user-guide/cli/index.md" },
+            { "Project Lifecycle" = "user-guide/cli/project-lifecycle.md" },
+            { "Discovery & Inspection" = "user-guide/cli/discovery.md" },
+            { "Security & Secrets" = "user-guide/cli/security.md" },
+            { "Database Management" = "user-guide/cli/database.md" },
+            { "API Key Management" = "user-guide/cli/apikey.md" }
+        ] },
+        { "Python API" = "user-guide/python-api.md" },
+        { "Authentication" = "user-guide/authentication.md" },
+        { "AI Metadata Enrichment" = "user-guide/metadata-enrichment.md" },
+        { "Join Hints" = "user-guide/join-hints.md" },
+        { "MCP Sidecar" = "user-guide/mcp.md" }
     ] },
-    { "Reference & Internals" = [
-        { "Python API" = "python-api.md" },
-        { "CLI Reference" = "cli-reference.md" },
-        { "Authentication" = "authentication.md" },
-        { "Engine Architecture" = "architecture.md" },
-        { "Enterprise Edition" = "enterprise.md" },
-        { "Configuration Reference" = "configuration.md" }
+    { "Advanced Topics" = [
+        { "Overview" = "advanced/index.md" },
+        { "Architecture" = "advanced/architecture.md" },
+        { "Query Profiling" = "advanced/query-profiling.md" },
+        { "Sandbox Metering" = "advanced/sandbox-metering.md" },
+        { "Enterprise Edition" = "advanced/enterprise.md" }
+    ] },
+    { "Examples" = [
+        { "Overview" = "examples/index.md" },
+        { "Cross-Source Join" = "examples/cross-source-join.md" },
+        { "GitHub REST API" = "examples/github-api.md" }
     ] }
 ]
 
