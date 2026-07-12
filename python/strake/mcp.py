@@ -231,9 +231,10 @@ async def get_schema_details(fqn: str) -> Any:
                 indexer.build_index()
             table = indexer.db.open_table(indexer.table_name)
 
-            # Use SQL string with escaped single quotes to prevent injection
-            # since some lancedb versions expect a string for .where().
-            fqn_escaped = fqn.replace("'", "''")
+            from strake.utils import sanitize_identifier
+
+            # Use SQL string with sanitized identifier to prevent injection
+            fqn_escaped = sanitize_identifier(fqn)
             results = (
                 table.search()
                 .where(f"table_id = '{fqn_escaped}'")
@@ -378,7 +379,7 @@ def load_stdin_config() -> None:
         raise
 
 
-def main():
+def main() -> None:
     """Entry point for python -m strake.mcp"""
     parser = argparse.ArgumentParser(description="Strake MCP Server")
     parser.add_argument(

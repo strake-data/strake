@@ -1,16 +1,17 @@
+"""Metadata enrichment and schema management for Strake.
+
+Provides strategies for extracting metadata (table/column comments and descriptions)
+from various SQL dialect catalogs (Postgres, MySQL, Snowflake, BigQuery, SQLite).
+"""
+
 import json
 import logging
 import re
 from typing import Any, Callable, Protocol
 
+from strake.utils import sanitize_identifier
+
 logger = logging.getLogger("strake.metadata")
-
-
-def sanitize_identifier(name: str) -> str:
-    """Validate against a simple identifier pattern before interpolating."""
-    if all(c.isalnum() or c in ("_", ".") for c in name):
-        return name
-    raise ValueError(f"Invalid identifier: {name}")
 
 
 class MetadataEnricher(Protocol):

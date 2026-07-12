@@ -17,7 +17,7 @@ import lancedb
 import pyarrow as pa
 import yaml
 
-from strake.utils import get_strake_dir
+from strake.utils import get_strake_dir, sanitize_identifier, sanitize_lance_value
 
 logger = logging.getLogger("strake.joins")
 
@@ -158,10 +158,10 @@ def register_join(
                     }
                 )
 
-                lt = str(l_table).replace("'", "''")
-                lc = str(l_col).replace("'", "''")
-                rt = str(r_table).replace("'", "''")
-                rc = str(r_col).replace("'", "''")
+                lt = sanitize_identifier(str(l_table))
+                lc = sanitize_identifier(str(l_col))
+                rt = sanitize_identifier(str(r_table))
+                rc = sanitize_identifier(str(r_col))
                 delete_clauses.append(
                     f"((left_table = '{lt}' and left_column = '{lc}' and right_table = '{rt}' and right_column = '{rc}') or "
                     f"(left_table = '{rt}' and left_column = '{rc}' and right_table = '{lt}' and right_column = '{lc}'))"
@@ -183,10 +183,10 @@ def register_join(
             "Must provide left_table, left_column, right_table, and right_column when config_path is None."
         )
 
-    lt = left_table.replace("'", "''")
-    lc = left_column.replace("'", "''")
-    rt = right_table.replace("'", "''")
-    rc = right_column.replace("'", "''")
+    lt = sanitize_identifier(left_table)
+    lc = sanitize_identifier(left_column)
+    rt = sanitize_identifier(right_table)
+    rc = sanitize_identifier(right_column)
     where_clause = (
         f"(left_table = '{lt}' and left_column = '{lc}' and right_table = '{rt}' and right_column = '{rc}') or "
         f"(left_table = '{rt}' and left_column = '{rc}' and right_table = '{lt}' and right_column = '{lc}')"
@@ -377,7 +377,7 @@ def get_table_columns_from_cache(table_name: str) -> list[dict[str, str]]:
         db = lancedb.connect(db_path)
         # Avoid lazy-load list_tables() bug; directly open and catch potential exceptions
         table = db.open_table("table_schemas")
-        escaped_name = table_name.replace("'", "''")
+        escaped_name = sanitize_identifier(table_name)
         rows = (
             table.search()
             .where(f"table_id = '{escaped_name}'")
@@ -441,8 +441,8 @@ def join_hints(
     db_candidates = []
     table = _get_join_registry_table()
 
-    l_fqn = left_fqn.replace("'", "''")
-    r_fqn = right_fqn.replace("'", "''")
+    l_fqn = sanitize_identifier(left_fqn)
+    r_fqn = sanitize_identifier(right_fqn)
     where_clause = f"(left_table = '{l_fqn}' and right_table = '{r_fqn}') or (left_table = '{r_fqn}' and right_table = '{l_fqn}')"
 
     try:
@@ -612,7 +612,7 @@ def sync_db_foreign_keys(conn: Any) -> None:
         logger.debug(f"Syncing foreign keys for source '{name}' (dialect: {dialect})")
 
         # Delete old FK records for this source before attempting to fetch new ones
-        escaped_src = name.replace("'", "''")
+        escaped_src = sanitize_identifier(name)
         where_clause = f"source = 'fk' and (left_table LIKE '{escaped_src}.%' or right_table LIKE '{escaped_src}.%')"
         try:
             table.delete(where_clause)
