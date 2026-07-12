@@ -446,6 +446,49 @@ impl StrakeConnection {
         self.sql(query, params, py)
     }
 
+    /// Register a user-defined join candidate or load from file.
+    #[pyo3(signature = (left_table = None, left_column = None, right_table = None, right_column = None, cardinality = "1:N", config_path = None))]
+    fn register_join(
+        self_: PyRef<'_, Self>,
+        left_table: Option<String>,
+        left_column: Option<String>,
+        right_table: Option<String>,
+        right_column: Option<String>,
+        cardinality: &str,
+        config_path: Option<String>,
+    ) -> PyResult<()> {
+        let py = self_.py();
+        let joins_mod = py.import("strake.joins")?;
+        joins_mod.call_method1(
+            "register_join",
+            (
+                self_,
+                left_table,
+                left_column,
+                right_table,
+                right_column,
+                cardinality,
+                config_path,
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// Retrieve candidate join paths between two tables.
+    #[pyo3(signature = (left_fqn, right_fqn, enable_fuzzy=None))]
+    fn join_hints(
+        self_: PyRef<'_, Self>,
+        left_fqn: String,
+        right_fqn: String,
+        enable_fuzzy: Option<bool>,
+    ) -> PyResult<Py<PyAny>> {
+        let py = self_.py();
+        let joins_mod = py.import("strake.joins")?;
+        let res =
+            joins_mod.call_method1("join_hints", (self_, left_fqn, right_fqn, enable_fuzzy))?;
+        Ok(res.unbind())
+    }
+
     /// Returns the logical plan of the query without executing it.
     fn trace(&self, query: String, py: Python) -> PyResult<String> {
         check_not_in_tokio_context("trace")?;

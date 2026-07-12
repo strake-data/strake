@@ -80,6 +80,32 @@ class StrakeConnection:
         """Context manager support."""
         ...
 
+    def register_join(
+        self,
+        left_table: str | None = None,
+        left_column: str | None = None,
+        right_table: str | None = None,
+        right_column: str | None = None,
+        cardinality: str = "1:N",
+        config_path: str | None = None,
+    ) -> None:
+        """
+        Registers a join candidate to the catalog database (LanceDB).
+        Can register a single entry programmatically or bulk load from a YAML configuration file.
+        """
+        ...
+
+    def join_hints(
+        self,
+        left_fqn: str,
+        right_fqn: str,
+        enable_fuzzy: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Returns candidate join paths between two tables, sorted by confidence descending.
+        """
+        ...
+
 class StrakeException(Exception): ...
 class ConnectionError(StrakeException): ...
 class QueryError(StrakeException): ...
