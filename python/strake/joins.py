@@ -378,14 +378,18 @@ def get_table_columns_from_cache(table_name: str) -> list[dict[str, str]]:
         # Avoid lazy-load list_tables() bug; directly open and catch potential exceptions
         table = db.open_table("table_schemas")
         escaped_name = sanitize_identifier(table_name)
+        # Use where() without select() for compatibility across lancedb versions —
+        # chaining select() on a no-vector search() is unreliable in lancedb 0.30.x.
         rows = (
             table.search()
             .where(f"table_id = '{escaped_name}'")
-            .select(["column_name", "data_type"])
             .limit(1000)
             .to_list()
         )
-        return [{"name": r["column_name"], "type": r["data_type"]} for r in rows]
+        return [{
+            "name": r["column_name"],
+            "type": r["data_type"],
+        } for r in rows if "column_name" in r and "data_type" in r]
     except Exception as e:
         logger.debug(f"Failed to retrieve columns for {table_name} from cache: {e}")
         return []

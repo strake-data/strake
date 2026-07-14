@@ -7,11 +7,13 @@ edition = "2024"
 [lib]
 name = "_strake"
 crate-type = ["cdylib"]
+test = false
 
 [dependencies]
 strake-runtime = { path = "../crates/runtime" }
 strake-common = { path = "../crates/common" }
-strake-error = { path = "../crates/error" }
+strake-error = { path = "../crates/error", features = ["datafusion"] }
+datafusion = { workspace = true }
 pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }
 arrow = { workspace = true, features = ["pyarrow", "prettyprint"] }
 arrow-flight = { workspace = true, features = ["flight-sql-experimental"] }
@@ -27,3 +29,10 @@ tracing = { workspace = true }
 async-trait.workspace = true
 tracing-subscriber = { workspace = true }
 aho-corasick = "1.1"
+
+[features]
+default = []
+testing = []
+
+[dev-dependencies]
+temp-env = { workspace = true }

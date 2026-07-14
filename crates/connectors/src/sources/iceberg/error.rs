@@ -1,9 +1,35 @@
+//! # Iceberg Connector Errors
+//!
+//! ## Overview
+//! Structured error types for Iceberg catalog and table operations, with
+//! conversions to `DataFusionError` for propagation through the
+//! DataFusion execution pipeline. This module ensures structured error codes survive
+//! the DataFusion execution boundary instead of being flattened to a string.
+//!
+//! ## Usage
+//! ```rust
+//! # use anyhow::anyhow;
+//! let err = strake_connectors::sources::iceberg::error::IcebergConnectorError::from(anyhow!("boom"));
+//! let df_err: datafusion::error::DataFusionError = err.into();
+//! ```
+//!
+//! ## Performance Characteristics
+//! Conversions are lightweight and allocate only when wrapping dynamic anyhow::Error
+//! chains or formatting messages during display generation.
+//!
+//! ## Errors
+//! - `TableNotFound` → `DataFusionError::External(StrakeError{code: TableNotFound, ..})`
+//! - `InvalidConfiguration` → `DataFusionError::Plan`
+//! - `TableLoadError` → `DataFusionError::External` wrapping the inner `anyhow::Error`
+//! - `CatalogError` / `TimeTravelUnavailable` → `DataFusionError::External(Box<Self>)`
+
 use thiserror::Error;
 
 use super::TableVersionSpec;
 
 /// Structured errors for Iceberg connector operations
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum IcebergConnectorError {
     /// Catalog API operation failed after retrying.
     #[error("Catalog API error: {operation} failed after {retries} retries")]
@@ -46,17 +72,28 @@ pub enum IcebergConnectorError {
     TableLoadError(#[from] anyhow::Error),
 }
 
-// Implement conversion to DataFusionError
+/// Converts `IcebergConnectorError` to `DataFusionError`.
+///
+/// This implementation preserves structured error types by boxing specific errors
+/// (e.g. `TableNotFound` mapped to a structured `StrakeError`, and `TableLoadError` wrapping the
+/// underlying `anyhow::Error` cause) into `DataFusionError::External`.
 impl From<IcebergConnectorError> for datafusion::error::DataFusionError {
     fn from(err: IcebergConnectorError) -> Self {
-        match &err {
+        match err {
             IcebergConnectorError::TableNotFound { .. } => {
-                datafusion::error::DataFusionError::Plan(err.to_string())
+                let display = err.to_string();
+                datafusion::error::DataFusionError::External(Box::new(
+                    strake_error::StrakeError::new(strake_error::ErrorCode::TableNotFound, display),
+                ))
             }
             IcebergConnectorError::InvalidConfiguration(_) => {
-                datafusion::error::DataFusionError::Plan(err.to_string())
+                let display = err.to_string();
+                datafusion::error::DataFusionError::Plan(display)
             }
-            _ => datafusion::error::DataFusionError::Execution(err.to_string()),
+            IcebergConnectorError::TableLoadError(e) => {
+                datafusion::error::DataFusionError::External(e.into())
+            }
+            _ => datafusion::error::DataFusionError::External(Box::new(err)),
         }
     }
 }

@@ -89,13 +89,17 @@ def get_script_dir() -> Optional[Path]:
 def get_strake_dir(subdir: Optional[str] = None) -> Path:
     """
     Unified helper to return the resolved .strake directory.
-    Defaults to script-relative if possible, falling back to ~/.strake.
+    Checks STRAKE_DIR env var first, then defaults to script-relative if possible, falling back to ~/.strake.
     """
-    script_dir = get_script_dir()
-    if script_dir:
-        base = (script_dir / ".strake").resolve()
+    env_dir = os.environ.get("STRAKE_DIR")
+    if env_dir:
+        base = Path(env_dir).resolve()
     else:
-        base = Path(os.path.expanduser("~/.strake")).resolve()
+        script_dir = get_script_dir()
+        if script_dir:
+            base = (script_dir / ".strake").resolve()
+        else:
+            base = Path(os.path.expanduser("~/.strake")).resolve()
 
     if subdir:
         path = (base / subdir).resolve()

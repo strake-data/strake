@@ -5,6 +5,30 @@
 //! ## Overview
 //! This module contains `StrakeConnection`, which handles query execution, concurrency, and
 //! bridging between Python's memory model (PyArrow) and Rust's (Tokio/Arrow).
+//!
+//! ## Concurrency and Safety
+//! The global Tokio runtime is used to drive queries concurrently. Rust panics are caught
+//! at FFI boundary methods and returned as Python exceptions (`InternalError`) to guarantee
+//! process safety.
+//!
+//! ## Performance Characteristics
+//! - **Memory & Materialization**: Query results are fully materialized in memory as Arrow `RecordBatch`es before conversion to PyArrow Tables. This introduces a peak memory allocation proportional to the result set size.
+//! - **GIL Release Semantics**: The Python Global Interpreter Lock (GIL) is explicitly released via `py.detach(...)` during the blocking `block_on` network/disk IO hot path, enabling other Python threads to execute concurrently.
+//! - **Agent-Guard Scanning Complexity**: When the agent guard is enabled, result datasets are scanned for prompt-injection patterns. Scanning is done efficiently using the Aho-Corasick algorithm (O(N + M) time complexity where N is the total text size and M is the pattern set size) with zero-allocation dictionary borrows instead of cloning data arrays.
+//! - **Panic Boundaries**: Explicit `catch_panics` wrappers are retained on FFI boundaries because PyO3's built-in unwind handler converts panics to generic `SystemError`. Explicit wrappers ensure panics are mapped to the unified `InternalError` carrying stable numeric error codes.
+//!
+//! ## Errors
+//! Methods return standard Python exceptions mapped from Rust `StrakeError` categories:
+//! - `ConnectionError`: Underlying database connection issues.
+//! - `QueryError`: Query planning, execution, or result collection issues.
+//! - `InternalError`: Unexpected system errors or panics, or if this connection was poisoned by a prior panic and must be discarded (create a new `StrakeConnection`).
+//!
+//! ## Usage
+//! ```python
+//! import _strake
+//! conn = _strake.StrakeConnection("grpc://localhost:50051")
+//! table = conn.sql("SELECT * FROM my_table")
+//! ```
 
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder};
 use arrow::array::{Array, DictionaryArray, LargeStringArray, StringArray};
@@ -15,7 +39,7 @@ use pyo3::prelude::*;
 use std::collections::HashMap;
 
 use crate::backend::{Backend, EmbeddedBackend, RemoteBackend, StrakeQueryExecutor};
-use crate::errors::{InternalError, to_py_exception};
+use crate::errors::{InternalError, catch_panics, to_py_exception};
 use std::sync::{Arc, OnceLock};
 use strake_error::{ErrorCode, ErrorContext, StrakeError};
 use tokio::sync::Mutex;
@@ -44,7 +68,26 @@ enum AgentGuardMode {
 }
 
 impl AgentGuardMode {
+    /// Reads `STRAKE_AGENT_GUARD_MODE` and caches it for the process lifetime
+    /// via `OnceLock` (kept off the per-query hot path).
+    ///
+    /// # Caveats
+    /// The value is cached on first read; changing the env var after the
+    /// first query in a process has **no effect** until restart. Rust unit
+    /// tests bypass the cache — see the `#[cfg(test)]` variant.
+    #[cfg(not(test))]
     fn from_env() -> Self {
+        static CACHED_MODE: OnceLock<AgentGuardMode> = OnceLock::new();
+        *CACHED_MODE.get_or_init(Self::from_env_uncached)
+    }
+
+    /// Reads `STRAKE_AGENT_GUARD_MODE` dynamically on every call during testing.
+    #[cfg(test)]
+    fn from_env() -> Self {
+        Self::from_env_uncached()
+    }
+
+    fn from_env_uncached() -> Self {
         match std::env::var("STRAKE_AGENT_GUARD_MODE")
             .ok()
             .as_deref()
@@ -55,13 +98,31 @@ impl AgentGuardMode {
             Some("enforce") => Self::Enforce,
             Some("dry_run") | Some("dryrun") => Self::DryRun,
             Some("disabled") | Some("off") | Some("0") => Self::Disabled,
-            Some(_) => Self::Disabled,
-            None => Self::Disabled,
+            _ => Self::Disabled,
         }
     }
 }
 
+/// Reads whether the current context is an agent MCP context and caches it for the
+/// process lifetime via `OnceLock`.
+///
+/// # Caveats
+/// The value is cached on first read; changing the `STRAKE_EXECUTION_CONTEXT` env var
+/// after the first query in a process has **no effect** until restart. Rust unit
+/// tests bypass the cache — see the `#[cfg(test)]` variant.
+#[cfg(not(test))]
 fn is_agent_mcp_context() -> bool {
+    static CACHED_CONTEXT: OnceLock<bool> = OnceLock::new();
+    *CACHED_CONTEXT.get_or_init(is_agent_mcp_context_uncached)
+}
+
+/// Reads whether the current context is an agent MCP context dynamically during testing.
+#[cfg(test)]
+fn is_agent_mcp_context() -> bool {
+    is_agent_mcp_context_uncached()
+}
+
+fn is_agent_mcp_context_uncached() -> bool {
     matches!(
         std::env::var("STRAKE_EXECUTION_CONTEXT")
             .ok()
@@ -145,7 +206,7 @@ fn scan_string_array_offsets<Offset: Copy + TryInto<usize>>(
             continue;
         }
         let end = end.min(data.len());
-        let max_end = (start + MAX_SCAN_BYTES_PER_CELL).min(end);
+        let max_end = start.saturating_add(MAX_SCAN_BYTES_PER_CELL).min(end);
         let hay = &data[start..max_end];
 
         if let Some(pat_id) = scan_bytes_for_injection(hay) {
@@ -184,17 +245,15 @@ fn scan_record_batch_for_injection(batch: &RecordBatch) -> Option<InjectionFindi
                 // Scan dictionary values rather than per-row decoded strings.
                 match value_type.as_ref() {
                     DataType::Utf8 => {
-                        let values = downcast_dictionary_values_utf8(col);
-                        if let Some(values) = values
-                            && let Some(finding) = scan_string_array(column_name, &values)
+                        if let Some(values) = borrow_dictionary_values_utf8(col)
+                            && let Some(finding) = scan_string_array(column_name, values)
                         {
                             return Some(finding);
                         }
                     }
                     DataType::LargeUtf8 => {
-                        let values = downcast_dictionary_values_large_utf8(col);
-                        if let Some(values) = values
-                            && let Some(finding) = scan_large_string_array(column_name, &values)
+                        if let Some(values) = borrow_dictionary_values_large_utf8(col)
+                            && let Some(finding) = scan_large_string_array(column_name, values)
                         {
                             return Some(finding);
                         }
@@ -208,58 +267,34 @@ fn scan_record_batch_for_injection(batch: &RecordBatch) -> Option<InjectionFindi
     None
 }
 
-fn downcast_dictionary_values_utf8(array: &dyn Array) -> Option<StringArray> {
-    let values = array
-        .as_any()
-        .downcast_ref::<DictionaryArray<Int32Type>>()
-        .map(|d| d.values().clone())
-        .or_else(|| {
-            array
-                .as_any()
-                .downcast_ref::<DictionaryArray<Int64Type>>()
-                .map(|d| d.values().clone())
-        })
-        .or_else(|| {
-            array
-                .as_any()
-                .downcast_ref::<DictionaryArray<UInt32Type>>()
-                .map(|d| d.values().clone())
-        })
-        .or_else(|| {
-            array
-                .as_any()
-                .downcast_ref::<DictionaryArray<UInt64Type>>()
-                .map(|d| d.values().clone())
-        })?;
-
-    values.as_any().downcast_ref::<StringArray>().cloned()
+fn borrow_dictionary_values_utf8(array: &dyn Array) -> Option<&StringArray> {
+    macro_rules! downcast_values {
+        ($t:ty) => {
+            if let Some(d) = array.as_any().downcast_ref::<DictionaryArray<$t>>() {
+                return d.values().as_any().downcast_ref::<StringArray>();
+            }
+        };
+    }
+    downcast_values!(Int32Type);
+    downcast_values!(Int64Type);
+    downcast_values!(UInt32Type);
+    downcast_values!(UInt64Type);
+    None
 }
 
-fn downcast_dictionary_values_large_utf8(array: &dyn Array) -> Option<LargeStringArray> {
-    let values = array
-        .as_any()
-        .downcast_ref::<DictionaryArray<Int32Type>>()
-        .map(|d| d.values().clone())
-        .or_else(|| {
-            array
-                .as_any()
-                .downcast_ref::<DictionaryArray<Int64Type>>()
-                .map(|d| d.values().clone())
-        })
-        .or_else(|| {
-            array
-                .as_any()
-                .downcast_ref::<DictionaryArray<UInt32Type>>()
-                .map(|d| d.values().clone())
-        })
-        .or_else(|| {
-            array
-                .as_any()
-                .downcast_ref::<DictionaryArray<UInt64Type>>()
-                .map(|d| d.values().clone())
-        })?;
-
-    values.as_any().downcast_ref::<LargeStringArray>().cloned()
+fn borrow_dictionary_values_large_utf8(array: &dyn Array) -> Option<&LargeStringArray> {
+    macro_rules! downcast_values {
+        ($t:ty) => {
+            if let Some(d) = array.as_any().downcast_ref::<DictionaryArray<$t>>() {
+                return d.values().as_any().downcast_ref::<LargeStringArray>();
+            }
+        };
+    }
+    downcast_values!(Int32Type);
+    downcast_values!(Int64Type);
+    downcast_values!(UInt32Type);
+    downcast_values!(UInt64Type);
+    None
 }
 
 fn get_runtime() -> PyResult<&'static tokio::runtime::Runtime> {
@@ -296,86 +331,68 @@ fn check_not_in_tokio_context(method: &str) -> PyResult<()> {
 #[pyclass]
 pub struct StrakeConnection {
     backend: Arc<Mutex<Backend>>,
+    poisoned: Arc<std::sync::atomic::AtomicBool>,
 }
 
-#[pymethods]
+fn catch_and_poison<T>(
+    poisoned: &std::sync::atomic::AtomicBool,
+    f: impl FnOnce() -> PyResult<T>,
+) -> PyResult<T> {
+    if poisoned.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(InternalError::new_err(
+            "Connection has been poisoned due to a previous panic",
+        ));
+    }
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(res) => res,
+        Err(payload) => {
+            poisoned.store(true, std::sync::atomic::Ordering::Relaxed);
+            let msg = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("Unknown Rust panic");
+            Err(InternalError::new_err(format!("Rust panic: {msg}")))
+        }
+    }
+}
+
 impl StrakeConnection {
-    #[new]
-    #[pyo3(signature = (dsn_or_config, sources_config = None, api_key = None))]
-    fn new(
-        dsn_or_config: String,
-        sources_config: Option<String>,
-        api_key: Option<String>,
-    ) -> PyResult<Self> {
-        let runtime = get_runtime()?;
+    fn run_with_boundary<T, F>(&self, f: F) -> PyResult<T>
+    where
+        F: FnOnce() -> PyResult<T>,
+    {
+        catch_and_poison(&self.poisoned, f)
+    }
 
-        let backend =
-            if dsn_or_config.starts_with("grpc://") || dsn_or_config.starts_with("grpcs://") {
-                // Remote mode
-                let client = runtime
-                    .block_on(async { RemoteBackend::new(dsn_or_config, api_key).await })
-                    .map_err(to_py_exception_anyhow)?;
-                Backend::Remote(Box::new(client))
-            } else {
-                // Embedded mode
-                let engine = runtime
-                    .block_on(async { EmbeddedBackend::new(&dsn_or_config, sources_config).await })
-                    .map_err(to_py_exception_anyhow)?;
-                Backend::Embedded(Box::new(engine))
-            };
-
-        Ok(Self {
-            backend: Arc::new(Mutex::new(backend)),
+    fn run_query(
+        &self,
+        query: &str,
+        py: Python,
+    ) -> Result<(arrow::datatypes::SchemaRef, Vec<RecordBatch>), anyhow::Error> {
+        let backend = Arc::clone(&self.backend);
+        let runtime = get_runtime().map_err(anyhow::Error::msg)?;
+        py.detach(|| {
+            runtime.block_on(async move {
+                let mut backend = backend.lock().await;
+                backend.execute(query).await
+            })
         })
     }
 
-    /// Execute a SQL query and return results as a PyArrow Table.
-    ///
-    /// NOTE: Results are fully materialized in memory before returning.
-    /// For large datasets, use the streaming `iter_batches()` API on the returned table.
-    #[pyo3(signature = (query, params = None))]
-    fn sql(
-        &self,
-        query: String,
-        params: Option<HashMap<String, Py<PyAny>>>,
-        py: Python,
-    ) -> PyResult<Py<PyAny>> {
-        if let Some(_p) = params {
-            return Err(InternalError::new_err(
-                "Parameter binding: Not yet implemented in this version",
-            ));
-        }
-
-        // Guard: block_on panics when nested inside a Tokio context.
-        // The GIL is released via py.detach() while waiting.
-        check_not_in_tokio_context("sql")?;
-
-        let backend = Arc::clone(&self.backend);
-        let runtime = get_runtime()?;
-
-        let (schema, batches) = py.detach(|| {
-            runtime
-                .block_on(async move {
-                    let mut backend = backend.lock().await;
-                    backend.execute(&query).await
-                })
-                .map_err(to_py_exception_anyhow)
-        })?;
-
-        // Convert to PyArrow
-        let pyarrow = py.import("pyarrow")?;
-
-        let has_batches = !batches.is_empty();
-        let mut py_batches = Vec::with_capacity(batches.len());
+    fn run_agent_guard(&self, batches: &[RecordBatch], py: Python) -> PyResult<()> {
         let agent_guard_mode = if is_agent_mcp_context() {
             AgentGuardMode::from_env()
         } else {
             AgentGuardMode::Disabled
         };
+
+        if agent_guard_mode == AgentGuardMode::Disabled {
+            return Ok(());
+        }
+
         for batch in batches {
-            if agent_guard_mode != AgentGuardMode::Disabled
-                && let Some(finding) = scan_record_batch_for_injection(&batch)
-            {
+            if let Some(finding) = scan_record_batch_for_injection(batch) {
                 let mut ctx = std::collections::HashMap::new();
                 ctx.insert(
                     "column".to_string(),
@@ -410,7 +427,21 @@ impl StrakeConnection {
                     return Err(to_py_exception(py, err));
                 }
             }
+        }
+        Ok(())
+    }
 
+    fn batches_to_pyarrow(
+        &self,
+        py: Python,
+        schema: &arrow::datatypes::SchemaRef,
+        batches: Vec<RecordBatch>,
+    ) -> PyResult<Py<PyAny>> {
+        let pyarrow = py.import("pyarrow")?;
+        let has_batches = !batches.is_empty();
+        let mut py_batches = Vec::with_capacity(batches.len());
+
+        for batch in batches {
             let py_batch = batch
                 .to_pyarrow(py)
                 .map_err(|e| InternalError::new_err(format!("Arrow conversion failed: {}", e)))?;
@@ -418,12 +449,10 @@ impl StrakeConnection {
         }
 
         let table = if has_batches {
-            // Infer schema from batches to avoid plan-vs-batch nullability mismatch issues
             pyarrow
                 .getattr("Table")?
                 .call_method1("from_batches", (py_batches,))?
         } else {
-            // Empty result: must supply schema explicitly
             let py_schema = schema.to_pyarrow(py).map_err(|e| {
                 InternalError::new_err(format!("Arrow schema conversion failed: {}", e))
             })?;
@@ -434,8 +463,110 @@ impl StrakeConnection {
 
         Ok(table.unbind())
     }
+}
+
+#[pymethods]
+impl StrakeConnection {
+    /// Create a new connection to the Strake federation engine.
+    ///
+    /// # Errors
+    /// Returns a `ConnectionError` if connecting to the underlying server or embedded database fails.
+    ///
+    /// # Panics
+    /// This method cannot panic; Rust panics are caught and converted to `InternalError`.
+    ///
+    /// # Examples
+    /// ```python
+    /// conn = _strake.StrakeConnection("grpc://localhost:50051")
+    /// ```
+    #[new]
+    #[pyo3(signature = (dsn_or_config, sources_config = None, api_key = None))]
+    fn new(
+        dsn_or_config: String,
+        sources_config: Option<String>,
+        api_key: Option<String>,
+    ) -> PyResult<Self> {
+        catch_panics(|| {
+            let runtime = get_runtime()?;
+
+            let backend = if dsn_or_config.starts_with("grpc://")
+                || dsn_or_config.starts_with("grpcs://")
+            {
+                // Remote mode
+                let client = runtime
+                    .block_on(async { RemoteBackend::new(dsn_or_config, api_key).await })
+                    .map_err(to_py_exception_anyhow)?;
+                Backend::Remote(Box::new(client))
+            } else {
+                // Embedded mode
+                let engine = runtime
+                    .block_on(async { EmbeddedBackend::new(&dsn_or_config, sources_config).await })
+                    .map_err(to_py_exception_anyhow)?;
+                Backend::Embedded(Box::new(engine))
+            };
+
+            Ok(Self {
+                backend: Arc::new(Mutex::new(backend)),
+                poisoned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            })
+        })
+    }
+
+    /// Execute a SQL query and return results as a PyArrow Table.
+    ///
+    /// NOTE: Results are fully materialized in memory before returning.
+    /// For large datasets, use the streaming `iter_batches()` API on the returned table.
+    ///
+    /// # Errors
+    /// Returns `QueryError` on planning/execution failure, `InternalError` on panic,
+    /// or `InternalError` if this connection was poisoned by a prior panic and
+    /// must be discarded (create a new `StrakeConnection`).
+    ///
+    /// # Panics
+    /// This method cannot panic; Rust panics are caught and converted to `InternalError`.
+    ///
+    /// # Examples
+    /// ```python
+    /// table = conn.sql("SELECT 1")
+    /// ```
+    #[pyo3(signature = (query, params = None))]
+    fn sql(
+        &self,
+        query: String,
+        params: Option<HashMap<String, Py<PyAny>>>,
+        py: Python,
+    ) -> PyResult<Py<PyAny>> {
+        self.run_with_boundary(move || {
+            if params.is_some() {
+                return Err(InternalError::new_err(
+                    "Parameter binding: Not yet implemented in this version",
+                ));
+            }
+
+            // Guard: block_on panics when nested inside a Tokio context.
+            // The GIL is released via py.detach() while waiting.
+            check_not_in_tokio_context("sql")?;
+
+            let (schema, batches) = self.run_query(&query, py).map_err(to_py_exception_anyhow)?;
+            self.run_agent_guard(&batches, py)?;
+            self.batches_to_pyarrow(py, &schema, batches)
+        })
+    }
 
     /// Alias for sql() to match DB-API conventions.
+    ///
+    /// # Errors
+    /// Returns `QueryError` on planning/execution failure, `InternalError` on panic,
+    /// or `InternalError` if this connection was poisoned by a prior panic and
+    /// must be discarded (create a new `StrakeConnection`).
+    ///
+    /// # Panics
+    /// This method cannot panic; Rust panics are caught and converted to `InternalError`.
+    ///
+    /// # Examples
+    /// ```python
+    /// table = conn.execute("SELECT 1")
+    /// ```
     #[pyo3(signature = (query, params = None))]
     fn execute(
         &self,
@@ -447,6 +578,19 @@ impl StrakeConnection {
     }
 
     /// Register a user-defined join candidate or load from file.
+    ///
+    /// # Errors
+    /// Returns `ConfigError` if registering the join fails, `InternalError` on panic,
+    /// or `InternalError` if this connection was poisoned by a prior panic and
+    /// must be discarded (create a new `StrakeConnection`).
+    ///
+    /// # Panics
+    /// This method cannot panic; Rust panics are caught and converted to `InternalError`.
+    ///
+    /// # Examples
+    /// ```python
+    /// conn.register_join(left_table="users", left_column="id", right_table="orders", right_column="user_id")
+    /// ```
     #[pyo3(signature = (left_table = None, left_column = None, right_table = None, right_column = None, cardinality = "1:N", config_path = None))]
     fn register_join(
         self_: PyRef<'_, Self>,
@@ -458,23 +602,39 @@ impl StrakeConnection {
         config_path: Option<String>,
     ) -> PyResult<()> {
         let py = self_.py();
-        let joins_mod = py.import("strake.joins")?;
-        joins_mod.call_method1(
-            "register_join",
-            (
-                self_,
-                left_table,
-                left_column,
-                right_table,
-                right_column,
-                cardinality,
-                config_path,
-            ),
-        )?;
-        Ok(())
+        let poisoned = self_.poisoned.clone();
+        catch_and_poison(&poisoned, move || {
+            let joins_mod = py.import("strake.joins")?;
+            joins_mod.call_method1(
+                "register_join",
+                (
+                    self_,
+                    left_table,
+                    left_column,
+                    right_table,
+                    right_column,
+                    cardinality,
+                    config_path,
+                ),
+            )?;
+            Ok(())
+        })
     }
 
     /// Retrieve candidate join paths between two tables.
+    ///
+    /// # Errors
+    /// Returns `QueryError` on failure, `InternalError` on panic,
+    /// or `InternalError` if this connection was poisoned by a prior panic and
+    /// must be discarded (create a new `StrakeConnection`).
+    ///
+    /// # Panics
+    /// This method cannot panic; Rust panics are caught and converted to `InternalError`.
+    ///
+    /// # Examples
+    /// ```python
+    /// paths = conn.join_hints("users", "orders")
+    /// ```
     #[pyo3(signature = (left_fqn, right_fqn, enable_fuzzy=None))]
     fn join_hints(
         self_: PyRef<'_, Self>,
@@ -483,60 +643,108 @@ impl StrakeConnection {
         enable_fuzzy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
         let py = self_.py();
-        let joins_mod = py.import("strake.joins")?;
-        let res =
-            joins_mod.call_method1("join_hints", (self_, left_fqn, right_fqn, enable_fuzzy))?;
-        Ok(res.unbind())
+        let poisoned = self_.poisoned.clone();
+        catch_and_poison(&poisoned, move || {
+            let joins_mod = py.import("strake.joins")?;
+            let res =
+                joins_mod.call_method1("join_hints", (self_, left_fqn, right_fqn, enable_fuzzy))?;
+            Ok(res.unbind())
+        })
     }
 
     /// Returns the logical plan of the query without executing it.
+    ///
+    /// # Errors
+    /// Returns `QueryError` on failure, `InternalError` on panic,
+    /// or `InternalError` if this connection was poisoned by a prior panic and
+    /// must be discarded (create a new `StrakeConnection`).
+    ///
+    /// # Panics
+    /// This method cannot panic; Rust panics are caught and converted to `InternalError`.
+    ///
+    /// # Examples
+    /// ```python
+    /// plan = conn.trace("SELECT * FROM users")
+    /// ```
     fn trace(&self, query: String, py: Python) -> PyResult<String> {
-        check_not_in_tokio_context("trace")?;
+        self.run_with_boundary(move || {
+            check_not_in_tokio_context("trace")?;
 
-        let backend = Arc::clone(&self.backend);
-        let runtime = get_runtime()?;
-        py.detach(|| {
-            runtime
-                .block_on(async move {
-                    let mut backend = backend.lock().await;
-                    backend.trace(&query).await
-                })
-                .map_err(to_py_exception_anyhow)
+            let backend = Arc::clone(&self.backend);
+            let runtime = get_runtime()?;
+            py.detach(|| {
+                runtime
+                    .block_on(async move {
+                        let mut backend = backend.lock().await;
+                        backend.trace(&query).await
+                    })
+                    .map_err(to_py_exception_anyhow)
+            })
         })
     }
 
     /// Returns a list of available tables and sources.
+    ///
+    /// # Errors
+    /// Returns `QueryError` on failure, `InternalError` on panic,
+    /// or `InternalError` if this connection was poisoned by a prior panic and
+    /// must be discarded (create a new `StrakeConnection`).
+    ///
+    /// # Panics
+    /// This method cannot panic; Rust panics are caught and converted to `InternalError`.
+    ///
+    /// # Examples
+    /// ```python
+    /// tables = conn.describe()
+    /// ```
     #[pyo3(signature = (table_name = None))]
     fn describe(&self, table_name: Option<String>, py: Python) -> PyResult<String> {
-        check_not_in_tokio_context("describe")?;
+        self.run_with_boundary(move || {
+            check_not_in_tokio_context("describe")?;
 
-        let backend = Arc::clone(&self.backend);
-        let runtime = get_runtime()?;
+            let backend = Arc::clone(&self.backend);
+            let runtime = get_runtime()?;
 
-        py.detach(|| {
-            runtime
-                .block_on(async move {
-                    let mut backend = backend.lock().await;
-                    backend.describe(table_name).await
-                })
-                .map_err(to_py_exception_anyhow)
+            py.detach(|| {
+                runtime
+                    .block_on(async move {
+                        let mut backend = backend.lock().await;
+                        backend.describe(table_name).await
+                    })
+                    .map_err(to_py_exception_anyhow)
+            })
         })
     }
 
     /// Returns a list of available sources as a JSON string.
+    ///
+    /// # Errors
+    /// Returns `QueryError` on failure, `InternalError` on panic,
+    /// or `InternalError` if this connection was poisoned by a prior panic and
+    /// must be discarded (create a new `StrakeConnection`).
+    ///
+    /// # Panics
+    /// This method cannot panic; Rust panics are caught and converted to `InternalError`.
+    ///
+    /// # Examples
+    /// ```python
+    /// sources = conn.list_sources()
+    /// ```
     fn list_sources(&self, py: Python) -> PyResult<String> {
-        check_not_in_tokio_context("list_sources")?;
+        self.run_with_boundary(move || {
+            check_not_in_tokio_context("list_sources")?;
 
-        let backend = Arc::clone(&self.backend);
-        let runtime = get_runtime()?;
+            let backend = Arc::clone(&self.backend);
+            let runtime = get_runtime()?;
 
-        py.detach(|| {
-            runtime
-                .block_on(async move {
-                    let mut backend = backend.lock().await;
-                    backend.list_sources().await
-                })
-                .map_err(to_py_exception_anyhow)
+            py.detach(|| {
+                runtime
+                    .block_on(async move {
+                        let mut backend = backend.lock().await;
+                        backend.list_sources().await
+                    })
+                    .map_err(to_py_exception_anyhow)
+            })
         })
     }
 
@@ -544,18 +752,33 @@ impl StrakeConnection {
     ///
     /// Shows federation pushdown indicators, join conditions, filter/projection
     /// details, and timing metrics when available.
+    ///
+    /// # Errors
+    /// Returns `QueryError` on failure, `InternalError` on panic,
+    /// or `InternalError` if this connection was poisoned by a prior panic and
+    /// must be discarded (create a new `StrakeConnection`).
+    ///
+    /// # Panics
+    /// This method cannot panic; Rust panics are caught and converted to `InternalError`.
+    ///
+    /// # Examples
+    /// ```python
+    /// tree = conn.explain_tree("SELECT * FROM users")
+    /// ```
     fn explain_tree(&self, query: String, py: Python) -> PyResult<String> {
-        check_not_in_tokio_context("explain_tree")?;
+        self.run_with_boundary(move || {
+            check_not_in_tokio_context("explain_tree")?;
 
-        let backend = Arc::clone(&self.backend);
-        let runtime = get_runtime()?;
-        py.detach(|| {
-            runtime
-                .block_on(async move {
-                    let mut backend = backend.lock().await;
-                    backend.explain_tree(&query).await
-                })
-                .map_err(to_py_exception_anyhow)
+            let backend = Arc::clone(&self.backend);
+            let runtime = get_runtime()?;
+            py.detach(|| {
+                runtime
+                    .block_on(async move {
+                        let mut backend = backend.lock().await;
+                        backend.explain_tree(&query).await
+                    })
+                    .map_err(to_py_exception_anyhow)
+            })
         })
     }
 
@@ -567,30 +790,55 @@ impl StrakeConnection {
     /// blocking the event loop).
     ///
     /// Both `with` and `async with` will call this on exit.
+    ///
+    /// # Errors
+    /// Returns a `PyRuntimeError` if engine shutdown fails, `InternalError` on panic,
+    /// or `InternalError` if this connection was poisoned by a prior panic and
+    /// must be discarded (create a new `StrakeConnection`).
+    ///
+    /// # Panics
+    /// This method cannot panic; Rust panics are caught and converted to `InternalError`.
+    ///
+    /// # Examples
+    /// ```python
+    /// conn.close()
+    /// ```
     fn close(&self, py: Python) -> PyResult<()> {
-        check_not_in_tokio_context("close")?;
+        self.run_with_boundary(move || {
+            check_not_in_tokio_context("close")?;
 
-        let backend = Arc::clone(&self.backend);
-        let runtime = get_runtime()?;
+            let backend = Arc::clone(&self.backend);
+            let runtime = get_runtime()?;
 
-        tracing::info!("Closing StrakeConnection");
-        py.detach(|| {
-            runtime
-                .block_on(async move {
-                    let mut guard = backend.lock().await;
-                    guard.shutdown().await
-                })
-                .map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("Shutdown failed: {}", e))
-                })
+            tracing::info!("Closing StrakeConnection");
+            py.detach(|| {
+                runtime
+                    .block_on(async move {
+                        let mut guard = backend.lock().await;
+                        guard.shutdown().await
+                    })
+                    .map_err(|e| {
+                        pyo3::exceptions::PyRuntimeError::new_err(format!("Shutdown failed: {}", e))
+                    })
+            })
         })
     }
 
     // === Sync Context Manager Protocol ===
+    /// Enter the connection's context block.
     fn __enter__(slf: Py<Self>) -> Py<Self> {
         slf
     }
 
+    /// Exit the connection's context block, closing the connection.
+    ///
+    /// # Errors
+    /// Returns `PyRuntimeError` if closing the connection fails, `InternalError` on panic,
+    /// or `InternalError` if this connection was poisoned by a prior panic and
+    /// must be discarded (create a new `StrakeConnection`).
+    ///
+    /// # Panics
+    /// This method cannot panic; Rust panics are caught and converted to `InternalError`.
     fn __exit__(
         &self,
         py: Python,
@@ -605,10 +853,18 @@ impl StrakeConnection {
     //
     // `async with strake.connect() as conn:` runs __aexit__ on the event loop.
     // close() blocks internally, so wrap it in asyncio.to_thread() for async callers.
+    /// Enter the connection's async context block.
     fn __aenter__(slf: Py<Self>) -> Py<Self> {
         slf
     }
 
+    /// Exit the connection's async context block, closing the connection.
+    ///
+    /// # Errors
+    /// Returns `PyRuntimeError` if closing the connection fails.
+    ///
+    /// # Panics
+    /// This method cannot panic; Rust panics are caught and converted to `InternalError`.
     fn __aexit__(
         slf: Py<Self>,
         py: Python,
@@ -638,11 +894,15 @@ impl Drop for StrakeConnection {
 /// This acquires the GIL via `Python::attach`.
 fn to_py_exception_anyhow(e: anyhow::Error) -> PyErr {
     Python::attach(|py| {
-        if let Some(strake_err) = e.downcast_ref::<strake_error::StrakeError>() {
-            to_py_exception(py, strake_err.clone())
+        let chain_dump: Vec<String> = e.chain().map(|c| c.to_string()).collect();
+        let strake_err = strake_error::StrakeError::from(e); // single unified walk
+        let is_internal = strake_err.code.category() == strake_error::ErrorCategory::Internal;
+        if is_internal {
+            tracing::error!(chain = ?chain_dump, "{}", strake_err.message);
         } else {
-            InternalError::new_err(format!("{:#}", e))
+            tracing::debug!(chain = ?chain_dump, "{}", strake_err.message);
         }
+        to_py_exception(py, strake_err)
     })
 }
 
@@ -720,7 +980,6 @@ mod agent_guard_tests {
         let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
         assert!(scan_record_batch_for_injection(&batch).is_none());
     }
-
     #[test]
     fn scan_skips_malformed_offsets_instead_of_aborting() {
         // Negative offsets are malformed for Arrow strings; ensure we skip the bad cell and
@@ -734,5 +993,53 @@ mod agent_guard_tests {
             scan_string_array_offsets::<i32>("notes", &offsets, &values, |_i| true).unwrap();
 
         assert_eq!(finding.column, "notes");
+    }
+
+    #[test]
+    fn test_agent_guard_mode_parsing() {
+        let cases = vec![
+            ("enforce", AgentGuardMode::Enforce),
+            ("ENFORCE", AgentGuardMode::Enforce),
+            (" enforce  ", AgentGuardMode::Enforce),
+            ("dry_run", AgentGuardMode::DryRun),
+            ("dryrun", AgentGuardMode::DryRun),
+            ("DRY_RUN", AgentGuardMode::DryRun),
+            ("disabled", AgentGuardMode::Disabled),
+            ("off", AgentGuardMode::Disabled),
+            ("0", AgentGuardMode::Disabled),
+            ("", AgentGuardMode::Disabled),
+            ("garbage", AgentGuardMode::Disabled),
+        ];
+
+        for (env_val, expected) in cases {
+            temp_env::with_var("STRAKE_AGENT_GUARD_MODE", Some(env_val), || {
+                let parsed = AgentGuardMode::from_env();
+                assert_eq!(parsed, expected, "Failed for value: '{}'", env_val);
+            });
+        }
+    }
+
+    #[test]
+    fn test_agent_guard_mode_caching_bypass_in_tests() {
+        temp_env::with_var("STRAKE_AGENT_GUARD_MODE", Some("enforce"), || {
+            assert_eq!(AgentGuardMode::from_env(), AgentGuardMode::Enforce);
+        });
+
+        temp_env::with_var("STRAKE_AGENT_GUARD_MODE", Some("dry_run"), || {
+            assert_eq!(AgentGuardMode::from_env(), AgentGuardMode::DryRun);
+        });
+    }
+
+    #[test]
+    fn test_catch_and_poison_sets_flag_on_panic_and_blocks_subsequent_calls() {
+        use std::sync::atomic::AtomicBool;
+        let poisoned = AtomicBool::new(false);
+        let res = catch_and_poison(&poisoned, || -> PyResult<()> { panic!("boom") });
+        assert!(res.is_err());
+        assert!(poisoned.load(std::sync::atomic::Ordering::Relaxed));
+        let res2 = catch_and_poison(&poisoned, || Ok(()));
+        assert!(res2.is_err());
+        let err_str = format!("{:?}", res2.unwrap_err());
+        assert!(err_str.contains("Connection has been poisoned due to a previous panic"));
     }
 }

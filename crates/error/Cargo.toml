@@ -13,10 +13,12 @@ datafusion = { workspace = true, optional = true }
 serde_yaml = { workspace = true }
 tracing = { workspace = true }
 anyhow.workspace = true
+tonic = { workspace = true, optional = true }
 
 [features]
-default = []
+default = ["grpc"]
 datafusion = ["dep:datafusion"]
+grpc = ["dep:tonic"]
 
 [dev-dependencies]
 serde_test = "1.0"
