@@ -8271,7 +8271,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "strake-cli"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -8312,7 +8312,7 @@ dependencies = [
 
 [[package]]
 name = "strake-common"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8347,7 +8347,7 @@ dependencies = [
 
 [[package]]
 name = "strake-connectors"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "anyhow",
  "arrow",
@@ -8414,7 +8414,7 @@ dependencies = [
 
 [[package]]
 name = "strake-enterprise"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -8457,7 +8457,7 @@ dependencies = [
 
 [[package]]
 name = "strake-error"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "anyhow",
  "datafusion",
@@ -8472,7 +8472,7 @@ dependencies = [
 
 [[package]]
 name = "strake-python"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -8498,7 +8498,7 @@ dependencies = [
 
 [[package]]
 name = "strake-runtime"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "anyhow",
  "arrow",
@@ -8541,7 +8541,7 @@ dependencies = [
 
 [[package]]
 name = "strake-server"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -8586,7 +8586,7 @@ dependencies = [
 
 [[package]]
 name = "strake-sql"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "anyhow",
  "arrow",
@@ -8609,7 +8609,7 @@ dependencies = [
 
 [[package]]
 name = "strake-tpch-smoke-test"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "anyhow",
  "arrow",

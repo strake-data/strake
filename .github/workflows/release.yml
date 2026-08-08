@@ -26,16 +26,21 @@ jobs:
             CARGO_VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)
             PY_VERSION=$(grep -m1 '^version = ' python/pyproject.toml | cut -d '"' -f 2)
             
-            echo "Git Tag Version: $TAG_VERSION"
-            echo "Cargo Workspace Version: $CARGO_VERSION"
-            echo "PyPI pyproject Version: $PY_VERSION"
+            # Normalize RC strings for cross-ecosystem comparison (e.g. 0.3.0-rc1 -> 0.3.0rc1)
+            NORM_TAG=$(echo "$TAG_VERSION" | sed -E 's/-rc\.?/rc/')
+            NORM_CARGO=$(echo "$CARGO_VERSION" | sed -E 's/-rc\.?/rc/')
+            NORM_PY=$(echo "$PY_VERSION" | sed -E 's/-rc\.?/rc/')
+
+            echo "Git Tag Version: $TAG_VERSION (Normalized: $NORM_TAG)"
+            echo "Cargo Workspace Version: $CARGO_VERSION (Normalized: $NORM_CARGO)"
+            echo "PyPI pyproject Version: $PY_VERSION (Normalized: $NORM_PY)"
             
-            if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
-              echo "::error::Git tag v$TAG_VERSION does not match Cargo.toml version $CARGO_VERSION"
+            if [ "$NORM_TAG" != "$NORM_CARGO" ]; then
+              echo "::error::Git tag $TAG_VERSION does not match Cargo.toml version $CARGO_VERSION"
               exit 1
             fi
-            if [ "$TAG_VERSION" != "$PY_VERSION" ]; then
-              echo "::error::Git tag v$TAG_VERSION does not match pyproject.toml version $PY_VERSION"
+            if [ "$NORM_TAG" != "$NORM_PY" ]; then
+              echo "::error::Git tag $TAG_VERSION does not match pyproject.toml version $PY_VERSION"
               exit 1
             fi
             echo "✓ Version alignment verified."
@@ -423,6 +428,7 @@ jobs:
             release_assets/*
             python-wheels-*/*
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}
           body: |
             ## Docker Image
             ```bash
