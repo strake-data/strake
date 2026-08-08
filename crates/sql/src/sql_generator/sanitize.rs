@@ -6,7 +6,7 @@ pub fn validate_identifier(name: &str) -> Result<(), SqlGenError> {
     if name.is_empty() {
         return Err(SqlGenError::InvalidIdentifier("empty".to_string()));
     }
-    if name.len() > 128 {
+    if name.len() > 256 {
         return Err(SqlGenError::InvalidIdentifier(format!(
             "too long: {}",
             name.len()

@@ -325,89 +325,149 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
         use sqlparser::ast::WindowFrameBound as SqlBound;
 
         match bound {
-            WindowFrameBound::Preceding(val) => match val {
-                ScalarValue::UInt64(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
-                    sqlparser::ast::Expr::Value(
-                        sqlparser::ast::Value::Number(v.to_string(), false).into(),
-                    ),
-                )))),
-                ScalarValue::Int64(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
-                    sqlparser::ast::Expr::Value(
-                        sqlparser::ast::Value::Number(v.to_string(), false).into(),
-                    ),
-                )))),
-                ScalarValue::IntervalMonthDayNano(Some(v)) => {
-                    let months = v.months;
-                    let days = v.days;
-                    let nanos = v.nanoseconds;
+            WindowFrameBound::Preceding(val) => {
+                if val.is_null() {
+                    Ok(SqlBound::Preceding(None))
+                } else {
+                    match val {
+                        ScalarValue::Int8(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::Int16(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::Int32(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::Int64(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt8(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt16(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt32(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt64(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::IntervalMonthDayNano(Some(v)) => {
+                            let months = v.months;
+                            let days = v.days;
+                            let nanos = v.nanoseconds;
 
-                    if let Some(expr) = self
-                        .dialect
-                        .capabilities
-                        .format_interval(months, days, nanos)
-                    {
-                        Ok(SqlBound::Preceding(Some(Box::new(expr))))
-                    } else {
-                        Err(SqlGenError::UnsupportedPlan {
-                            message: "Dialect does not support IntervalMonthDayNano".to_string(),
+                            if let Some(expr) = self
+                                .dialect
+                                .capabilities
+                                .format_interval(months, days, nanos)
+                            {
+                                Ok(SqlBound::Preceding(Some(Box::new(expr))))
+                            } else {
+                                Err(SqlGenError::UnsupportedPlan {
+                                    message: "Dialect does not support IntervalMonthDayNano"
+                                        .to_string(),
+                                    node_type: "WindowBound".to_string(),
+                                })
+                            }
+                        }
+                        _ => Err(SqlGenError::UnsupportedPlan {
+                            message: format!("Unsupported window bound value: {:?}", val),
                             node_type: "WindowBound".to_string(),
-                        })
+                        }),
                     }
                 }
-                ScalarValue::UInt64(None)
-                | ScalarValue::Int64(None)
-                | ScalarValue::IntervalMonthDayNano(None) => Ok(SqlBound::Preceding(None)), // UNBOUNDED PRECEDING
-                ScalarValue::Null => Err(SqlGenError::UnsupportedPlan {
-                    message: "NULL is not a valid window frame bound".to_string(),
-                    node_type: "WindowBound".to_string(),
-                }),
-                _ => Err(SqlGenError::UnsupportedPlan {
-                    message: format!("Unsupported window bound value: {:?}", val),
-                    node_type: "WindowBound".to_string(),
-                }),
-            },
+            }
             WindowFrameBound::CurrentRow => Ok(SqlBound::CurrentRow),
-            WindowFrameBound::Following(val) => match val {
-                ScalarValue::UInt64(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
-                    sqlparser::ast::Expr::Value(
-                        sqlparser::ast::Value::Number(v.to_string(), false).into(),
-                    ),
-                )))),
-                ScalarValue::Int64(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
-                    sqlparser::ast::Expr::Value(
-                        sqlparser::ast::Value::Number(v.to_string(), false).into(),
-                    ),
-                )))),
-                ScalarValue::IntervalMonthDayNano(Some(v)) => {
-                    let months = v.months;
-                    let days = v.days;
-                    let nanos = v.nanoseconds;
+            WindowFrameBound::Following(val) => {
+                if val.is_null() {
+                    Ok(SqlBound::Following(None))
+                } else {
+                    match val {
+                        ScalarValue::Int8(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::Int16(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::Int32(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::Int64(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt8(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt16(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt32(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt64(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::IntervalMonthDayNano(Some(v)) => {
+                            let months = v.months;
+                            let days = v.days;
+                            let nanos = v.nanoseconds;
 
-                    if let Some(expr) = self
-                        .dialect
-                        .capabilities
-                        .format_interval(months, days, nanos)
-                    {
-                        Ok(SqlBound::Following(Some(Box::new(expr))))
-                    } else {
-                        Err(SqlGenError::UnsupportedPlan {
-                            message: "Dialect does not support IntervalMonthDayNano".to_string(),
+                            if let Some(expr) = self
+                                .dialect
+                                .capabilities
+                                .format_interval(months, days, nanos)
+                            {
+                                Ok(SqlBound::Following(Some(Box::new(expr))))
+                            } else {
+                                Err(SqlGenError::UnsupportedPlan {
+                                    message: "Dialect does not support IntervalMonthDayNano"
+                                        .to_string(),
+                                    node_type: "WindowBound".to_string(),
+                                })
+                            }
+                        }
+                        _ => Err(SqlGenError::UnsupportedPlan {
+                            message: format!("Unsupported window bound value: {:?}", val),
                             node_type: "WindowBound".to_string(),
-                        })
+                        }),
                     }
                 }
-                ScalarValue::UInt64(None)
-                | ScalarValue::Int64(None)
-                | ScalarValue::IntervalMonthDayNano(None) => Ok(SqlBound::Following(None)), // UNBOUNDED FOLLOWING
-                ScalarValue::Null => Err(SqlGenError::UnsupportedPlan {
-                    message: "NULL is not a valid window frame bound".to_string(),
-                    node_type: "WindowBound".to_string(),
-                }),
-                _ => Err(SqlGenError::UnsupportedPlan {
-                    message: format!("Unsupported window bound value: {:?}", val),
-                    node_type: "WindowBound".to_string(),
-                }),
-            },
+            }
         }
     }
 

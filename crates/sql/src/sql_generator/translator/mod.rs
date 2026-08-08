@@ -407,9 +407,12 @@ impl<'a> SqlGenerator<'a> {
 ///
 /// It also handles function expressions by recursively stripping qualifiers from their arguments.
 pub fn derive_bare_name(name: &str) -> Arc<str> {
-    // If it contains parentheses, it's a function expression.
-    // Strip all qualifiers inside to ensure stable, bare names.
-    let base = if name.contains('(') && name.ends_with(')') {
+    let base = if (name.contains('(') && name.ends_with(')'))
+        || name.contains("PARTITION BY")
+        || name.contains("ORDER BY")
+        || name.contains("RANGE")
+        || name.contains("ROWS")
+    {
         strip_qualifiers_in_function(name)
     } else if let Some(idx) = name.rfind('.') {
         name[idx + 1..].to_string()
