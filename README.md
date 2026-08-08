@@ -115,7 +115,7 @@ import strake
 import polars as pl
 
 # Connect using your source configuration
-conn = strake.StrakeConnection("sources.yaml")
+conn = strake.connect(sources_config="sources.yaml")
 
 # Query across sources using standard SQL
 query = "SELECT * FROM measurements LIMIT 5"
@@ -133,7 +133,8 @@ print(df)
 | [**strake-runtime**](crates/runtime) | Orchestration layer (Federation Engine, Sidecar). |
 | [**strake-connectors**](crates/connectors) | Data source implementations (Postgres, S3, REST, etc). |
 | [**strake-sql**](crates/sql) | SQL Dialects, Query Optimization, and Substrait generation. |
-| [**strake-common**](crates/common) | Shared types, configuration, and error handling. |
+| [**strake-common**](crates/common) | Shared types, configuration, and telemetry. |
+| [**strake-error**](crates/error) | Unified error handling, error codes, and exception types. |
 | [**strake-server**](crates/server) | Arrow Flight SQL server implementation. |
 | [**strake-cli**](crates/cli) | GitOps CLI for managing data mesh configurations. |
 | [**strake-python**](python) | Python bindings for high-performance data access. |
