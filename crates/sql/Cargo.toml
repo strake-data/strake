@@ -20,6 +20,7 @@ serde = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 arrow = { workspace = true }
+chrono = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]

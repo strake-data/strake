@@ -8591,6 +8591,7 @@ dependencies = [
  "anyhow",
  "arrow",
  "async-trait",
+ "chrono",
  "datafusion",
  "datafusion-federation",
  "datafusion-substrait",

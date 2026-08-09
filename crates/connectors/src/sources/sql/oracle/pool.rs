@@ -35,6 +35,15 @@ fn ensure_oracle_thick_mode() -> ThickModeResult {
             }
 
             let client_path = std::env::var("STRAKE_ORACLE_CLIENT_DIR").ok();
+            let thick_requested = std::env::var("STRAKE_ORACLE_THICK_MODE").is_ok();
+
+            if client_path.is_none() && !thick_requested {
+                tracing::info!(
+                    "Oracle: neither STRAKE_ORACLE_CLIENT_DIR nor STRAKE_ORACLE_THICK_MODE is set; using thin mode"
+                );
+                return Ok(());
+            }
+
             tracing::info!(
                 client_path = ?client_path.as_deref(),
                 ld_library_path = ?std::env::var("LD_LIBRARY_PATH").ok(),
@@ -59,12 +68,11 @@ fn ensure_oracle_thick_mode() -> ThickModeResult {
                 Err(e) => {
                     tracing::warn!(
                         "Oracle: failed to initialize thick mode with Instant Client: {}. \
-                         Falling back to thin mode. For Oracle Cloud Autonomous Database, \
-                         set STRAKE_ORACLE_CLIENT_DIR to the Instant Client directory or \
-                         make libclntsh available on LD_LIBRARY_PATH.",
+                         For Oracle Cloud Autonomous Database, set STRAKE_ORACLE_CLIENT_DIR \
+                         to the Instant Client directory or make libclntsh.so available on LD_LIBRARY_PATH.",
                         e
                     );
-                    Ok(())
+                    Err(e.to_string())
                 }
             }
         })

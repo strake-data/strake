@@ -136,3 +136,76 @@ fn to_timestamp_with_format() {
         Some("TO_TIMESTAMP('2024-01-15 10:30:00', 'YYYY-MM-DD HH24:MI:SS')".to_string())
     );
 }
+
+#[test]
+fn date_trunc_to_trunc_with_format() {
+    let result = OracleDialect::new()
+        .mapper()
+        .translate("date_trunc", &[lit("month"), id("START_DATE")]);
+    assert_eq!(
+        result.map(|r| r.to_string()),
+        Some("TRUNC(START_DATE, 'MM')".to_string())
+    );
+}
+
+// ----------------------------------------------------------------------------
+// Expression unparsing & Temporal pushdown tests
+// ----------------------------------------------------------------------------
+
+#[test]
+fn unparse_date32_literal_uses_explicit_to_date() {
+    use datafusion::logical_expr::{col, lit};
+    use datafusion::scalar::ScalarValue;
+    use strake_sql::sql_gen::unparse_expr_to_sql;
+
+    // Date32(20660) -> 2026-07-26
+    let expr = col("START_DATE").gt_eq(lit(ScalarValue::Date32(Some(20660))));
+    let sql = unparse_expr_to_sql(&expr, "oracle").unwrap();
+    assert_eq!(sql, "\"start_date\" >= TO_DATE('2026-07-26', 'YYYY-MM-DD')");
+}
+
+#[test]
+fn unparse_timestamp_microsecond_uses_explicit_to_timestamp() {
+    use datafusion::logical_expr::{col, lit};
+    use datafusion::scalar::ScalarValue;
+    use strake_sql::sql_gen::unparse_expr_to_sql;
+
+    // 1785649509392963 microseconds -> 2026-08-02 05:45:09.392963
+    let expr = col("START_DATE").gt(lit(ScalarValue::TimestampMicrosecond(
+        Some(1785649509392963),
+        None,
+    )));
+    let sql = unparse_expr_to_sql(&expr, "oracle").unwrap();
+    assert_eq!(
+        sql,
+        "\"start_date\" > TO_TIMESTAMP('2026-08-02 05:45:09.392963', 'YYYY-MM-DD HH24:MI:SS.FF')"
+    );
+}
+
+#[test]
+fn unparse_timestamp_tz_uses_explicit_to_timestamp_tz() {
+    use datafusion::logical_expr::{col, lit};
+    use datafusion::scalar::ScalarValue;
+    use std::sync::Arc;
+    use strake_sql::sql_gen::unparse_expr_to_sql;
+
+    let expr = col("START_DATE").gt(lit(ScalarValue::TimestampMicrosecond(
+        Some(1785649509392963),
+        Some(Arc::from("+00:00")),
+    )));
+    let sql = unparse_expr_to_sql(&expr, "oracle").unwrap();
+    assert_eq!(
+        sql,
+        "\"start_date\" > TO_TIMESTAMP_TZ('2026-08-02 05:45:09.392963 +0000', 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZM')"
+    );
+}
+
+#[test]
+fn unparse_ilike_rewrites_to_lower_like() {
+    use datafusion::logical_expr::{col, lit};
+    use strake_sql::sql_gen::unparse_expr_to_sql;
+
+    let expr = col("NAME").ilike(lit("alice%"));
+    let sql = unparse_expr_to_sql(&expr, "oracle").unwrap();
+    assert_eq!(sql, "LOWER(\"name\") LIKE LOWER('alice%')");
+}

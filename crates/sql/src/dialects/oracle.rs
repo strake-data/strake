@@ -241,6 +241,30 @@ fn oracle_function_rules() -> FunctionMapper {
                 expr: Box::new(source),
             }
         })
+        .transform("date_trunc", |args| {
+            let part = args.first().cloned().unwrap_or_else(|| str_expr("month"));
+            let source = args
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| ident_expr("SYSDATE"));
+            let fmt_str = match part {
+                SqlExpr::Value(sqlparser::ast::ValueWithSpan {
+                    value: Value::SingleQuotedString(s),
+                    ..
+                }) => match s.to_lowercase().as_str() {
+                    "year" | "yyyy" | "yy" => "YYYY",
+                    "quarter" => "Q",
+                    "month" | "mm" => "MM",
+                    "week" => "IW",
+                    "day" | "dd" => "DD",
+                    "hour" | "hh" => "HH24",
+                    "minute" | "mi" => "MI",
+                    _ => "MM",
+                },
+                _ => "MM",
+            };
+            FunctionMapper::build_func("TRUNC", vec![source, str_expr(fmt_str)])
+        })
         .transform("to_date", |args| {
             let a = args.first().cloned().unwrap_or_else(null_expr);
             let b = args
@@ -328,6 +352,29 @@ fn oracle_function_rules() -> FunctionMapper {
         })
 }
 
+fn format_oracle_timestamp(secs: i64, nsecs: u32, tz: Option<&str>) -> Option<SqlExpr> {
+    if let Some(datetime) = chrono::DateTime::from_timestamp(secs, nsecs) {
+        if let Some(_tz_str) = tz {
+            let formatted = datetime.format("%Y-%m-%d %H:%M:%S%.6f %z").to_string();
+            Some(FunctionMapper::build_func(
+                "TO_TIMESTAMP_TZ",
+                vec![
+                    str_expr(&formatted),
+                    str_expr("YYYY-MM-DD HH24:MI:SS.FF TZH:TZM"),
+                ],
+            ))
+        } else {
+            let formatted = datetime.format("%Y-%m-%d %H:%M:%S%.6f").to_string();
+            Some(FunctionMapper::build_func(
+                "TO_TIMESTAMP",
+                vec![str_expr(&formatted), str_expr("YYYY-MM-DD HH24:MI:SS.FF")],
+            ))
+        }
+    } else {
+        None
+    }
+}
+
 impl crate::sql_generator::dialect::DialectCapabilities for OracleDialect {
     fn supports_distinct_on(&self) -> bool {
         false
@@ -356,6 +403,120 @@ impl crate::sql_generator::dialect::DialectCapabilities for OracleDialect {
     fn offset_rows_style(&self) -> sqlparser::ast::OffsetRows {
         sqlparser::ast::OffsetRows::Rows
     }
+
+    fn format_literal(
+        &self,
+        val: &datafusion::scalar::ScalarValue,
+    ) -> Option<sqlparser::ast::Expr> {
+        use datafusion::scalar::ScalarValue;
+        match val {
+            ScalarValue::Date32(Some(days)) => {
+                if let Some(date) = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).and_then(|epoch| {
+                    epoch.checked_add_signed(chrono::Duration::days(*days as i64))
+                }) {
+                    let formatted = date.format("%Y-%m-%d").to_string();
+                    Some(FunctionMapper::build_func(
+                        "TO_DATE",
+                        vec![str_expr(&formatted), str_expr("YYYY-MM-DD")],
+                    ))
+                } else {
+                    None
+                }
+            }
+            ScalarValue::Date64(Some(ms)) => {
+                let secs = ms.div_euclid(1000);
+                let nsecs = ms.rem_euclid(1000) * 1_000_000;
+                if let Some(datetime) = chrono::DateTime::from_timestamp(secs, nsecs as u32) {
+                    let formatted = datetime.format("%Y-%m-%d %H:%M:%S").to_string();
+                    Some(FunctionMapper::build_func(
+                        "TO_DATE",
+                        vec![str_expr(&formatted), str_expr("YYYY-MM-DD HH24:MI:SS")],
+                    ))
+                } else {
+                    None
+                }
+            }
+            ScalarValue::TimestampSecond(Some(secs), tz) => {
+                format_oracle_timestamp(*secs, 0, tz.as_deref())
+            }
+            ScalarValue::TimestampMillisecond(Some(ms), tz) => {
+                let secs = ms.div_euclid(1000);
+                let nsecs = ms.rem_euclid(1000) * 1_000_000;
+                format_oracle_timestamp(secs, nsecs as u32, tz.as_deref())
+            }
+            ScalarValue::TimestampMicrosecond(Some(us), tz) => {
+                let secs = us.div_euclid(1_000_000);
+                let nsecs = us.rem_euclid(1_000_000) * 1000;
+                format_oracle_timestamp(secs, nsecs as u32, tz.as_deref())
+            }
+            ScalarValue::TimestampNanosecond(Some(ns), tz) => {
+                let secs = ns.div_euclid(1_000_000_000);
+                let nsecs = ns.rem_euclid(1_000_000_000);
+                format_oracle_timestamp(secs, nsecs as u32, tz.as_deref())
+            }
+            _ => None,
+        }
+    }
+
+    fn format_interval(&self, months: i32, days: i32, nanos: i64) -> Option<sqlparser::ast::Expr> {
+        if months != 0 && days == 0 && nanos == 0 {
+            let sign = if months < 0 { "-" } else { "" };
+            let abs_months = months.abs();
+            let value = format!("{}{}", sign, abs_months);
+            Some(SqlExpr::Interval(sqlparser::ast::Interval {
+                value: Box::new(str_expr(&value)),
+                leading_field: Some(sqlparser::ast::DateTimeField::Month),
+                leading_precision: None,
+                last_field: None,
+                fractional_seconds_precision: None,
+            }))
+        } else if months == 0 {
+            let sign = if days < 0 || nanos < 0 { "-" } else { "" };
+            let abs_days = days.abs();
+            let abs_nanos = nanos.unsigned_abs();
+            let secs = abs_nanos / 1_000_000_000;
+            let rem_nanos = abs_nanos % 1_000_000_000;
+            let hours = secs / 3600;
+            let mins = (secs % 3600) / 60;
+            let secs_rem = secs % 60;
+
+            let value = if rem_nanos > 0 {
+                format!(
+                    "{}{} {:02}:{:02}:{:02}.{:06}",
+                    sign,
+                    abs_days,
+                    hours,
+                    mins,
+                    secs_rem,
+                    rem_nanos / 1000
+                )
+            } else if hours > 0 || mins > 0 || secs_rem > 0 {
+                format!(
+                    "{}{} {:02}:{:02}:{:02}",
+                    sign, abs_days, hours, mins, secs_rem
+                )
+            } else {
+                format!("{}{}", sign, abs_days)
+            };
+
+            let leading_field = Some(sqlparser::ast::DateTimeField::Day);
+            let last_field = if hours > 0 || mins > 0 || secs_rem > 0 || rem_nanos > 0 {
+                Some(sqlparser::ast::DateTimeField::Second)
+            } else {
+                None
+            };
+
+            Some(SqlExpr::Interval(sqlparser::ast::Interval {
+                value: Box::new(str_expr(&value)),
+                leading_field,
+                leading_precision: None,
+                last_field,
+                fractional_seconds_precision: None,
+            }))
+        } else {
+            None
+        }
+    }
 }
 
 impl crate::sql_generator::dialect::TypeMapper for OracleDialect {
@@ -367,9 +528,18 @@ impl crate::sql_generator::dialect::TypeMapper for OracleDialect {
         use sqlparser::ast::DataType as SqlDataType;
 
         match df_type {
-            DataType::Utf8 | DataType::LargeUtf8 => Ok(SqlDataType::Custom(
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => Ok(SqlDataType::Custom(
                 sqlparser::ast::ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
                     sqlparser::ast::Ident::new("VARCHAR2"),
+                )]),
+                vec![],
+            )),
+            DataType::Binary
+            | DataType::LargeBinary
+            | DataType::BinaryView
+            | DataType::FixedSizeBinary(_) => Ok(SqlDataType::Custom(
+                sqlparser::ast::ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
+                    sqlparser::ast::Ident::new("RAW"),
                 )]),
                 vec![],
             )),

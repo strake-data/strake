@@ -57,7 +57,16 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
                     safe_ident(entry.source_alias.as_ref())?,
                     safe_ident(entry.name.as_ref())?,
                 ])),
-                Err(e) => Err(e),
+                Err(_) => {
+                    if let Some(rel) = &col.relation {
+                        Ok(sqlparser::ast::Expr::CompoundIdentifier(vec![
+                            safe_ident(&rel.to_string())?,
+                            safe_ident(&col.name)?,
+                        ]))
+                    } else {
+                        Ok(sqlparser::ast::Expr::Identifier(safe_ident(&col.name)?))
+                    }
+                }
             },
 
             Expr::ScalarFunction(func) => self.translate_function(func.name(), &func.args, None),
@@ -229,13 +238,68 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
                     .map(|c| sqlparser::ast::Value::SingleQuotedString(c.to_string()));
 
                 if like.case_insensitive {
-                    Ok(sqlparser::ast::Expr::ILike {
-                        negated: like.negated,
-                        expr: Box::new(expr),
-                        pattern: Box::new(pattern),
-                        escape_char,
-                        any: false,
-                    })
+                    if self.dialect.dialect_name.eq_ignore_ascii_case("oracle") {
+                        let lower_expr = sqlparser::ast::Expr::Function(sqlparser::ast::Function {
+                            name: sqlparser::ast::ObjectName(vec![
+                                sqlparser::ast::ObjectNamePart::Identifier(
+                                    sqlparser::ast::Ident::new("LOWER"),
+                                ),
+                            ]),
+                            args: sqlparser::ast::FunctionArguments::List(
+                                sqlparser::ast::FunctionArgumentList {
+                                    duplicate_treatment: None,
+                                    args: vec![sqlparser::ast::FunctionArg::Unnamed(
+                                        sqlparser::ast::FunctionArgExpr::Expr(expr),
+                                    )],
+                                    clauses: vec![],
+                                },
+                            ),
+                            filter: None,
+                            null_treatment: None,
+                            over: None,
+                            within_group: vec![],
+                            parameters: sqlparser::ast::FunctionArguments::None,
+                            uses_odbc_syntax: false,
+                        });
+                        let lower_pattern =
+                            sqlparser::ast::Expr::Function(sqlparser::ast::Function {
+                                name: sqlparser::ast::ObjectName(vec![
+                                    sqlparser::ast::ObjectNamePart::Identifier(
+                                        sqlparser::ast::Ident::new("LOWER"),
+                                    ),
+                                ]),
+                                args: sqlparser::ast::FunctionArguments::List(
+                                    sqlparser::ast::FunctionArgumentList {
+                                        duplicate_treatment: None,
+                                        args: vec![sqlparser::ast::FunctionArg::Unnamed(
+                                            sqlparser::ast::FunctionArgExpr::Expr(pattern),
+                                        )],
+                                        clauses: vec![],
+                                    },
+                                ),
+                                filter: None,
+                                null_treatment: None,
+                                over: None,
+                                within_group: vec![],
+                                parameters: sqlparser::ast::FunctionArguments::None,
+                                uses_odbc_syntax: false,
+                            });
+                        Ok(sqlparser::ast::Expr::Like {
+                            negated: like.negated,
+                            expr: Box::new(lower_expr),
+                            pattern: Box::new(lower_pattern),
+                            escape_char,
+                            any: false,
+                        })
+                    } else {
+                        Ok(sqlparser::ast::Expr::ILike {
+                            negated: like.negated,
+                            expr: Box::new(expr),
+                            pattern: Box::new(pattern),
+                            escape_char,
+                            any: false,
+                        })
+                    }
                 } else {
                     Ok(sqlparser::ast::Expr::Like {
                         negated: like.negated,
@@ -512,6 +576,10 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
         &self,
         val: &datafusion::scalar::ScalarValue,
     ) -> Result<sqlparser::ast::Expr, SqlGenError> {
+        if let Some(custom_expr) = self.dialect.capabilities.format_literal(val) {
+            return Ok(custom_expr);
+        }
+
         use datafusion::scalar::ScalarValue;
         let sql_value = match val {
             ScalarValue::Int8(Some(v)) => {
@@ -544,7 +612,9 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
             ScalarValue::Float64(Some(v)) => {
                 sqlparser::ast::Value::Number(v.to_string(), false).into()
             }
-            ScalarValue::Utf8(Some(v)) => {
+            ScalarValue::Utf8(Some(v))
+            | ScalarValue::LargeUtf8(Some(v))
+            | ScalarValue::Utf8View(Some(v)) => {
                 sqlparser::ast::Value::SingleQuotedString(v.clone()).into()
             }
             ScalarValue::Boolean(Some(v)) => sqlparser::ast::Value::Boolean(*v).into(),

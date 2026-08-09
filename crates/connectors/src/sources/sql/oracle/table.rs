@@ -49,7 +49,7 @@ use futures::TryStreamExt;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::sources::sql::common::TableFactory;
+use crate::sources::sql::common::{SqlDialect, TableFactory};
 use crate::sources::sql::oracle::pool::OracleConnectionPool;
 
 /// A [`TableProvider`] implementation for Oracle databases.
@@ -152,12 +152,11 @@ impl TableProvider for OracleTable {
         &self,
         filters: &[&Expr],
     ) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
-        let dialect = strake_sql::dialects::OracleDialect::new();
-        let unparser = datafusion::sql::unparser::Unparser::new(&dialect);
         Ok(filters
             .iter()
             .map(|f| {
-                if unparser.expr_to_sql(f).is_ok() {
+                if strake_sql::sql_gen::unparse_expr_to_sql(f, SqlDialect::Oracle.as_str()).is_ok()
+                {
                     TableProviderFilterPushDown::Exact
                 } else {
                     TableProviderFilterPushDown::Unsupported
@@ -189,16 +188,16 @@ impl OracleTable {
             self.table_reference.to_quoted_string()
         );
 
-        let dialect = strake_sql::dialects::OracleDialect::new();
-        let unparser = datafusion::sql::unparser::Unparser::new(&dialect);
         let mut where_clauses = Vec::new();
         for filter in filters {
-            let expr_sql = unparser.expr_to_sql(filter).map_err(|e| {
-                datafusion::error::DataFusionError::Execution(format!(
-                    "Failed to unparse filter expression for Oracle pushdown: {e}"
-                ))
-            })?;
-            where_clauses.push(expr_sql.to_string());
+            let expr_sql =
+                strake_sql::sql_gen::unparse_expr_to_sql(filter, SqlDialect::Oracle.as_str())
+                    .map_err(|e| {
+                        datafusion::error::DataFusionError::Execution(format!(
+                            "Failed to unparse filter expression for Oracle pushdown: {e}"
+                        ))
+                    })?;
+            where_clauses.push(expr_sql);
         }
 
         if !where_clauses.is_empty() {
@@ -547,6 +546,23 @@ mod tests {
         assert_eq!(
             sql,
             "SELECT \"STATUS\", \"REGION_CODE\" FROM sales_dwh.\"ORDERS\" WHERE (\"STATUS\" = 'ACTIVE') AND \"REGION_CODE\" IN ('US', 'EU') FETCH FIRST 500 ROWS ONLY"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_base_scan_sql_with_temporal_filters() {
+        let table = create_test_table().await;
+
+        let filter = col("\"CREATED_AT\"").gt(lit(
+            datafusion::scalar::ScalarValue::TimestampMicrosecond(Some(1785649509392963), None),
+        ));
+        let sql = table
+            .base_scan_sql(Some(&vec![0, 5]), &[filter], Some(10))
+            .unwrap();
+
+        assert_eq!(
+            sql,
+            "SELECT \"ORDER_ID\", \"CREATED_AT\" FROM sales_dwh.\"ORDERS\" WHERE \"CREATED_AT\" > TO_TIMESTAMP('2026-08-02 05:45:09.392963', 'YYYY-MM-DD HH24:MI:SS.FF') FETCH FIRST 10 ROWS ONLY"
         );
     }
 }

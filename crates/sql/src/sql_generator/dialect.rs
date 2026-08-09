@@ -112,6 +112,15 @@ pub trait DialectCapabilities: Send + Sync {
         None
     }
 
+    /// Format a literal scalar value for the dialect.
+    /// Returns None if the dialect relies on standard literal unparsing.
+    fn format_literal(
+        &self,
+        _val: &datafusion::scalar::ScalarValue,
+    ) -> Option<sqlparser::ast::Expr> {
+        None
+    }
+
     /// Normalize function name for the dialect (e.g. casing).
     fn normalize_function_name(&self, name: &str) -> String {
         const COMMON_FUNCS: &[&str] = &[
