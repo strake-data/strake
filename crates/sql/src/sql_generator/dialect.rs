@@ -324,8 +324,8 @@ pub struct GeneratorDialect<'a> {
     pub capabilities: std::sync::Arc<dyn DialectCapabilities>,
     /// Custom type mapper for CAST operations.
     pub type_mapper: std::sync::Arc<dyn TypeMapper>,
-    /// The name of the target dialect (e.g. "postgres").
-    pub dialect_name: &'a str,
+    /// The target source type (e.g. `SourceType::Postgres`).
+    pub source_type: strake_common::models::SourceType,
 }
 
 impl<'a> GeneratorDialect<'a> {
@@ -335,14 +335,14 @@ impl<'a> GeneratorDialect<'a> {
         function_mapper: Option<&'a FunctionMapper>,
         capabilities: std::sync::Arc<dyn DialectCapabilities>,
         type_mapper: std::sync::Arc<dyn TypeMapper>,
-        dialect_name: &'a str,
+        source_type: impl Into<strake_common::models::SourceType>,
     ) -> Self {
         Self {
             unparser_dialect,
             function_mapper,
             capabilities,
             type_mapper,
-            dialect_name,
+            source_type: source_type.into(),
         }
     }
 }

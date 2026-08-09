@@ -485,7 +485,7 @@ mod tests {
 
         assert_eq!(
             sql,
-            "SELECT \"ORDER_ID\", \"CUSTOMER_ID\" FROM sales_dwh.\"ORDERS\" WHERE (\"CUSTOMER_ID\" = 1001) FETCH FIRST 1 ROWS ONLY"
+            "SELECT \"ORDER_ID\", \"CUSTOMER_ID\" FROM sales_dwh.\"ORDERS\" WHERE \"CUSTOMER_ID\" = 1001 FETCH FIRST 1 ROWS ONLY"
         );
     }
 
@@ -503,7 +503,7 @@ mod tests {
 
         assert_eq!(
             sql,
-            "SELECT \"STATUS\", \"REGION_CODE\", \"AMOUNT\" FROM sales_dwh.\"ORDERS\" WHERE (\"STATUS\" = 'ACTIVE') AND \"REGION_CODE\" IN ('US', 'EU') AND \"AMOUNT\" IS NOT NULL FETCH FIRST 500 ROWS ONLY"
+            "SELECT \"STATUS\", \"REGION_CODE\", \"AMOUNT\" FROM sales_dwh.\"ORDERS\" WHERE \"STATUS\" = 'ACTIVE' AND \"REGION_CODE\" IN ('US', 'EU') AND \"AMOUNT\" IS NOT NULL FETCH FIRST 500 ROWS ONLY"
         );
     }
 
@@ -545,7 +545,7 @@ mod tests {
 
         assert_eq!(
             sql,
-            "SELECT \"STATUS\", \"REGION_CODE\" FROM sales_dwh.\"ORDERS\" WHERE (\"STATUS\" = 'ACTIVE') AND \"REGION_CODE\" IN ('US', 'EU') FETCH FIRST 500 ROWS ONLY"
+            "SELECT \"STATUS\", \"REGION_CODE\" FROM sales_dwh.\"ORDERS\" WHERE \"STATUS\" = 'ACTIVE' AND \"REGION_CODE\" IN ('US', 'EU') FETCH FIRST 500 ROWS ONLY"
         );
     }
 

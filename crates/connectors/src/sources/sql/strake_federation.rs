@@ -63,7 +63,7 @@ impl FederationProvider for StrakeFederationProvider {
     fn optimizer(&self) -> Option<Arc<datafusion::optimizer::optimizer::Optimizer>> {
         let rule = Arc::new(StrakeFederationOptimizerRule::new(
             self.executor.clone(),
-            self.dialect.clone(),
+            self.dialect,
         ));
         Some(Arc::new(
             datafusion::optimizer::optimizer::Optimizer::with_rules(vec![rule]),
@@ -82,7 +82,7 @@ impl StrakeFederationOptimizerRule {
     /// Creates a new `StrakeFederationOptimizerRule` with the given executor and dialect.
     pub fn new(executor: Arc<dyn SQLExecutor>, dialect: SqlDialect) -> Self {
         Self {
-            planner: Arc::new(StrakeFederationPlanner::new(executor, dialect.clone())),
+            planner: Arc::new(StrakeFederationPlanner::new(executor, dialect)),
             dialect,
         }
     }

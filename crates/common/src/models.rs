@@ -59,6 +59,12 @@ pub enum SourceType {
     Duckdb,
     /// ClickHouse database.
     Clickhouse,
+    /// Oracle database.
+    Oracle,
+    /// Snowflake database.
+    Snowflake,
+    /// DataFusion engine / Substrait.
+    Datafusion,
     /// Apache Iceberg table.
     Iceberg,
     /// Parquet files.
@@ -86,6 +92,9 @@ impl SourceType {
             Self::Sqlite => "sqlite",
             Self::Duckdb => "duckdb",
             Self::Clickhouse => "clickhouse",
+            Self::Oracle => "oracle",
+            Self::Snowflake => "snowflake",
+            Self::Datafusion => "datafusion",
             Self::Parquet => "parquet",
             Self::Csv => "csv",
             Self::Json => "json",
@@ -103,11 +112,14 @@ impl std::str::FromStr for SourceType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s.to_lowercase().as_str() {
-            "postgres" => Self::Postgres,
-            "mysql" => Self::Mysql,
+            "postgres" | "postgresql" => Self::Postgres,
+            "mysql" | "mariadb" => Self::Mysql,
             "sqlite" => Self::Sqlite,
             "duckdb" => Self::Duckdb,
             "clickhouse" => Self::Clickhouse,
+            "oracle" => Self::Oracle,
+            "snowflake" => Self::Snowflake,
+            "datafusion" => Self::Datafusion,
             "iceberg" => Self::Iceberg,
             "parquet" => Self::Parquet,
             "csv" => Self::Csv,
@@ -117,6 +129,13 @@ impl std::str::FromStr for SourceType {
             "grpc" => Self::Grpc,
             _ => Self::Other(s.to_string()),
         })
+    }
+}
+
+impl From<&str> for SourceType {
+    fn from(s: &str) -> Self {
+        let Ok(st) = s.parse();
+        st
     }
 }
 
@@ -135,44 +154,8 @@ impl<'de> serde::Deserialize<'de> for SourceType {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Ok(match s.to_lowercase().as_str() {
-            "postgres" => Self::Postgres,
-            "mysql" => Self::Mysql,
-            "sqlite" => Self::Sqlite,
-            "duckdb" => Self::Duckdb,
-            "clickhouse" => Self::Clickhouse,
-            "iceberg" => Self::Iceberg,
-            "parquet" => Self::Parquet,
-            "csv" => Self::Csv,
-            "json" => Self::Json,
-            "flight_sql" => Self::FlightSql,
-            "rest" => Self::Rest,
-            "grpc" => Self::Grpc,
-            _ => {
-                let lower = s.to_lowercase();
-                if [
-                    "postgres",
-                    "mysql",
-                    "sqlite",
-                    "duckdb",
-                    "clickhouse",
-                    "iceberg",
-                    "parquet",
-                    "csv",
-                    "json",
-                    "flight_sql",
-                    "rest",
-                    "grpc",
-                ]
-                .contains(&lower.as_str())
-                {
-                    return Err(serde::de::Error::custom(
-                        "Invalid exact known SourceType inside Other",
-                    ));
-                }
-                Self::Other(s)
-            }
-        })
+        let Ok(source_type) = s.parse();
+        Ok(source_type)
     }
 }
 

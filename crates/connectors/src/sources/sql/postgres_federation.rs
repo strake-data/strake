@@ -47,7 +47,7 @@ impl PostgresExecutor {
 #[async_trait]
 impl SQLExecutor for PostgresExecutor {
     fn name(&self) -> &str {
-        "postgres"
+        strake_common::models::SourceType::Postgres.as_str()
     }
 
     fn compute_context(&self) -> Option<String> {

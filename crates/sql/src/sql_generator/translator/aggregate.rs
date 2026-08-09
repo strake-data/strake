@@ -79,7 +79,7 @@ pub(crate) fn handle_aggregate(
             let mut sql = expr_translator.expr_to_sql(e)?;
 
             // Explicitly cast arguments for SUM/AVG to DOUBLE for DuckDB
-            if generator.dialect.dialect_name == crate::dialect_router::DUCKDB_DIALECT
+            if generator.dialect.source_type == strake_common::models::SourceType::Duckdb
                 && let sqlparser::ast::Expr::Function(ref mut f) = sql
             {
                 let name = f.name.to_string().to_lowercase();

@@ -39,7 +39,7 @@ impl SqliteExecutor {
 #[async_trait]
 impl SQLExecutor for SqliteExecutor {
     fn name(&self) -> &str {
-        "sqlite"
+        strake_common::models::SourceType::Sqlite.as_str()
     }
 
     fn compute_context(&self) -> Option<String> {

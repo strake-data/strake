@@ -782,13 +782,19 @@ pub(crate) async fn resolve_introspector(
         .as_ref()
         .and_then(|c| c.sources.iter().find(|s| s.name.as_ref() == source_name))
     {
-        let source_type_str = match source.source_type.as_str() {
-            "sql" => source
-                .config
-                .get("dialect")
-                .and_then(|v| v.as_str())
-                .unwrap_or("postgres"),
-            other => other,
+        use strake_common::models::SourceType;
+
+        let resolved_source_type: SourceType = match &source.source_type {
+            SourceType::Other(s) if s.eq_ignore_ascii_case("sql") => {
+                let dialect = source
+                    .config
+                    .get("dialect")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("postgres");
+                let Ok(st) = dialect.parse();
+                st
+            }
+            other => other.clone(),
         };
 
         let merged_connection_string = source
@@ -809,8 +815,8 @@ pub(crate) async fn resolve_introspector(
                 )
             });
 
-        match source_type_str {
-            "postgres" => {
+        match resolved_source_type {
+            SourceType::Postgres => {
                 let conn_str = merged_connection_string
                     .clone()
                     .context("Postgres URL/Connection string is required for introspection")?;
@@ -820,7 +826,7 @@ pub(crate) async fn resolve_introspector(
                     },
                 ));
             }
-            "sqlite" => {
+            SourceType::Sqlite => {
                 let db_path = merged_connection_string
                     .clone()
                     .context("SQLite path/Connection string is required for introspection")?;
@@ -831,7 +837,7 @@ pub(crate) async fn resolve_introspector(
                     },
                 ));
             }
-            "duckdb" => {
+            SourceType::Duckdb => {
                 let db_path = merged_connection_string
                     .clone()
                     .context("DuckDB path/Connection string is required for introspection")?;
@@ -841,7 +847,7 @@ pub(crate) async fn resolve_introspector(
                     },
                 ));
             }
-            "mysql" => {
+            SourceType::Mysql => {
                 let conn_str = merged_connection_string
                     .clone()
                     .context("MySQL URL/Connection string is required for introspection")?;
@@ -851,7 +857,7 @@ pub(crate) async fn resolve_introspector(
                     },
                 ));
             }
-            "clickhouse" => {
+            SourceType::Clickhouse => {
                 let conn_str = merged_connection_string
                     .clone()
                     .context("ClickHouse URL/Connection string is required for introspection")?;
@@ -861,7 +867,7 @@ pub(crate) async fn resolve_introspector(
                     },
                 ));
             }
-            "oracle" => {
+            SourceType::Oracle => {
                 let conn_str = merged_connection_string
                     .clone()
                     .context("Oracle URL/Connection string is required for introspection")?;

@@ -25,8 +25,7 @@ use crate::sql_generator::dialect::{
     TypeMapper,
 };
 
-/// Dialect name for DuckDB.
-pub const DUCKDB_DIALECT: &str = "duckdb";
+use strake_common::models::SourceType;
 
 /// Represents the dialect translation path for a source
 pub enum DialectPath {
@@ -57,32 +56,34 @@ pub enum DialectPath {
 }
 
 /// Routes a source type to its appropriate dialect translation path
-pub fn route_dialect(source_type: &str) -> DialectPath {
-    match source_type.to_lowercase().as_str() {
+pub fn route_dialect(source_type: impl AsRef<str>) -> DialectPath {
+    let raw = source_type.as_ref();
+    let Ok(st) = raw.parse();
+    match st {
         // Tier 1: DataFusion built-in dialects
-        "postgres" | "postgresql" => DialectPath::Native(
+        SourceType::Postgres => DialectPath::Native(
             Arc::new(PostgreSqlDialect {}),
             Arc::new(PostgreSqlCapabilities),
             Arc::new(DefaultTypeMapper),
         ),
-        DUCKDB_DIALECT => DialectPath::Native(
+        SourceType::Duckdb => DialectPath::Native(
             Arc::new(DuckDBDialect::new()),
             Arc::new(crate::sql_generator::dialect::DuckDBCapabilities),
             Arc::new(DefaultTypeMapper),
         ),
-        "mysql" | "mariadb" => DialectPath::Native(
+        SourceType::Mysql => DialectPath::Native(
             Arc::new(MySqlDialect {}),
             Arc::new(DefaultDialectCapabilities),
             Arc::new(DefaultTypeMapper),
         ),
-        "sqlite" => DialectPath::Native(
+        SourceType::Sqlite => DialectPath::Native(
             Arc::new(SqliteDialect {}),
             Arc::new(crate::sql_generator::dialect::SqliteCapabilities),
             Arc::new(DefaultTypeMapper),
         ),
 
         // Tier 2: Strake custom dialects
-        "oracle" => {
+        SourceType::Oracle => {
             let dialect = OracleDialect::new();
             let mapper = dialect.mapper().clone();
             let dialect_arc = Arc::new(dialect);
@@ -93,7 +94,7 @@ pub fn route_dialect(source_type: &str) -> DialectPath {
                 Some(mapper),
             )
         }
-        "snowflake" => {
+        SourceType::Snowflake => {
             let dialect = SnowflakeDialect::new();
             let mapper = dialect.mapper().clone();
             let dialect_arc = Arc::new(dialect);
@@ -106,12 +107,12 @@ pub fn route_dialect(source_type: &str) -> DialectPath {
         }
 
         // Tier 3: Substrait-capable engines
-        "datafusion" => DialectPath::Substrait,
+        SourceType::Datafusion => DialectPath::Substrait,
 
-        // Tier 4: Unknown — fallback to local execution (no pushdown)
+        // Tier 4: Non-SQL or unknown source types — fallback to local execution
         _ => {
             tracing::warn!(
-                source_type = %source_type,
+                source_type = %raw,
                 "No dialect available for source, falling back to local execution"
             );
             DialectPath::LocalExecution

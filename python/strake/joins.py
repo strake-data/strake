@@ -363,13 +363,14 @@ def _deduplicate_and_rank_candidates(
                 existing["confidence"] = r["confidence"]
                 existing["cardinality"] = r["cardinality"]
 
-    final_candidates = []
+    final_candidates: list[dict[str, Any]] = []
     for existing in candidate_map.values():
         sources = existing.pop("sources")
         if len(sources) > 1:
             existing["basis"] = JoinBasis.MIXED.value
         else:
-            existing["basis"] = list(sources)[0]
+            val = list(sources)[0]
+            existing["basis"] = val.value if hasattr(val, "value") else val
         final_candidates.append(existing)
 
     final_candidates.sort(key=lambda x: x["confidence"], reverse=True)

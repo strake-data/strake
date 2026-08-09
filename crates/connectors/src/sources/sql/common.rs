@@ -176,7 +176,7 @@ impl SchemaMappingRule {
 
 /// Supported SQL dialects for data sources.
 #[non_exhaustive]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SqlDialect {
     /// PostgreSQL dialect.
@@ -204,6 +204,44 @@ impl SqlDialect {
             SqlDialect::Clickhouse => "clickhouse",
             SqlDialect::DuckDB => "duckdb",
             SqlDialect::Oracle => "oracle",
+        }
+    }
+}
+
+impl std::str::FromStr for SqlDialect {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "postgres" | "postgresql" => Ok(SqlDialect::Postgres),
+            "mysql" => Ok(SqlDialect::MySql),
+            "sqlite" => Ok(SqlDialect::Sqlite),
+            "clickhouse" => Ok(SqlDialect::Clickhouse),
+            "duckdb" => Ok(SqlDialect::DuckDB),
+            "oracle" => Ok(SqlDialect::Oracle),
+            _ => Err(anyhow::anyhow!("Unknown SQL dialect: '{s}'")),
+        }
+    }
+}
+
+impl TryFrom<&strake_common::models::SourceType> for SqlDialect {
+    type Error = anyhow::Error;
+
+    fn try_from(source_type: &strake_common::models::SourceType) -> Result<Self, Self::Error> {
+        use strake_common::models::SourceType;
+        match source_type {
+            SourceType::Postgres => Ok(SqlDialect::Postgres),
+            SourceType::Mysql => Ok(SqlDialect::MySql),
+            SourceType::Sqlite => Ok(SqlDialect::Sqlite),
+            SourceType::Clickhouse => Ok(SqlDialect::Clickhouse),
+            SourceType::Duckdb => Ok(SqlDialect::DuckDB),
+            SourceType::Oracle => Ok(SqlDialect::Oracle),
+            SourceType::Other(s) => s.parse::<SqlDialect>().map_err(|_| {
+                anyhow::anyhow!(
+                    "SQL dialect must be explicitly configured or inferred from source type ('{s}')"
+                )
+            }),
+            other => anyhow::bail!("Cannot infer SQL dialect for non-SQL source type: {other:?}"),
         }
     }
 }
@@ -427,5 +465,56 @@ mod tests {
 
         let result = rule.map_schema("GWS_DWH", "my_source");
         assert_eq!(result.as_ref(), "GWS_DWH");
+    }
+
+    #[test]
+    fn test_sql_dialect_from_source_type() {
+        use std::str::FromStr;
+        use strake_common::models::SourceType;
+
+        assert_eq!(
+            SqlDialect::try_from(&SourceType::Postgres).unwrap(),
+            SqlDialect::Postgres
+        );
+        assert_eq!(
+            SqlDialect::try_from(&SourceType::Mysql).unwrap(),
+            SqlDialect::MySql
+        );
+        assert_eq!(
+            SqlDialect::try_from(&SourceType::Sqlite).unwrap(),
+            SqlDialect::Sqlite
+        );
+        assert_eq!(
+            SqlDialect::try_from(&SourceType::Clickhouse).unwrap(),
+            SqlDialect::Clickhouse
+        );
+        assert_eq!(
+            SqlDialect::try_from(&SourceType::Duckdb).unwrap(),
+            SqlDialect::DuckDB
+        );
+        assert_eq!(
+            SqlDialect::try_from(&SourceType::Oracle).unwrap(),
+            SqlDialect::Oracle
+        );
+
+        // Test fallback matching via Other
+        assert_eq!(
+            SqlDialect::try_from(&SourceType::Other("oracle".into())).unwrap(),
+            SqlDialect::Oracle
+        );
+        assert_eq!(
+            SqlDialect::try_from(&SourceType::Other("PostgreSQL".into())).unwrap(),
+            SqlDialect::Postgres
+        );
+
+        assert!(SqlDialect::try_from(&SourceType::Csv).is_err());
+        assert!(SqlDialect::try_from(&SourceType::Other("unknown_db".into())).is_err());
+
+        // Test FromStr directly
+        assert_eq!(SqlDialect::from_str("oracle").unwrap(), SqlDialect::Oracle);
+        assert_eq!(
+            SqlDialect::from_str("postgres").unwrap(),
+            SqlDialect::Postgres
+        );
     }
 }

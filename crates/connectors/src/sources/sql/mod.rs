@@ -116,28 +116,9 @@ impl SourceProvider for SqlSourceProvider {
         let sql_config: SqlConfig = serde_json::from_value(config.config.clone())
             .context("Failed to parse SQL source configuration")?;
 
-        let dialect = if let Some(d) = sql_config.dialect {
-            d
-        } else {
-            match &config.source_type {
-                strake_common::models::SourceType::Postgres => SqlDialect::Postgres,
-                strake_common::models::SourceType::Mysql => SqlDialect::MySql,
-                strake_common::models::SourceType::Sqlite => SqlDialect::Sqlite,
-                strake_common::models::SourceType::Clickhouse => SqlDialect::Clickhouse,
-                strake_common::models::SourceType::Duckdb => SqlDialect::DuckDB,
-                strake_common::models::SourceType::Other(s) => match s.to_lowercase().as_str() {
-                    "postgres" => SqlDialect::Postgres,
-                    "mysql" => SqlDialect::MySql,
-                    "sqlite" => SqlDialect::Sqlite,
-                    "clickhouse" => SqlDialect::Clickhouse,
-                    "duckdb" => SqlDialect::DuckDB,
-                    "oracle" => SqlDialect::Oracle,
-                    _ => anyhow::bail!(
-                        "SQL dialect must be explicitly configured or inferred from the source type (e.g. 'postgres')"
-                    ),
-                },
-                other => anyhow::bail!("Cannot infer SQL dialect for source type: {:?}", other),
-            }
+        let dialect = match sql_config.dialect {
+            Some(d) => d,
+            None => SqlDialect::try_from(&config.source_type)?,
         };
 
         let mut connection_string = config

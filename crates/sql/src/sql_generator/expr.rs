@@ -238,7 +238,7 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
                     .map(|c| sqlparser::ast::Value::SingleQuotedString(c.to_string()));
 
                 if like.case_insensitive {
-                    if self.dialect.dialect_name.eq_ignore_ascii_case("oracle") {
+                    if self.dialect.source_type == strake_common::models::SourceType::Oracle {
                         let lower_expr = sqlparser::ast::Expr::Function(sqlparser::ast::Function {
                             name: sqlparser::ast::ObjectName(vec![
                                 sqlparser::ast::ObjectNamePart::Identifier(

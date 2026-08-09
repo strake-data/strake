@@ -106,7 +106,7 @@ impl<'a> SqlGenerator<'a> {
                 tracing::debug!(target: "sql_generator", sql = %sql, "Generated SQL");
                 sql
             })
-            .map_err(|e: SqlGenError| e.to_strake_error(self.dialect.dialect_name))
+            .map_err(|e: SqlGenError| e.to_strake_error(self.dialect.source_type.as_str()))
     }
 
     /// Returns a skeleton SQL [`Query`] structure (equivalent to `SELECT *`).
