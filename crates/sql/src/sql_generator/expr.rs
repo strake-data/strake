@@ -115,11 +115,7 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
                 let left = self.expr_to_sql(&bin.left)?;
                 let right = self.expr_to_sql(&bin.right)?;
                 let op = self.translate_binary_op(bin.op)?;
-                Ok(sqlparser::ast::Expr::BinaryOp {
-                    left: Box::new(left),
-                    op,
-                    right: Box::new(right),
-                })
+                Ok(make_binary_op(left, op, right))
             }
 
             Expr::Literal(val, _) => self.translate_literal(val),
@@ -132,10 +128,7 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
 
             Expr::Not(e) => {
                 let sql_inner = self.expr_to_sql(e)?;
-                Ok(sqlparser::ast::Expr::UnaryOp {
-                    op: sqlparser::ast::UnaryOperator::Not,
-                    expr: Box::new(sql_inner),
-                })
+                Ok(make_unary_not(sql_inner))
             }
 
             Expr::IsNotNull(e) => {
@@ -715,5 +708,119 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
             parameters: FunctionArguments::None,
             uses_odbc_syntax: false,
         }))
+    }
+}
+
+/// Returns operator precedence rank for binary operators.
+///
+/// Higher numeric rank indicates tighter operator binding. Ranks follow standard SQL
+/// operator precedence rules across dialects (Oracle, PostgreSQL, MySQL, SQLite):
+///
+/// 1. `OR` (10)
+/// 2. `AND` (20)
+/// 3. Bitwise operators (`|`, `^`, `&`) (30)
+/// 4. Comparison operators (`=`, `!=`, `<`, `<=`, `>`, `>=`) (40)
+/// 5. String concat (`||`) and spaceship (`<=>`) (45)
+/// 6. Additive operators (`+`, `-`) (50)
+/// 7. Multiplicative operators (`*`, `/`, `%`) (60)
+pub fn binary_op_precedence(op: &sqlparser::ast::BinaryOperator) -> u8 {
+    use sqlparser::ast::BinaryOperator::*;
+    match op {
+        Or => 10,
+        And => 20,
+        BitwiseOr | BitwiseXor | BitwiseAnd => 30,
+        Eq | NotEq | Lt | LtEq | Gt | GtEq => 40,
+        Spaceship | StringConcat => 45,
+        Plus | Minus => 50,
+        Multiply | Divide | Modulo => 60,
+        _ => 40,
+    }
+}
+
+/// Returns the operator precedence rank of a SQL AST expression.
+///
+/// Higher numeric rank indicates tighter operator binding. Expressions wrapped in
+/// [`sqlparser::ast::Expr::Nested`] or primary literals/identifiers have maximum precedence (100).
+pub fn expr_precedence(expr: &sqlparser::ast::Expr) -> u8 {
+    use sqlparser::ast::Expr;
+    match expr {
+        Expr::BinaryOp { op, .. } => binary_op_precedence(op),
+        // NOTE: Unary NOT is assigned rank 25, placing it above AND (20) and OR (10)
+        // but below comparison operators (40). This ensures NOT (A OR B) and NOT (A AND B)
+        // preserve parentheses while NOT col = 1 renders without redundant parens.
+        Expr::UnaryOp {
+            op: sqlparser::ast::UnaryOperator::Not,
+            ..
+        } => 25,
+        Expr::UnaryOp { .. } => 70,
+        Expr::InList { .. }
+        | Expr::Between { .. }
+        | Expr::IsNull(..)
+        | Expr::IsNotNull(..)
+        | Expr::IsTrue(..)
+        | Expr::IsFalse(..)
+        | Expr::IsUnknown(..) => 40,
+        Expr::Nested(..) => 100, // Explicitly parenthesized expression
+        _ => 100,                // Primary expressions (identifiers, literals, functions, casts)
+    }
+}
+
+/// Determines whether a binary operator is right-side non-associative.
+///
+/// Non-associative arithmetic operators (`-`, `/`, `%`) require parenthesizing the right operand
+/// when combining expressions of equal precedence (e.g. `A - (B - C)` or `A / (B * C)`).
+fn is_non_associative(op: &sqlparser::ast::BinaryOperator) -> bool {
+    use sqlparser::ast::BinaryOperator::*;
+    matches!(op, Minus | Divide | Modulo)
+}
+
+/// Constructs a [`sqlparser::ast::Expr::BinaryOp`] with precedence-aware parenthesization.
+///
+/// Automatically wraps `left` or `right` child expressions in [`sqlparser::ast::Expr::Nested`]
+/// if their precedence rank is lower than `op`, or if `right` is non-associative with equal rank.
+pub fn make_binary_op(
+    left: sqlparser::ast::Expr,
+    op: sqlparser::ast::BinaryOperator,
+    right: sqlparser::ast::Expr,
+) -> sqlparser::ast::Expr {
+    let parent_prec = binary_op_precedence(&op);
+    let left_prec = expr_precedence(&left);
+    let right_prec = expr_precedence(&right);
+
+    let left_boxed = if left_prec < parent_prec {
+        Box::new(sqlparser::ast::Expr::Nested(Box::new(left)))
+    } else {
+        Box::new(left)
+    };
+
+    let right_boxed =
+        if right_prec < parent_prec || (right_prec == parent_prec && is_non_associative(&op)) {
+            Box::new(sqlparser::ast::Expr::Nested(Box::new(right)))
+        } else {
+            Box::new(right)
+        };
+
+    sqlparser::ast::Expr::BinaryOp {
+        left: left_boxed,
+        op,
+        right: right_boxed,
+    }
+}
+
+/// Constructs a [`sqlparser::ast::Expr::UnaryOp`] for `NOT` with precedence-aware parenthesization.
+///
+/// Wraps inner expressions with precedence lower than `NOT` (25), such as `OR` (10) or `AND` (20),
+/// in [`sqlparser::ast::Expr::Nested`] to guarantee safe logical evaluation order.
+pub fn make_unary_not(expr: sqlparser::ast::Expr) -> sqlparser::ast::Expr {
+    let parent_prec = 25; // NOT precedence rank
+    let inner_prec = expr_precedence(&expr);
+    let expr_boxed = if inner_prec < parent_prec {
+        Box::new(sqlparser::ast::Expr::Nested(Box::new(expr)))
+    } else {
+        Box::new(expr)
+    };
+    sqlparser::ast::Expr::UnaryOp {
+        op: sqlparser::ast::UnaryOperator::Not,
+        expr: expr_boxed,
     }
 }

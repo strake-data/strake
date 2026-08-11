@@ -93,28 +93,54 @@ impl OptimizerRule for StrakeFederationOptimizerRule {
         &self,
         plan: LogicalPlan,
         _config: &dyn OptimizerConfig,
-    ) -> datafusion::error::Result<datafusion::common::tree_node::Transformed<LogicalPlan>> {
-        if let LogicalPlan::Extension(Extension { ref node }) = plan
+    ) -> datafusion::error::Result<Transformed<LogicalPlan>> {
+        // First, recursively rewrite children bottom-up
+        let children_transformed = plan.map_children(|child| self.rewrite(child, _config))?;
+        let plan = children_transformed.data;
+        let transformed = children_transformed.transformed;
+
+        fn finish_plan(data: LogicalPlan, transformed: bool) -> Transformed<LogicalPlan> {
+            if transformed {
+                Transformed::yes(data)
+            } else {
+                Transformed::no(data)
+            }
+        }
+
+        if let LogicalPlan::Extension(Extension { node }) = &plan
             && node.name() == "Federated"
         {
-            return Ok(Transformed::no(plan));
+            return Ok(finish_plan(plan, transformed));
         }
 
-        // We need to check if the plan exclusively belongs to our provider.
-        if !is_federated_plan(&plan, self.dialect.as_str())? {
-            return Ok(datafusion::common::tree_node::Transformed::no(plan));
+        let target_context = self.planner.executor.compute_context();
+
+        // Check if all table scans in this subplan belong to our specific compute context
+        if !is_federated_plan(&plan, target_context.as_deref(), self.dialect.as_str())? {
+            return Ok(finish_plan(plan, transformed));
         }
 
-        // Use the plan as-is. strake_sql will handle dialect-specific normalization.
-        let normalized_plan = plan.clone();
+        // Unwrap any inner Federated nodes from the same context to build the unified plan
+        let unwrapped_plan = unwrap_federated_nodes(
+            plan.clone(),
+            target_context.as_deref(),
+            self.dialect.as_str(),
+        )?;
 
-        // Wrap the plan in our Federated extension node.
-        let fed_plan = FederatedPlanNode::new(normalized_plan, self.planner.clone());
-        Ok(datafusion::common::tree_node::Transformed::yes(
-            LogicalPlan::Extension(Extension {
-                node: Arc::new(fed_plan),
-            }),
-        ))
+        // Test if strake_sql can generate valid SQL for this same-source subplan
+        if strake_sql::sql_gen::get_sql_for_plan(&unwrapped_plan, self.dialect.as_str())
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            return Ok(finish_plan(plan, transformed));
+        }
+
+        // Wrap the unwrapped same-source plan in our Federated extension node.
+        let fed_plan = FederatedPlanNode::new(unwrapped_plan, self.planner.clone());
+        Ok(Transformed::yes(LogicalPlan::Extension(Extension {
+            node: Arc::new(fed_plan),
+        })))
     }
 
     fn name(&self) -> &str {
@@ -137,6 +163,16 @@ impl StrakeFederationPlanner {
     /// Creates a new `StrakeFederationPlanner` with the given executor and dialect.
     pub fn new(executor: Arc<dyn SQLExecutor>, dialect: SqlDialect) -> Self {
         Self { executor, dialect }
+    }
+
+    /// Access the underlying SQL executor.
+    pub fn executor(&self) -> &Arc<dyn SQLExecutor> {
+        &self.executor
+    }
+
+    /// Access the SQL dialect.
+    pub fn dialect(&self) -> SqlDialect {
+        self.dialect
     }
 }
 
@@ -178,61 +214,111 @@ impl FederationPlanner for StrakeFederationPlanner {
     }
 }
 
-fn is_federated_plan(plan: &LogicalPlan, provider_name: &str) -> datafusion::error::Result<bool> {
+fn get_scan_compute_context(
+    scan: &datafusion::logical_expr::TableScan,
+    provider_name: &str,
+) -> Option<String> {
     use datafusion::datasource::TableProvider;
     use datafusion_federation::FederatedTableProviderAdaptor;
 
+    fn check_provider(provider: &Arc<dyn TableProvider>, provider_name: &str) -> Option<String> {
+        if let Some(adaptor) = provider.downcast_ref::<FederatedTableProviderAdaptor>() {
+            if adaptor.source.federation_provider().name() == provider_name {
+                return Some(
+                    adaptor
+                        .source
+                        .federation_provider()
+                        .compute_context()
+                        .unwrap_or_else(|| format!("{provider_name}:__default_unique__")),
+                );
+            }
+            if let Some(inner) = adaptor.table_provider.as_ref() {
+                return check_provider(inner, provider_name);
+            }
+        }
+        if let Some(wrapping) = crate::sources::as_wrapping(provider.as_ref()) {
+            return check_provider(wrapping.inner(), provider_name);
+        }
+        None
+    }
+
+    if let Some(default_source) = scan
+        .source
+        .downcast_ref::<datafusion::datasource::DefaultTableSource>()
+        && let Some(ctx) = check_provider(&default_source.table_provider, provider_name)
+    {
+        return Some(ctx);
+    }
+
+    if let Some(source) = scan
+        .source
+        .downcast_ref::<datafusion_federation::sql::SQLTableSource>()
+        && source.federation_provider().name() == provider_name
+    {
+        return Some(
+            source
+                .federation_provider()
+                .compute_context()
+                .unwrap_or_else(|| format!("{provider_name}:__default_unique__")),
+        );
+    }
+
+    if let Some(source) = scan
+        .source
+        .downcast_ref::<crate::sources::sql::duckdb::DuckDBTableSource>()
+        && source.federation_provider().name() == provider_name
+    {
+        return Some(
+            source
+                .federation_provider()
+                .compute_context()
+                .unwrap_or_else(|| format!("{provider_name}:__default_unique__")),
+        );
+    }
+
+    if let Some(source) = scan.source.downcast_ref::<StrakeTableSource>()
+        && source.federation_provider().name() == provider_name
+    {
+        return Some(
+            source
+                .federation_provider()
+                .compute_context()
+                .unwrap_or_else(|| format!("{provider_name}:__default_unique__")),
+        );
+    }
+
+    None
+}
+
+fn is_federated_plan(
+    plan: &LogicalPlan,
+    target_context: Option<&str>,
+    provider_name: &str,
+) -> datafusion::error::Result<bool> {
     let mut has_source = false;
     let mut all_sources = true;
 
     plan.apply(|node| {
-        if let LogicalPlan::TableScan(scan) = node {
-            let mut is_match = false;
-
-            fn check_provider(provider: &Arc<dyn TableProvider>, provider_name: &str) -> bool {
-                if let Some(adaptor) = provider.downcast_ref::<FederatedTableProviderAdaptor>() {
-                    if adaptor.source.federation_provider().name() == provider_name {
-                        return true;
-                    }
-                    if let Some(inner) = adaptor.table_provider.as_ref() {
-                        return check_provider(inner, provider_name);
-                    }
-                }
-
-                // Generically unwrap decorated providers
-                if let Some(wrapping) = crate::sources::as_wrapping(provider.as_ref()) {
-                    return check_provider(wrapping.inner(), provider_name);
-                }
-
-                false
-            }
-
-            if let Some(default_source) = scan
-                .source
-                .downcast_ref::<datafusion::datasource::DefaultTableSource>()
-                && check_provider(&default_source.table_provider, provider_name)
-            {
-                is_match = true;
-            } else if let Some(source) = scan
-                .source
-                .downcast_ref::<datafusion_federation::sql::SQLTableSource>()
-                && source.federation_provider().name() == provider_name
-            {
-                is_match = true;
-            } else if let Some(source) = scan
-                .source
-                .downcast_ref::<crate::sources::sql::duckdb::DuckDBTableSource>()
-                && source.federation_provider().name() == provider_name
-            {
-                is_match = true;
-            } else if let Some(source) = scan.source.downcast_ref::<StrakeTableSource>()
-                && source.federation_provider().name() == provider_name
-            {
-                is_match = true;
-            }
-
-            if is_match {
+        if let LogicalPlan::Extension(Extension { node }) = node
+            && node.name() == "Federated"
+            && let Some(fed_node) = node.as_any().downcast_ref::<FederatedPlanNode>()
+        {
+            let inner_match = is_federated_plan(fed_node.plan(), target_context, provider_name)?;
+            if inner_match {
                 has_source = true;
+            } else {
+                all_sources = false;
+            }
+            return Ok(datafusion::common::tree_node::TreeNodeRecursion::Jump);
+        }
+
+        if let LogicalPlan::TableScan(scan) = node {
+            if let Some(scan_ctx) = get_scan_compute_context(scan, provider_name) {
+                if target_context.is_none() || target_context == Some(scan_ctx.as_str()) {
+                    has_source = true;
+                } else {
+                    all_sources = false;
+                }
             } else {
                 all_sources = false;
             }
@@ -241,6 +327,24 @@ fn is_federated_plan(plan: &LogicalPlan, provider_name: &str) -> datafusion::err
     })?;
 
     Ok(has_source && all_sources)
+}
+
+fn unwrap_federated_nodes(
+    plan: LogicalPlan,
+    target_context: Option<&str>,
+    provider_name: &str,
+) -> datafusion::error::Result<LogicalPlan> {
+    let transformed = plan.transform_down(|node| {
+        if let LogicalPlan::Extension(Extension { ref node }) = node
+            && node.name() == "Federated"
+            && let Some(fed_node) = node.as_any().downcast_ref::<FederatedPlanNode>()
+            && is_federated_plan(fed_node.plan(), target_context, provider_name)?
+        {
+            return Ok(Transformed::yes(fed_node.plan().clone()));
+        }
+        Ok(Transformed::no(node))
+    })?;
+    Ok(transformed.data)
 }
 
 /// Generic execution plan that runs a federated SQL query against a remote data source.
@@ -532,6 +636,6 @@ mod tests {
             .build()
             .unwrap();
 
-        assert!(is_federated_plan(&plan, provider_name).unwrap());
+        assert!(is_federated_plan(&plan, None, provider_name).unwrap());
     }
 }

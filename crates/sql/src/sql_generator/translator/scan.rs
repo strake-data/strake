@@ -115,11 +115,11 @@ pub(crate) fn handle_table_scan(
         for f in &scan.filters {
             let f_sql = translator.expr_to_sql(f)?;
             selection = match selection {
-                Some(e) => Some(SqlExpr::BinaryOp {
-                    left: Box::new(e),
-                    op: BinaryOperator::And,
-                    right: Box::new(f_sql),
-                }),
+                Some(e) => Some(crate::sql_generator::expr::make_binary_op(
+                    e,
+                    BinaryOperator::And,
+                    f_sql,
+                )),
                 None => Some(f_sql),
             };
         }

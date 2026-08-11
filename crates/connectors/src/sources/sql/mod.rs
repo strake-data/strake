@@ -93,8 +93,9 @@ impl SourceProvider for SqlSourceProvider {
     ) -> Result<()> {
         #[derive(serde::Deserialize)]
         struct SqlConfig {
+            #[serde(default)]
             dialect: Option<SqlDialect>,
-            #[serde(alias = "connection")]
+            #[serde(default)]
             url: Option<String>,
             #[serde(default = "default_pool_size")]
             pool_size: usize,
@@ -113,8 +114,13 @@ impl SourceProvider for SqlSourceProvider {
             10
         }
 
-        let sql_config: SqlConfig = serde_json::from_value(config.config.clone())
-            .context("Failed to parse SQL source configuration")?;
+        let sql_config: SqlConfig = serde_json::from_value(config.config.clone()).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to parse SQL source configuration from '{:?}': {}",
+                config.config,
+                e
+            )
+        })?;
 
         let dialect = match sql_config.dialect {
             Some(d) => d,

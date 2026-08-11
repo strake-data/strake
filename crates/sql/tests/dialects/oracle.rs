@@ -209,3 +209,58 @@ fn unparse_ilike_rewrites_to_lower_like() {
     let sql = unparse_expr_to_sql(&expr, "oracle").unwrap();
     assert_eq!(sql, "LOWER(\"name\") LIKE LOWER('alice%')");
 }
+
+#[test]
+fn unparse_and_with_or_chains_preserves_parentheses() {
+    use datafusion::logical_expr::{col, lit};
+    use strake_sql::sql_gen::unparse_expr_to_sql;
+
+    let region_or = col("REGION")
+        .eq(lit("NORTH"))
+        .or(col("REGION").eq(lit("SOUTH")));
+    let status_or = col("STATUS")
+        .eq(lit("OPEN"))
+        .or(col("STATUS").eq(lit("CLOSED")));
+    let expr = region_or.and(status_or);
+
+    let sql = unparse_expr_to_sql(&expr, "oracle").unwrap();
+    assert_eq!(
+        sql,
+        "(\"region\" = 'NORTH' OR \"region\" = 'SOUTH') AND (\"status\" = 'OPEN' OR \"status\" = 'CLOSED')"
+    );
+}
+
+#[test]
+fn unparse_not_with_or_chain_preserves_parentheses() {
+    use datafusion::logical_expr::{col, lit, not};
+    use strake_sql::sql_gen::unparse_expr_to_sql;
+
+    let expr = not(col("A").eq(lit(1)).or(col("B").eq(lit(2))));
+    let sql = unparse_expr_to_sql(&expr, "oracle").unwrap();
+    assert_eq!(sql, "NOT (\"a\" = 1 OR \"b\" = 2)");
+}
+
+#[test]
+fn unparse_nested_precedence_matrix() {
+    use datafusion::logical_expr::{col, lit};
+    use strake_sql::sql_gen::unparse_expr_to_sql;
+
+    // A OR (B AND C) -> no parens around (B AND C) since AND has higher precedence than OR
+    let expr1 = col("A")
+        .eq(lit(1))
+        .or(col("B").eq(lit(2)).and(col("C").eq(lit(3))));
+    assert_eq!(
+        unparse_expr_to_sql(&expr1, "oracle").unwrap(),
+        "\"a\" = 1 OR \"b\" = 2 AND \"c\" = 3"
+    );
+
+    // (A OR B) AND C -> parens around (A OR B)
+    let expr2 = col("A")
+        .eq(lit(1))
+        .or(col("B").eq(lit(2)))
+        .and(col("C").eq(lit(3)));
+    assert_eq!(
+        unparse_expr_to_sql(&expr2, "oracle").unwrap(),
+        "(\"a\" = 1 OR \"b\" = 2) AND \"c\" = 3"
+    );
+}

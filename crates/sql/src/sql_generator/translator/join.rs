@@ -20,8 +20,8 @@ use crate::sql_generator::expr::ExprTranslator;
 use crate::sql_generator::sanitize::safe_ident;
 use datafusion::logical_expr::JoinType;
 use sqlparser::ast::{
-    BinaryOperator, Expr as SqlExpr, Join as SqlJoin, JoinConstraint, JoinOperator, SetExpr,
-    TableWithJoins,
+    BinaryOperator, Expr as SqlExpr, Join as SqlJoin, JoinConstraint, JoinOperator, SelectItem,
+    SetExpr, TableAlias, TableFactor, TableWithJoins,
 };
 
 pub(crate) fn handle_join(
@@ -69,18 +69,14 @@ pub(crate) fn handle_join(
         // We commit here to prevent the ScopeHolder from rolling back the stack on successful translation.
         holder.commit();
 
-        let eq = SqlExpr::BinaryOp {
-            left: Box::new(l_sql),
-            op: BinaryOperator::Eq,
-            right: Box::new(r_sql),
-        };
+        let eq = crate::sql_generator::expr::make_binary_op(l_sql, BinaryOperator::Eq, r_sql);
 
         on_expr = match on_expr {
-            Some(e) => Some(SqlExpr::BinaryOp {
-                left: Box::new(e),
-                op: BinaryOperator::And,
-                right: Box::new(eq),
-            }),
+            Some(e) => Some(crate::sql_generator::expr::make_binary_op(
+                e,
+                BinaryOperator::And,
+                eq,
+            )),
             None => Some(eq),
         };
     }
@@ -90,13 +86,120 @@ pub(crate) fn handle_join(
         let mut translator = ExprTranslator::new(ctx, dial);
         let f_sql = translator.expr_to_sql(filter)?;
         on_expr = match on_expr {
-            Some(e) => Some(SqlExpr::BinaryOp {
-                left: Box::new(e),
-                op: BinaryOperator::And,
-                right: Box::new(f_sql),
-            }),
+            Some(e) => Some(crate::sql_generator::expr::make_binary_op(
+                e,
+                BinaryOperator::And,
+                f_sql,
+            )),
             None => Some(f_sql),
         };
+    }
+
+    let is_semi_or_anti = matches!(
+        join.join_type,
+        JoinType::LeftSemi | JoinType::RightSemi | JoinType::LeftAnti | JoinType::RightAnti
+    );
+
+    if is_semi_or_anti {
+        let right_scope = generator
+            .context
+            .current_scope()
+            .ok_or_else(|| SqlGenError::UnsupportedPlan {
+                message: "Semi/anti join missing right input scope".to_string(),
+                node_type: "Join".to_string(),
+            })?
+            .clone();
+        generator.context.pop_scope();
+
+        let left_scope = generator
+            .context
+            .current_scope()
+            .ok_or_else(|| SqlGenError::UnsupportedPlan {
+                message: "Semi/anti join missing left input scope".to_string(),
+                node_type: "Join".to_string(),
+            })?
+            .clone();
+        generator.context.pop_scope();
+
+        let is_left = matches!(join.join_type, JoinType::LeftSemi | JoinType::LeftAnti);
+        let is_anti = matches!(join.join_type, JoinType::LeftAnti | JoinType::RightAnti);
+
+        let (mut outer_query, mut subquery, outer_scope, _sub_scope) = if is_left {
+            (left_query, right_query, left_scope, right_scope)
+        } else {
+            (right_query, left_query, right_scope, left_scope)
+        };
+
+        // Attach correlation condition to subquery WHERE selection
+        if let SetExpr::Select(ref mut select) = *subquery.body {
+            if let Some(cond) = on_expr {
+                if let Some(existing) = &select.selection {
+                    select.selection = Some(SqlExpr::BinaryOp {
+                        left: Box::new(existing.clone()),
+                        op: BinaryOperator::And,
+                        right: Box::new(cond),
+                    });
+                } else {
+                    select.selection = Some(cond);
+                }
+            }
+            select.projection = vec![SelectItem::UnnamedExpr(SqlExpr::Value(
+                sqlparser::ast::Value::Number("1".to_string(), false).into(),
+            ))];
+        }
+
+        let exists_expr = SqlExpr::Exists {
+            subquery: Box::new(subquery),
+            negated: is_anti,
+        };
+
+        if !matches!(*outer_query.body, SetExpr::Select(_)) {
+            let sub_alias = generator.context.next_alias();
+            let derived = TableFactor::Derived {
+                lateral: false,
+                subquery: Box::new(outer_query),
+                alias: Some(TableAlias {
+                    name: safe_ident(&sub_alias)?,
+                    columns: vec![],
+                    explicit: generator
+                        .dialect
+                        .capabilities
+                        .supports_as_alias_for_tables(),
+                }),
+                sample: None,
+            };
+            let mut select = generator.create_skeleton_select();
+            select.from = vec![TableWithJoins {
+                relation: derived,
+                joins: vec![],
+            }];
+            let mut new_query = generator.create_skeleton_query();
+            new_query.body = Box::new(SetExpr::Select(Box::new(select)));
+            outer_query = new_query;
+        }
+
+        if let SetExpr::Select(ref mut select) = *outer_query.body {
+            if let Some(existing) = &select.selection {
+                select.selection = Some(SqlExpr::BinaryOp {
+                    left: Box::new(existing.clone()),
+                    op: BinaryOperator::And,
+                    right: Box::new(exists_expr),
+                });
+            } else {
+                select.selection = Some(exists_expr);
+            }
+        }
+
+        generator
+            .context
+            .enter_scope(
+                outer_scope.alias.clone(),
+                outer_scope.columns.clone(),
+                outer_scope.qualifiers.clone(),
+            )
+            .commit();
+
+        return Ok(outer_query);
     }
 
     let join_constraint =
