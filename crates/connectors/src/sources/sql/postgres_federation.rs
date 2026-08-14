@@ -268,10 +268,26 @@ fn append_value_to_builder(
             }
         }
     } else if let Some(b) = builder.as_any_mut().downcast_mut::<Float32Builder>() {
-        match row.try_get::<_, Option<f32>>(col_idx) {
-            Ok(Some(v)) => b.append_value(v),
-            Ok(None) => b.append_null(),
-            Err(e) => return Err(datafusion::error::DataFusionError::External(Box::new(e))),
+        // The configured column type may be narrower than the actual Postgres
+        // type (e.g. a custom schema declaring `float` for a `float8` column).
+        // Read the actual Postgres type and widen the Rust type accordingly,
+        // then downcast to f32 for the Arrow builder.
+        let pg_type = row.columns()[col_idx].type_();
+        let read_f64 = *pg_type == postgres_types::Type::FLOAT8
+            || *pg_type == postgres_types::Type::NUMERIC
+            || *pg_type == postgres_types::Type::FLOAT4;
+        if read_f64 {
+            match row.try_get::<_, Option<f64>>(col_idx) {
+                Ok(Some(v)) => b.append_value(v as f32),
+                Ok(None) => b.append_null(),
+                Err(e) => return Err(datafusion::error::DataFusionError::External(Box::new(e))),
+            }
+        } else {
+            match row.try_get::<_, Option<f32>>(col_idx) {
+                Ok(Some(v)) => b.append_value(v),
+                Ok(None) => b.append_null(),
+                Err(e) => return Err(datafusion::error::DataFusionError::External(Box::new(e))),
+            }
         }
     } else if let Some(b) = builder.as_any_mut().downcast_mut::<Float64Builder>() {
         match row.try_get::<_, Option<f64>>(col_idx) {

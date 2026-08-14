@@ -32,6 +32,7 @@ impl SqlProviderFactory for MySQLTableFactoryWrapper {
         &self,
         table_ref: TableReference,
         cb: Arc<AdaptiveCircuitBreaker>,
+        custom_schema: Option<datafusion::arrow::datatypes::SchemaRef>,
     ) -> Result<Arc<dyn TableProvider>> {
         let inner = self
             .factory
@@ -39,10 +40,19 @@ impl SqlProviderFactory for MySQLTableFactoryWrapper {
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
+        let schema_adapted = if let Some(custom_schema) = custom_schema {
+            Arc::new(super::wrappers::SchemaAdaptingTableProvider::new(
+                inner,
+                custom_schema,
+            ))
+        } else {
+            inner
+        };
+
         // Wrap with circuit breaker.
         // MySQL is usually a remote federated source (or at least treated as such),
         // so we enable schema drift detection.
-        Ok(super::wrappers::wrap_provider(inner, cb, true))
+        Ok(super::wrappers::wrap_provider(schema_adapted, cb, true))
     }
 }
 

@@ -634,6 +634,44 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
                 }
             }
             ScalarValue::Null => sqlparser::ast::Value::Null.into(),
+            _ if matches!(
+                val,
+                ScalarValue::Float16(None)
+                    | ScalarValue::Float32(None)
+                    | ScalarValue::Float64(None)
+                    | ScalarValue::Decimal32(None, _, _)
+                    | ScalarValue::Decimal64(None, _, _)
+                    | ScalarValue::Int8(None)
+                    | ScalarValue::Int16(None)
+                    | ScalarValue::Int32(None)
+                    | ScalarValue::Int64(None)
+                    | ScalarValue::UInt8(None)
+                    | ScalarValue::UInt16(None)
+                    | ScalarValue::UInt32(None)
+                    | ScalarValue::UInt64(None)
+                    | ScalarValue::Utf8(None)
+                    | ScalarValue::Utf8View(None)
+                    | ScalarValue::LargeUtf8(None)
+                    | ScalarValue::Date32(None)
+                    | ScalarValue::Date64(None)
+                    | ScalarValue::TimestampSecond(None, _)
+                    | ScalarValue::TimestampMillisecond(None, _)
+                    | ScalarValue::TimestampMicrosecond(None, _)
+                    | ScalarValue::TimestampNanosecond(None, _)
+                    | ScalarValue::IntervalYearMonth(None)
+                    | ScalarValue::IntervalDayTime(None)
+                    | ScalarValue::IntervalMonthDayNano(None)
+                    | ScalarValue::DurationSecond(None)
+                    | ScalarValue::DurationMillisecond(None)
+                    | ScalarValue::DurationMicrosecond(None)
+                    | ScalarValue::DurationNanosecond(None)
+                    | ScalarValue::Binary(None)
+                    | ScalarValue::BinaryView(None)
+                    | ScalarValue::LargeBinary(None)
+            ) =>
+            {
+                sqlparser::ast::Value::Null.into()
+            }
             _ => {
                 return Err(SqlGenError::UnsupportedPlan {
                     message: format!("Literal value: {:?}", val),

@@ -183,6 +183,32 @@ impl GeneratorContext {
         scope
     }
 
+    /// Pops and discards all scopes pushed above the given checkpoint, returning
+    /// the top-most scope (the output of the most recently translated subplan).
+    ///
+    /// Unlike [`pop_and_return_scope`], discarded scopes are NOT recorded in the
+    /// undo stack: they represent completed subplan translations whose scope
+    /// entries are superseded by the single replacement scope that the caller
+    /// pushes after extracting the relation. Restoring them on rollback would
+    /// leak stale column entries back onto the stack.
+    pub(crate) fn pop_to_checkpoint(&mut self, checkpoint: Checkpoint) -> Option<Scope> {
+        let mut top: Option<Scope> = None;
+        while self.scope_stack.len() > checkpoint.stack_len {
+            match self.scope_stack.pop() {
+                Some(scope) => {
+                    if top.is_none() {
+                        top = Some(scope);
+                    }
+                }
+                None => break,
+            }
+        }
+        if top.is_none() {
+            tracing::warn!(target: "sql_generator", "Attempted to pop scope to checkpoint from empty stack");
+        }
+        top
+    }
+
     /// Pop the current scope (e.g. leaving a subquery)
     pub fn pop_scope(&mut self) {
         self.pop_and_return_scope();

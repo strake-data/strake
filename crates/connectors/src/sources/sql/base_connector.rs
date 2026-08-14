@@ -9,7 +9,6 @@ use std::sync::Arc;
 use strake_common::retry::retry_async;
 
 use super::common::{SchemaMappingRule, SqlProviderFactory, SqlSourceParams};
-use super::wrappers::wrap_concurrent;
 use crate::introspect::{IntrospectError, SchemaIntrospector};
 use crate::sources::sql::case_insensitive_schema::CaseInsensitiveSchemaProvider;
 
@@ -128,17 +127,10 @@ impl GenericSqlConnector {
             );
             match self
                 .factory
-                .create_table_provider(table_ref, params.cb.clone())
+                .create_table_provider(table_ref, params.cb.clone(), custom_schema)
                 .await
             {
-                Ok(mut provider) => {
-                    if let Some(custom_schema) = custom_schema {
-                        provider = Arc::new(super::wrappers::SchemaAdaptingTableProvider::new(
-                            provider,
-                            custom_schema,
-                        ));
-                    }
-                    let provider = wrap_concurrent(provider, params.max_concurrent_queries);
+                Ok(provider) => {
                     let target_schema_ref = target_schema.as_str();
                     let table_name_ref = table_name.as_str();
 

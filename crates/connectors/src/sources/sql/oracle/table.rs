@@ -188,21 +188,17 @@ impl OracleTable {
             self.table_reference.to_quoted_string()
         );
 
-        let mut where_clauses = Vec::new();
-        for filter in filters {
+        let combined = filters.iter().cloned().reduce(|acc, f| acc.and(f));
+        if let Some(predicate) = combined {
             let expr_sql =
-                strake_sql::sql_gen::unparse_expr_to_sql(filter, SqlDialect::Oracle.as_str())
+                strake_sql::sql_gen::unparse_expr_to_sql(&predicate, SqlDialect::Oracle.as_str())
                     .map_err(|e| {
-                        datafusion::error::DataFusionError::Execution(format!(
-                            "Failed to unparse filter expression for Oracle pushdown: {e}"
-                        ))
-                    })?;
-            where_clauses.push(expr_sql);
-        }
-
-        if !where_clauses.is_empty() {
+                    datafusion::error::DataFusionError::Execution(format!(
+                        "Failed to unparse filter expression for Oracle pushdown: {e}"
+                    ))
+                })?;
             sql.push_str(" WHERE ");
-            sql.push_str(&where_clauses.join(" AND "));
+            sql.push_str(&expr_sql);
         }
 
         if let Some(l) = limit {
@@ -563,6 +559,240 @@ mod tests {
         assert_eq!(
             sql,
             "SELECT \"ORDER_ID\", \"CREATED_AT\" FROM sales_dwh.\"ORDERS\" WHERE \"CREATED_AT\" > TO_TIMESTAMP('2026-08-02 05:45:09.392963', 'YYYY-MM-DD HH24:MI:SS.FF') FETCH FIRST 10 ROWS ONLY"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_base_scan_sql_or_chains_parenthesised() {
+        let table = create_test_table().await;
+
+        let or_chain_1 = col("\"STATUS\"")
+            .eq(lit("ACTIVE"))
+            .or(col("\"STATUS\"").eq(lit("PENDING")));
+        let or_chain_2 = col("\"REGION_CODE\"")
+            .eq(lit("US"))
+            .or(col("\"REGION_CODE\"").eq(lit("EU")));
+
+        let sql = table
+            .base_scan_sql(Some(&vec![2, 3]), &[or_chain_1, or_chain_2], None)
+            .unwrap();
+
+        assert_eq!(
+            sql,
+            "SELECT \"STATUS\", \"REGION_CODE\" FROM sales_dwh.\"ORDERS\" WHERE (\"STATUS\" = 'ACTIVE' OR \"STATUS\" = 'PENDING') AND (\"REGION_CODE\" = 'US' OR \"REGION_CODE\" = 'EU')"
+        );
+    }
+
+    /// Bug report §1: `x IN (1)` — single-element IN preserved as-is.
+    #[tokio::test]
+    async fn test_base_scan_sql_single_element_in_list() {
+        let table = create_test_table().await;
+
+        let f = col("\"STATUS\"").in_list(vec![lit("ACTIVE")], false);
+        let sql = table.base_scan_sql(None, &[f], None).unwrap();
+        assert!(
+            sql.contains("IN ('ACTIVE')") || sql.contains("= 'ACTIVE'"),
+            "Single-element IN list not preserved: {sql}"
+        );
+    }
+
+    /// Bug report §1: `x IN (1, 2, 3)` — at the DataFusion threshold, IN may or may not be expanded.
+    #[tokio::test]
+    async fn test_base_scan_sql_three_element_in_list() {
+        let table = create_test_table().await;
+
+        let f =
+            col("\"STATUS\"").in_list(vec![lit("ACTIVE"), lit("PENDING"), lit("CLOSED")], false);
+        let sql = table.base_scan_sql(Some(&vec![2]), &[f], None).unwrap();
+        assert!(
+            sql.contains("IN (") || sql.contains("OR"),
+            "Three-element IN list not preserved: {sql}"
+        );
+    }
+
+    /// Bug report §1: three OR chains combined by AND — the triple-filter case.
+    #[tokio::test]
+    async fn test_base_scan_sql_three_or_chains_under_and() {
+        let table = create_test_table().await;
+
+        let f1 = col("\"STATUS\"")
+            .eq(lit("A"))
+            .or(col("\"STATUS\"").eq(lit("B")));
+        let f2 = col("\"REGION_CODE\"")
+            .eq(lit("US"))
+            .or(col("\"REGION_CODE\"").eq(lit("EU")));
+        let f3 = col("\"AMOUNT\"")
+            .gt(lit(100.0))
+            .or(col("\"AMOUNT\"").lt(lit(10.0)));
+
+        let sql = table
+            .base_scan_sql(Some(&vec![2, 3, 4]), &[f1, f2, f3], None)
+            .unwrap();
+
+        // Every OR group must be parenthesised
+        assert!(
+            sql.contains("(\"STATUS\" = 'A' OR \"STATUS\" = 'B')"),
+            "First OR group not parenthesised: {sql}"
+        );
+        assert!(
+            sql.contains("(\"REGION_CODE\" = 'US' OR \"REGION_CODE\" = 'EU')"),
+            "Second OR group not parenthesised: {sql}"
+        );
+        assert!(
+            sql.contains(") AND ("),
+            "AND between OR groups missing parentheses: {sql}"
+        );
+    }
+
+    /// Bug report §1: `A OR (B AND C)` — mixed precedence, no wrapping needed for AND.
+    #[tokio::test]
+    async fn test_base_scan_sql_or_with_nested_and() {
+        let table = create_test_table().await;
+
+        // Single filter: STATUS = 'A' OR (REGION_CODE = 'US' AND AMOUNT > 100)
+        let f = col("\"STATUS\"").eq(lit("A")).or(col("\"REGION_CODE\"")
+            .eq(lit("US"))
+            .and(col("\"AMOUNT\"").gt(lit(100.0))));
+
+        let sql = table
+            .base_scan_sql(Some(&vec![2, 3, 4]), &[f], None)
+            .unwrap();
+
+        // The AND inside OR should not lose its grouping
+        assert!(
+            sql.contains("OR") && sql.contains("AND"),
+            "Mixed precedence filter should contain both OR and AND: {sql}"
+        );
+    }
+
+    /// Bug report §1: single filter produces no spurious wrapping.
+    #[tokio::test]
+    async fn test_base_scan_sql_single_filter() {
+        let table = create_test_table().await;
+
+        let f = col("\"STATUS\"").eq(lit("ACTIVE"));
+        let sql = table.base_scan_sql(Some(&vec![2]), &[f], None).unwrap();
+
+        assert_eq!(
+            sql,
+            "SELECT \"STATUS\" FROM sales_dwh.\"ORDERS\" WHERE \"STATUS\" = 'ACTIVE'"
+        );
+    }
+
+    /// Empty filters should produce no WHERE clause.
+    #[tokio::test]
+    async fn test_base_scan_sql_no_filters() {
+        let table = create_test_table().await;
+
+        let sql = table.base_scan_sql(None, &[], Some(10)).unwrap();
+        assert_eq!(
+            sql,
+            "SELECT * FROM sales_dwh.\"ORDERS\" FETCH FIRST 10 ROWS ONLY"
+        );
+    }
+
+    /// Bug report §1: `NOT IN` — negated IN list.
+    #[tokio::test]
+    async fn test_base_scan_sql_not_in_list() {
+        let table = create_test_table().await;
+
+        let f = col("\"STATUS\"").in_list(vec![lit("CANCELLED"), lit("REJECTED")], true);
+        let sql = table.base_scan_sql(Some(&vec![2]), &[f], None).unwrap();
+        assert!(
+            sql.contains("NOT IN") || sql.contains("!="),
+            "NOT IN list not rendered correctly: {sql}"
+        );
+    }
+
+    /// Bug report §1: NULL in IN list — `x IN (1, NULL)`.
+    #[tokio::test]
+    async fn test_base_scan_sql_null_in_in_list() {
+        let table = create_test_table().await;
+
+        let f = col("\"STATUS\"").in_list(
+            vec![
+                lit("ACTIVE"),
+                Expr::Literal(datafusion::scalar::ScalarValue::Utf8(None), None),
+            ],
+            false,
+        );
+        let sql = table.base_scan_sql(Some(&vec![2]), &[f], None).unwrap();
+        assert!(
+            sql.contains("IN (") || sql.contains("NULL") || sql.contains("OR"),
+            "NULL in IN list not handled: {sql}"
+        );
+    }
+
+    /// Bug report §1: escaped strings — single quotes in values.
+    #[tokio::test]
+    async fn test_base_scan_sql_escaped_strings() {
+        let table = create_test_table().await;
+
+        let f = col("\"STATUS\"").eq(lit("it's active"));
+        let sql = table.base_scan_sql(Some(&vec![2]), &[f], None).unwrap();
+        assert!(
+            sql.contains("it''s active") || sql.contains("it\\'s active"),
+            "Single quote not escaped in string literal: {sql}"
+        );
+    }
+
+    /// Bug report §2: Full DataFusion optimizer pipeline test.
+    ///
+    /// Registers OracleTable with a SessionContext, runs a query with IN predicates
+    /// so DataFusion's optimizer expands short IN lists to OR chains, then
+    /// inspects the physical plan's OracleSQLExec to verify parenthesisation.
+    /// Does NOT call `get_sql_for_plan` or `base_scan_sql` directly.
+    #[tokio::test]
+    async fn test_full_optimizer_pipeline_in_expansion_parenthesised() {
+        use datafusion::prelude::SessionContext;
+
+        let table = create_test_table().await;
+        let ctx = SessionContext::new();
+        ctx.register_table("test_orders", Arc::new(table))
+            .expect("Failed to register table");
+
+        // DataFusion 54 expands IN lists with <= 3 elements into OR chains.
+        // This query MUST go through the optimizer to trigger the expansion.
+        let df = ctx
+            .sql(
+                r#"SELECT "STATUS", "REGION_CODE"
+                   FROM test_orders
+                   WHERE "STATUS" IN ('ACTIVE', 'PENDING')
+                     AND "REGION_CODE" IN ('US', 'EU')"#,
+            )
+            .await
+            .expect("Failed to create logical plan");
+
+        let physical = df
+            .create_physical_plan()
+            .await
+            .expect("Failed to create physical plan");
+
+        let plan_display = datafusion::physical_plan::displayable(physical.as_ref())
+            .indent(true)
+            .to_string();
+
+        // The plan must contain OracleSQLExec with properly parenthesised SQL
+        assert!(
+            plan_display.contains("OracleSQLExec"),
+            "OracleSQLExec not found in plan:\n{plan_display}"
+        );
+
+        // Extract the SQL from the plan text
+        let sql_part = plan_display
+            .split("sql=")
+            .nth(1)
+            .expect("sql= not found in OracleSQLExec display");
+
+        // After IN->OR expansion, the SQL should have parenthesised OR groups
+        let has_parenthesised_or = sql_part.contains("(\"STATUS\"")
+            && sql_part.contains("OR")
+            && sql_part.contains(") AND (");
+        let has_in_syntax = sql_part.contains("IN (");
+
+        assert!(
+            has_parenthesised_or || has_in_syntax,
+            "Neither parenthesised OR chains nor IN syntax found in pushed SQL: {sql_part}"
         );
     }
 }

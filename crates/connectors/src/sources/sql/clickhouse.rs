@@ -20,21 +20,38 @@ use super::common::{SchemaMappingRule, SqlProviderFactory, SqlSourceParams};
 use crate::introspect::{IntrospectError, SchemaIntrospector, TableRef};
 use globset::GlobMatcher;
 
+/// A wrapper for the ClickHouse table factory that implements the generic `SqlProviderFactory` trait.
+pub struct ClickHouseTableFactoryWrapper {
+    /// The inner ClickHouse table factory.
+    pub factory: ClickHouseTableFactory,
+}
+
 #[async_trait]
-impl SqlProviderFactory for ClickHouseTableFactory {
+impl SqlProviderFactory for ClickHouseTableFactoryWrapper {
     async fn create_table_provider(
         &self,
         table_ref: TableReference,
         cb: Arc<AdaptiveCircuitBreaker>,
+        custom_schema: Option<datafusion::arrow::datatypes::SchemaRef>,
     ) -> Result<Arc<dyn TableProvider>> {
         let inner = self
+            .factory
             .table_provider(table_ref, None)
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
+        let schema_adapted = if let Some(custom_schema) = custom_schema {
+            Arc::new(super::wrappers::SchemaAdaptingTableProvider::new(
+                inner,
+                custom_schema,
+            ))
+        } else {
+            inner
+        };
+
         // Wrap with circuit breaker.
         // ClickHouse is a remote source, so enable schema drift detection.
-        Ok(super::wrappers::wrap_provider(inner, cb, true))
+        Ok(super::wrappers::wrap_provider(schema_adapted, cb, true))
     }
 }
 
@@ -95,12 +112,13 @@ pub async fn register_clickhouse(params: SqlSourceParams) -> Result<()> {
 
     let pool = create_clickhouse_pool(connection_string.expose_secret()).await?;
     let factory = ClickHouseTableFactory::new(pool);
+    let factory_wrapper = ClickHouseTableFactoryWrapper { factory };
 
     let connector = GenericSqlConnector {
         introspector: Arc::new(ClickHouseIntrospector {
             connection_string: SecretString::from(connection_string.clone()),
         }),
-        factory: Arc::new(factory),
+        factory: Arc::new(factory_wrapper),
         schema_mapping: SchemaMappingRule::standard(&params.schema_mapping),
     };
 

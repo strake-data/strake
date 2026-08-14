@@ -8554,6 +8554,7 @@ dependencies = [
  "chrono",
  "clap",
  "datafusion",
+ "datafusion-federation",
  "deadpool-postgres",
  "dotenv",
  "futures",

@@ -610,13 +610,23 @@ impl SqlProviderFactory for DuckDBTableFactory {
         &self,
         table_ref: TableReference,
         cb: Arc<AdaptiveCircuitBreaker>,
+        custom_schema: Option<datafusion::arrow::datatypes::SchemaRef>,
     ) -> Result<Arc<dyn TableProvider>> {
         let table_name = table_ref.table();
         let provider = DuckDBTableProvider::new(self.pool.clone(), table_name.to_string()).await?;
 
+        let schema_adapted: Arc<dyn TableProvider> = if let Some(custom_schema) = custom_schema {
+            Arc::new(super::wrappers::SchemaAdaptingTableProvider::new(
+                Arc::new(provider),
+                custom_schema,
+            ))
+        } else {
+            Arc::new(provider)
+        };
+
         // First wrap with circuit breaker
         // DuckDB is local/authoritative, so we skip schema drift detection.
-        let wrapped_provider = super::wrappers::wrap_provider(Arc::new(provider), cb, false);
+        let wrapped_provider = super::wrappers::wrap_provider(schema_adapted, cb, false);
 
         // Enable federation support using the SHARED federation provider from the factory.
         // This ensures the federation optimizer identifies tables as coming from the same source.

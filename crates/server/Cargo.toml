@@ -28,6 +28,7 @@ prost = { workspace = true }
 arrow = { workspace = true }
 chrono = { workspace = true }
 datafusion = { workspace = true }
+datafusion-federation = { workspace = true }
 tracing-appender = "0.2.4"
 axum = { workspace = true }
 arrow-json = { workspace = true }

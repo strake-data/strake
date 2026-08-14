@@ -233,6 +233,65 @@ async fn test_nested_subquery_alias_stack_depth() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_repeated_cte_self_join_scope_isolation() -> Result<()> {
+    // Regression test for a stale-scope bug: when a CTE is used twice and the
+    // two branches are joined, each branch's translation left intermediate
+    // scopes on the stack. The join's ON clause then captured a phantom scope
+    // (a scan alias from the other branch), generating SQL that referenced
+    // columns not present in the FROM clause (e.g. "no such column: rel_4.user_name").
+    let ctx = setup_ctx().await?;
+    ctx.register_table(
+        "orders",
+        Arc::new(datafusion::datasource::empty::EmptyTable::new(Arc::new(
+            Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("user_name", DataType::Utf8, false),
+                Field::new("product_id", DataType::Int64, false),
+                Field::new("amount", DataType::Float64, false),
+            ]),
+        ))),
+    )?;
+
+    let query = r#"
+        WITH active_users AS (
+            SELECT DISTINCT user_name FROM orders
+        )
+        SELECT u1.user_name as u1, u2.user_name as u2
+        FROM active_users u1
+        JOIN active_users u2 ON u1.user_name = u2.user_name
+    "#;
+    let df = ctx.sql(query).await?;
+    let plan = df.into_optimized_plan()?;
+
+    with_generator!(generator, {
+        let sql = generator.generate(&plan).unwrap();
+        println!("REPEATED CTE SELF JOIN SQL: {}", sql);
+        // Every "rel_N"."col" reference must have a corresponding derived table
+        // alias "rel_N" in the FROM clause. Before the scope-isolation fix, the
+        // join's ON clause referenced a phantom scan alias from the other branch
+        // (e.g. "rel_4"."user_name" with no `AS "rel_4"` in the FROM clause).
+        let aliases: std::collections::HashSet<&str> = sql
+            .split(" AS \"")
+            .skip(1)
+            .map(|s| s.split('"').next().unwrap())
+            .collect();
+        for qualifier in [
+            "rel_0", "rel_1", "rel_2", "rel_3", "rel_4", "rel_5", "rel_6", "rel_7", "rel_8",
+        ] {
+            if sql.contains(&format!("\"{}\".", qualifier)) {
+                assert!(
+                    aliases.contains(qualifier),
+                    "qualifier {} referenced but no derived table with that alias: {}",
+                    qualifier,
+                    sql
+                );
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_join_isolation() -> Result<()> {
     let ctx = setup_ctx().await?;
 

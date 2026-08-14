@@ -65,6 +65,7 @@ pub trait SqlProviderFactory: Send + Sync {
         &self,
         table_ref: TableReference,
         cb: Arc<AdaptiveCircuitBreaker>,
+        custom_schema: Option<datafusion::arrow::datatypes::SchemaRef>,
     ) -> Result<Arc<dyn TableProvider>>;
 }
 
@@ -86,6 +87,8 @@ pub struct GenericFederatedTableFactory<F> {
     pub federation_provider: Arc<super::strake_federation::StrakeFederationProvider>,
     /// Whether to enable schema drift detection.
     pub schema_drift: bool,
+    /// Maximum concurrent queries for the provider.
+    pub max_concurrent_queries: usize,
 }
 
 #[async_trait]
@@ -94,6 +97,7 @@ impl<F: TableFactory + Send + Sync> SqlProviderFactory for GenericFederatedTable
         &self,
         table_ref: TableReference,
         cb: Arc<AdaptiveCircuitBreaker>,
+        custom_schema: Option<datafusion::arrow::datatypes::SchemaRef>,
     ) -> Result<Arc<dyn TableProvider>> {
         let inner = self
             .inner_factory
@@ -101,15 +105,25 @@ impl<F: TableFactory + Send + Sync> SqlProviderFactory for GenericFederatedTable
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        let wrapped = super::wrappers::wrap_provider(inner, cb, self.schema_drift);
+        let schema_adapted = if let Some(custom_schema) = custom_schema {
+            Arc::new(super::wrappers::SchemaAdaptingTableProvider::new(
+                inner,
+                custom_schema,
+            ))
+        } else {
+            inner
+        };
+
+        let wrapped = super::wrappers::wrap_provider(schema_adapted, cb, self.schema_drift);
+        let limited = super::wrappers::wrap_concurrent(wrapped, self.max_concurrent_queries);
 
         let sql_source = super::strake_federation::StrakeTableSource::new(
             self.federation_provider.clone(),
             table_ref,
-            wrapped.schema(),
+            limited.schema(),
         );
         let adaptor =
-            FederatedTableProviderAdaptor::new_with_provider(Arc::new(sql_source), wrapped);
+            FederatedTableProviderAdaptor::new_with_provider(Arc::new(sql_source), limited);
 
         Ok(Arc::new(adaptor))
     }

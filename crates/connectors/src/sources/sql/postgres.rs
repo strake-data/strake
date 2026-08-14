@@ -44,6 +44,7 @@ pub async fn register_postgres(params: SqlSourceParams) -> Result<()> {
         inner_factory,
         federation_provider,
         schema_drift: true,
+        max_concurrent_queries: params.max_concurrent_queries,
     };
 
     let connector = GenericSqlConnector {
