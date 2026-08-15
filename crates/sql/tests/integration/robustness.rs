@@ -265,7 +265,6 @@ async fn test_repeated_cte_self_join_scope_isolation() -> Result<()> {
 
     with_generator!(generator, {
         let sql = generator.generate(&plan).unwrap();
-        println!("REPEATED CTE SELF JOIN SQL: {}", sql);
         // Every "rel_N"."col" reference must have a corresponding derived table
         // alias "rel_N" in the FROM clause. Before the scope-isolation fix, the
         // join's ON clause referenced a phantom scan alias from the other branch

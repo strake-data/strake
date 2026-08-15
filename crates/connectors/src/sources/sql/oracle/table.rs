@@ -508,13 +508,20 @@ mod tests {
         let table = create_test_table().await;
 
         let f1 = col("\"STATUS\"").eq(lit("ACTIVE"));
-        // Custom scalar function without SQL unparser mapping returns Err in expr_to_sql
+        // Struct literal with a non-null value has no SQL unparser mapping and
+        // returns Err in expr_to_sql, so it must remain a residual filter.
+        // (Note: an all-null Struct would be rendered as SQL NULL via is_null().)
         let f_unsupported = col("x").eq(Expr::Literal(
             datafusion::scalar::ScalarValue::Struct(Arc::new(
-                datafusion::arrow::array::StructArray::new_null(
-                    datafusion::arrow::datatypes::Fields::empty(),
-                    1,
-                ),
+                datafusion::arrow::array::StructArray::from(vec![(
+                    Arc::new(datafusion::arrow::datatypes::Field::new(
+                        "a",
+                        datafusion::arrow::datatypes::DataType::Int32,
+                        false,
+                    )),
+                    Arc::new(datafusion::arrow::array::Int32Array::from(vec![1]))
+                        as datafusion::arrow::array::ArrayRef,
+                )]),
             )),
             None,
         ));
@@ -590,13 +597,13 @@ mod tests {
 
         let f = col("\"STATUS\"").in_list(vec![lit("ACTIVE")], false);
         let sql = table.base_scan_sql(None, &[f], None).unwrap();
-        assert!(
-            sql.contains("IN ('ACTIVE')") || sql.contains("= 'ACTIVE'"),
-            "Single-element IN list not preserved: {sql}"
+        assert_eq!(
+            sql,
+            "SELECT * FROM sales_dwh.\"ORDERS\" WHERE \"STATUS\" IN ('ACTIVE')"
         );
     }
 
-    /// Bug report §1: `x IN (1, 2, 3)` — at the DataFusion threshold, IN may or may not be expanded.
+    /// Bug report §1: `x IN (1, 2, 3)` — multi-element IN preserved as-is by the unparser.
     #[tokio::test]
     async fn test_base_scan_sql_three_element_in_list() {
         let table = create_test_table().await;
@@ -604,9 +611,9 @@ mod tests {
         let f =
             col("\"STATUS\"").in_list(vec![lit("ACTIVE"), lit("PENDING"), lit("CLOSED")], false);
         let sql = table.base_scan_sql(Some(&vec![2]), &[f], None).unwrap();
-        assert!(
-            sql.contains("IN (") || sql.contains("OR"),
-            "Three-element IN list not preserved: {sql}"
+        assert_eq!(
+            sql,
+            "SELECT \"STATUS\" FROM sales_dwh.\"ORDERS\" WHERE \"STATUS\" IN ('ACTIVE', 'PENDING', 'CLOSED')"
         );
     }
 
@@ -658,10 +665,10 @@ mod tests {
             .base_scan_sql(Some(&vec![2, 3, 4]), &[f], None)
             .unwrap();
 
-        // The AND inside OR should not lose its grouping
-        assert!(
-            sql.contains("OR") && sql.contains("AND"),
-            "Mixed precedence filter should contain both OR and AND: {sql}"
+        // AND binds tighter than OR, so no parentheses are required or added.
+        assert_eq!(
+            sql,
+            "SELECT \"STATUS\", \"REGION_CODE\", \"AMOUNT\" FROM sales_dwh.\"ORDERS\" WHERE \"STATUS\" = 'A' OR \"REGION_CODE\" = 'US' AND \"AMOUNT\" > 100"
         );
     }
 
@@ -698,9 +705,9 @@ mod tests {
 
         let f = col("\"STATUS\"").in_list(vec![lit("CANCELLED"), lit("REJECTED")], true);
         let sql = table.base_scan_sql(Some(&vec![2]), &[f], None).unwrap();
-        assert!(
-            sql.contains("NOT IN") || sql.contains("!="),
-            "NOT IN list not rendered correctly: {sql}"
+        assert_eq!(
+            sql,
+            "SELECT \"STATUS\" FROM sales_dwh.\"ORDERS\" WHERE \"STATUS\" NOT IN ('CANCELLED', 'REJECTED')"
         );
     }
 
@@ -717,9 +724,9 @@ mod tests {
             false,
         );
         let sql = table.base_scan_sql(Some(&vec![2]), &[f], None).unwrap();
-        assert!(
-            sql.contains("IN (") || sql.contains("NULL") || sql.contains("OR"),
-            "NULL in IN list not handled: {sql}"
+        assert_eq!(
+            sql,
+            "SELECT \"STATUS\" FROM sales_dwh.\"ORDERS\" WHERE \"STATUS\" IN ('ACTIVE', NULL)"
         );
     }
 
@@ -778,21 +785,20 @@ mod tests {
             "OracleSQLExec not found in plan:\n{plan_display}"
         );
 
-        // Extract the SQL from the plan text
-        let sql_part = plan_display
-            .split("sql=")
-            .nth(1)
-            .expect("sql= not found in OracleSQLExec display");
-
-        // After IN->OR expansion, the SQL should have parenthesised OR groups
-        let has_parenthesised_or = sql_part.contains("(\"STATUS\"")
-            && sql_part.contains("OR")
-            && sql_part.contains(") AND (");
-        let has_in_syntax = sql_part.contains("IN (");
-
+        // After IN->OR expansion, OR groups under AND must be parenthesised.
+        // Assert the full conjunctive invariant: a regression that skips the
+        // parenthesisation (or preserves the IN lists unexpanded) fails this.
         assert!(
-            has_parenthesised_or || has_in_syntax,
-            "Neither parenthesised OR chains nor IN syntax found in pushed SQL: {sql_part}"
+            plan_display.contains(") AND ("),
+            "OR groups under AND not parenthesised in pushed SQL:\n{plan_display}"
+        );
+        assert!(
+            plan_display.contains("(\"STATUS\" = 'ACTIVE' OR \"STATUS\" = 'PENDING')"),
+            "STATUS OR group not parenthesised in pushed SQL:\n{plan_display}"
+        );
+        assert!(
+            plan_display.contains("(\"REGION_CODE\" = 'US' OR \"REGION_CODE\" = 'EU')"),
+            "REGION_CODE OR group not parenthesised in pushed SQL:\n{plan_display}"
         );
     }
 }

@@ -32,7 +32,7 @@ pub(crate) fn handle_projection(
     // 1. Get a stable relation for the input
     let checkpoint = generator.context.checkpoint();
     let mut input_query = generator.plan_to_query(&proj.input)?;
-    let input_relation = generator.extract_relation(&mut input_query, None, Some(checkpoint))?;
+    let input_relation = generator.extract_relation(&mut input_query, None, checkpoint)?;
     let input_scope =
         generator
             .context
@@ -109,7 +109,7 @@ pub(crate) fn handle_filter(
     filter: &datafusion::logical_expr::Filter,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     let checkpoint = generator.context.checkpoint();
-    let mut query = generator.plan_to_stable_query(&filter.input, Some(checkpoint))?;
+    let mut query = generator.plan_to_stable_query(&filter.input, checkpoint)?;
     let mut translator = ExprTranslator::new(&mut generator.context, &generator.dialect);
     let sql_expr = translator.expr_to_sql(&filter.predicate)?;
 

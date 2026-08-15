@@ -213,12 +213,12 @@ impl<'a> SqlGenerator<'a> {
     }
 
     /// Translates `plan` to SQL, wrapping it as a stable derived table when
-    /// necessary, and discarding all input scopes pushed above the optional
-    /// checkpoint when the wrap happens.
+    /// necessary, and discarding all input scopes pushed above the checkpoint
+    /// when the wrap happens.
     pub(crate) fn plan_to_stable_query(
         &mut self,
         plan: &LogicalPlan,
-        checkpoint: Option<crate::sql_generator::context::Checkpoint>,
+        checkpoint: crate::sql_generator::context::Checkpoint,
     ) -> Result<Query, SqlGenError> {
         let mut query = self.plan_to_query(plan)?;
 
@@ -304,33 +304,31 @@ impl<'a> SqlGenerator<'a> {
 
     /// Wraps a query as a derived table with a stable alias.
     ///
-    /// Pops the current scope (or all scopes pushed above the optional
-    /// checkpoint), re-aliases the query's projection to match the popped
-    /// scope's column names, pushes a replacement scope with the same alias,
-    /// and returns the `TableFactor::Derived`.
+    /// Pops all scopes pushed above the checkpoint, re-aliases the query's
+    /// projection to match the popped scope's column names, pushes a
+    /// replacement scope with the same alias, and returns the
+    /// `TableFactor::Derived`.
     ///
-    /// When a checkpoint is provided, every scope pushed above it (i.e. all
-    /// intermediate scopes left behind by the input subplan's translation) is
-    /// discarded, so the stack holds exactly one scope per translated subplan.
-    /// Callers pass the checkpoint they captured before translating their input.
+    /// Every scope pushed above the checkpoint (i.e. all intermediate scopes
+    /// left behind by the input subplan's translation) is discarded, so the
+    /// stack holds exactly one scope per translated subplan. Callers capture
+    /// the checkpoint before translating their input.
     ///
-    /// **Net scope stack depth change: zero** (pop N, push one; N = 1 without a
-    /// checkpoint). Callers relying on this invariant (e.g., `handle_aggregate`)
-    /// assert that the stack is non-empty afterwards.
+    /// **Net scope stack depth change: zero** (pop N, push one; N = 1 when the
+    /// input subplan left exactly one scope above the checkpoint). Callers
+    /// relying on this invariant (e.g., `handle_aggregate`) assert that the
+    /// stack is non-empty afterwards.
     pub(crate) fn extract_relation(
         &mut self,
         query: &mut Query,
         alias: Option<String>,
-        checkpoint: Option<crate::sql_generator::context::Checkpoint>,
+        checkpoint: crate::sql_generator::context::Checkpoint,
     ) -> Result<TableFactor, SqlGenError> {
-        let inner_scope = if let Some(cp) = checkpoint {
-            self.context.pop_to_checkpoint(cp)
-        } else {
-            self.context.pop_and_return_scope()
-        }
-        .ok_or_else(|| SqlGenError::UnsupportedPlan {
-            message: "Missing scope".to_string(),
-            node_type: "ExtractRelation".to_string(),
+        let inner_scope = self.context.pop_to_checkpoint(checkpoint).ok_or_else(|| {
+            SqlGenError::UnsupportedPlan {
+                message: "Missing scope".to_string(),
+                node_type: "ExtractRelation".to_string(),
+            }
         })?;
         let sub_alias = alias.unwrap_or_else(|| inner_scope.alias.to_string());
         tracing::debug!(target: "sql_generator", sub_alias = %sub_alias, col_count = inner_scope.columns.len(), "Extracting relation");

@@ -273,10 +273,26 @@ fn append_value_to_builder(
         // Read the actual Postgres type and widen the Rust type accordingly,
         // then downcast to f32 for the Arrow builder.
         let pg_type = row.columns()[col_idx].type_();
-        let read_f64 = *pg_type == postgres_types::Type::FLOAT8
-            || *pg_type == postgres_types::Type::NUMERIC
-            || *pg_type == postgres_types::Type::FLOAT4;
-        if read_f64 {
+        if *pg_type == postgres_types::Type::NUMERIC {
+            // NUMERIC has no f32/f64 FromSql impl in postgres-types 0.2.14;
+            // read it via rust_decimal (as the Int64 branch does) and narrow.
+            use rust_decimal::prelude::ToPrimitive;
+            match row.try_get::<_, Option<rust_decimal::Decimal>>(col_idx) {
+                Ok(Some(v)) => {
+                    if let Some(f) = v.to_f32() {
+                        b.append_value(f);
+                    } else {
+                        return Err(datafusion::error::DataFusionError::Execution(format!(
+                            "Value {:?} out of range for f32",
+                            v
+                        )));
+                    }
+                }
+                Ok(None) => b.append_null(),
+                Err(e) => return Err(datafusion::error::DataFusionError::External(Box::new(e))),
+            }
+        } else if *pg_type == postgres_types::Type::FLOAT8 {
+            // Only FLOAT8 needs the widening read; FLOAT4 is natively f32.
             match row.try_get::<_, Option<f64>>(col_idx) {
                 Ok(Some(v)) => b.append_value(v as f32),
                 Ok(None) => b.append_null(),

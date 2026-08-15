@@ -30,12 +30,11 @@ pub(crate) fn handle_join(
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     let checkpoint = generator.context.checkpoint();
     let mut left_query = generator.plan_to_query(&join.left)?;
-    let left_relation = generator.extract_relation(&mut left_query, None, Some(checkpoint))?;
+    let left_relation = generator.extract_relation(&mut left_query, None, checkpoint)?;
 
     let right_checkpoint = generator.context.checkpoint();
     let mut right_query = generator.plan_to_query(&join.right)?;
-    let right_relation =
-        generator.extract_relation(&mut right_query, None, Some(right_checkpoint))?;
+    let right_relation = generator.extract_relation(&mut right_query, None, right_checkpoint)?;
 
     let mut on_expr: Option<SqlExpr> = None;
 
@@ -308,8 +307,7 @@ pub(crate) fn handle_nary_join(
         // Execute join logic...
         let result = (|| -> Result<_, SqlGenError> {
             let mut base_query = generator.plan_to_query(&nary.base)?;
-            let base_relation =
-                generator.extract_relation(&mut base_query, None, Some(checkpoint))?;
+            let base_relation = generator.extract_relation(&mut base_query, None, checkpoint)?;
 
             let base_scope = generator
                 .context
@@ -328,7 +326,7 @@ pub(crate) fn handle_nary_join(
                 let branch_checkpoint = generator.context.checkpoint();
                 let mut branch_query = generator.plan_to_query(&branch.input)?;
                 let branch_relation =
-                    generator.extract_relation(&mut branch_query, None, Some(branch_checkpoint))?;
+                    generator.extract_relation(&mut branch_query, None, branch_checkpoint)?;
 
                 let branch_scope = generator
                     .context

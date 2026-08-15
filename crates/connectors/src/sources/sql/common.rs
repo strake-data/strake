@@ -114,6 +114,13 @@ impl<F: TableFactory + Send + Sync> SqlProviderFactory for GenericFederatedTable
             inner
         };
 
+        // Wrapper order: the adapted (custom-schema) provider sits INSIDE the
+        // circuit breaker and schema-drift wrapper, so drift detection compares
+        // batches against the custom schema (which the adaptor always projects
+        // onto). For custom-schema tables drift detection is therefore a
+        // structural no-op — the user declared the schema explicitly. If drift
+        // detection against the raw source schema is ever required, the
+        // adaptation would need to wrap `wrapped` instead of `inner`.
         let wrapped = super::wrappers::wrap_provider(schema_adapted, cb, self.schema_drift);
         let limited = super::wrappers::wrap_concurrent(wrapped, self.max_concurrent_queries);
 

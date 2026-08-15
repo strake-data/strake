@@ -20,10 +20,17 @@ use super::common::{SchemaMappingRule, SqlProviderFactory, SqlSourceParams};
 use crate::introspect::{IntrospectError, SchemaIntrospector, TableRef};
 use globset::GlobMatcher;
 
-/// A wrapper for the ClickHouse table factory that implements the generic `SqlProviderFactory` trait.
+/// A wrapper for the ClickHouse table factory that implements the generic
+/// `SqlProviderFactory` trait.
+///
+/// The wrapper exists because `ClickHouseTableFactory::table_provider` takes
+/// an extra parameter (unused here) that does not match the `SqlProviderFactory`
+/// signature, and it carries the `max_concurrent_queries` knob per source.
 pub struct ClickHouseTableFactoryWrapper {
     /// The inner ClickHouse table factory.
     pub factory: ClickHouseTableFactory,
+    /// Maximum number of concurrent queries allowed for this source (0 = unlimited).
+    pub max_concurrent_queries: usize,
 }
 
 #[async_trait]
@@ -51,7 +58,11 @@ impl SqlProviderFactory for ClickHouseTableFactoryWrapper {
 
         // Wrap with circuit breaker.
         // ClickHouse is a remote source, so enable schema drift detection.
-        Ok(super::wrappers::wrap_provider(schema_adapted, cb, true))
+        let wrapped = super::wrappers::wrap_provider(schema_adapted, cb, true);
+        Ok(super::wrappers::wrap_concurrent(
+            wrapped,
+            self.max_concurrent_queries,
+        ))
     }
 }
 
@@ -112,7 +123,10 @@ pub async fn register_clickhouse(params: SqlSourceParams) -> Result<()> {
 
     let pool = create_clickhouse_pool(connection_string.expose_secret()).await?;
     let factory = ClickHouseTableFactory::new(pool);
-    let factory_wrapper = ClickHouseTableFactoryWrapper { factory };
+    let factory_wrapper = ClickHouseTableFactoryWrapper {
+        factory,
+        max_concurrent_queries: params.max_concurrent_queries,
+    };
 
     let connector = GenericSqlConnector {
         introspector: Arc::new(ClickHouseIntrospector {

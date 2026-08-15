@@ -24,6 +24,8 @@ use globset::GlobMatcher;
 pub struct MySQLTableFactoryWrapper {
     /// The inner MySQL table factory.
     pub factory: MySQLTableFactory,
+    /// Maximum number of concurrent queries allowed for this source (0 = unlimited).
+    pub max_concurrent_queries: usize,
 }
 
 #[async_trait]
@@ -52,7 +54,11 @@ impl SqlProviderFactory for MySQLTableFactoryWrapper {
         // Wrap with circuit breaker.
         // MySQL is usually a remote federated source (or at least treated as such),
         // so we enable schema drift detection.
-        Ok(super::wrappers::wrap_provider(schema_adapted, cb, true))
+        let wrapped = super::wrappers::wrap_provider(schema_adapted, cb, true);
+        Ok(super::wrappers::wrap_concurrent(
+            wrapped,
+            self.max_concurrent_queries,
+        ))
     }
 }
 
@@ -125,7 +131,10 @@ pub async fn register_mysql(params: SqlSourceParams) -> Result<()> {
         .map_err(|e| anyhow::anyhow!(e))
         .context("Failed to create MySQL connection pool")?;
     let factory = MySQLTableFactory::new(Arc::new(pool));
-    let factory_wrapper = MySQLTableFactoryWrapper { factory };
+    let factory_wrapper = MySQLTableFactoryWrapper {
+        factory,
+        max_concurrent_queries: params.max_concurrent_queries,
+    };
 
     let connector = GenericSqlConnector {
         introspector: Arc::new(MySqlIntrospector {

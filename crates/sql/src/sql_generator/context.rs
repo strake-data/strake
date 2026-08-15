@@ -191,20 +191,22 @@ impl GeneratorContext {
     /// entries are superseded by the single replacement scope that the caller
     /// pushes after extracting the relation. Restoring them on rollback would
     /// leak stale column entries back onto the stack.
+    ///
+    /// **Invariant**: scopes discarded by `pop_to_checkpoint` are unrecoverable
+    /// by any [`rollback`](Self::rollback) to a checkpoint captured earlier than
+    /// the one passed here (the undo stack never contains them). Callers must
+    /// ensure the replacement scope is committed before any rollback can fire.
     pub(crate) fn pop_to_checkpoint(&mut self, checkpoint: Checkpoint) -> Option<Scope> {
         let mut top: Option<Scope> = None;
         while self.scope_stack.len() > checkpoint.stack_len {
-            match self.scope_stack.pop() {
-                Some(scope) => {
-                    if top.is_none() {
-                        top = Some(scope);
-                    }
-                }
-                None => break,
+            if let Some(scope) = self.scope_stack.pop()
+                && top.is_none()
+            {
+                top = Some(scope);
             }
         }
         if top.is_none() {
-            tracing::warn!(target: "sql_generator", "Attempted to pop scope to checkpoint from empty stack");
+            tracing::warn!(target: "sql_generator", "No scopes above checkpoint to pop");
         }
         top
     }
@@ -234,6 +236,9 @@ impl GeneratorContext {
 
     /// Roll back the scope stack to a previously created checkpoint.
     /// Correctly handles both extra pushes (via truncate) and extra pops (via undo_stack).
+    ///
+    /// Note: scopes discarded by [`pop_to_checkpoint`](Self::pop_to_checkpoint)
+    /// are not on the undo stack and can never be restored by `rollback`.
     pub fn rollback(&mut self, checkpoint: Checkpoint) {
         // 1. Remove extra pushes
         if self.scope_stack.len() > checkpoint.stack_len {

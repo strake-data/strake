@@ -350,7 +350,7 @@ fn rewrite_distinct_on_to_row_number(
     // 1. Get input query
     let checkpoint = generator.context.checkpoint();
     let mut input_query = generator.plan_to_query(&on.input)?;
-    let input_relation = generator.extract_relation(&mut input_query, None, Some(checkpoint))?;
+    let input_relation = generator.extract_relation(&mut input_query, None, checkpoint)?;
     let input_scope =
         generator
             .context

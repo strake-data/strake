@@ -25,7 +25,7 @@ pub(crate) fn handle_sort(
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     // 1. Get a stable inner query for the sort's input.
     let checkpoint = generator.context.checkpoint();
-    let mut inner_query = generator.plan_to_stable_query(&sort.input, Some(checkpoint))?;
+    let mut inner_query = generator.plan_to_stable_query(&sort.input, checkpoint)?;
 
     // 2. Wrap the inner query as a derived table with a stable alias via extract_relation.
     //    This guarantees that the scope alias and the FROM-clause alias are identical,
@@ -36,7 +36,7 @@ pub(crate) fn handle_sort(
     //    scope but their SELECT body uses the INPUT relation alias. If we skip this step,
     //    ORDER BY resolves against the output scope (rel_N+1) while the FROM clause only
     //    exposes the input alias (rel_N), causing "no such column: rel_N+1.col" errors.
-    let inner_relation = generator.extract_relation(&mut inner_query, None, Some(checkpoint))?;
+    let inner_relation = generator.extract_relation(&mut inner_query, None, checkpoint)?;
 
     let current_scope =
         generator

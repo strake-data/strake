@@ -575,6 +575,8 @@ pub struct DuckDBTableFactory {
     pool: Arc<DuckDBPool>,
     /// Shared federation provider across all tables from this database.
     federation_provider: Arc<dyn datafusion_federation::FederationProvider>,
+    /// Maximum number of concurrent queries allowed for this source (0 = unlimited).
+    max_concurrent_queries: usize,
 }
 
 impl DuckDBTableFactory {
@@ -600,7 +602,14 @@ impl DuckDBTableFactory {
         Ok(Self {
             pool,
             federation_provider,
+            max_concurrent_queries: 0,
         })
+    }
+
+    /// Sets the maximum number of concurrent queries allowed for this source.
+    pub fn with_max_concurrent_queries(mut self, max: usize) -> Self {
+        self.max_concurrent_queries = max;
+        self
     }
 }
 
@@ -641,7 +650,10 @@ impl SqlProviderFactory for DuckDBTableFactory {
             ),
         );
 
-        Ok(federated_provider)
+        Ok(super::wrappers::wrap_concurrent(
+            federated_provider,
+            self.max_concurrent_queries,
+        ))
     }
 }
 
@@ -701,7 +713,8 @@ pub async fn register_duckdb(params: SqlSourceParams) -> Result<()> {
     let db_path_factory = db_path.clone();
     let factory = tokio::task::spawn_blocking(move || DuckDBTableFactory::new(db_path_factory))
         .await
-        .context("Blocking task panicked")??;
+        .context("Blocking task panicked")??
+        .with_max_concurrent_queries(params.max_concurrent_queries);
 
     let connector = GenericSqlConnector {
         introspector: Arc::new(DuckDBIntrospector {
