@@ -12,6 +12,7 @@ ignore = [
     "RUSTSEC-2026-0176", # pyo3 out-of-bounds read in nth / nth_back
     "RUSTSEC-2026-0194", # quick-xml quadratic duplicate attribute checks
     "RUSTSEC-2026-0195", # quick-xml unbounded namespace allocation in NsReader
+    "RUSTSEC-2026-0258", # h2 unbounded empty DATA frames (fallback ignore)
 ]
 
 [licenses]
