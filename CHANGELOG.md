@@ -1,5 +1,24 @@
 # Changelog 
 
+## [v0.3.0]
+
+### Added
+- **Core: DataFusion 54 upgrade** — Upgraded core engine to DataFusion 54.0.0 and Arrow 58.3.0 across the workspace.
+- **Core: Oracle dialect & CTE/JOIN pushdown** — Added advanced predicate pushdown, CTE and JOIN pushdown, and timestamp casting with NLS formatting for Oracle.
+- **Core: Join & cross-source hints** — Added schema join type hints and cross-source join hints for AI query planning and agents.
+- **Core: Property-based SQL dialect testing** — Integrated `proptest` suites for SQL dialect translation and dialect routing.
+- **Enterprise: Submodule synchronization** — Synchronized `strake-enterprise` with DataFusion 54 updates and latest connector fixes.
+- **Docs: Documentation & layout upgrade** — Reorganized documentation with Zensical layout, expanded connector guides, and added `AGENTS.md`.
+
+### Fixed
+- **Core: SQL boolean precedence & pushdown** — Fixed boolean operator precedence in source SQL generation and dialect translators.
+- **Core: Error propagation** — Enhanced Strake error propagation across federation boundaries and flight endpoints.
+- **Core: Strongly typed source names** — Replaced stringly-typed source names with structured models.
+- **CI: Release & toolchain fixes** — Updated musl compilation container to Rust 1.88 / Alpine 3.21 and fixed automated GitHub App token generation in release workflows.
+
+### Changed
+- **Chore: Dependencies cleanup** — Cleaned up unused dependencies, updated lockfiles, and resolved cargo-deny checks.
+
 ## [v0.2.7]
 
 ### Added
