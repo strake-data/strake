@@ -57,7 +57,16 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
                     safe_ident(entry.source_alias.as_ref())?,
                     safe_ident(entry.name.as_ref())?,
                 ])),
-                Err(e) => Err(e),
+                Err(_) => {
+                    if let Some(rel) = &col.relation {
+                        Ok(sqlparser::ast::Expr::CompoundIdentifier(vec![
+                            safe_ident(&rel.to_string())?,
+                            safe_ident(&col.name)?,
+                        ]))
+                    } else {
+                        Ok(sqlparser::ast::Expr::Identifier(safe_ident(&col.name)?))
+                    }
+                }
             },
 
             Expr::ScalarFunction(func) => self.translate_function(func.name(), &func.args, None),
@@ -106,11 +115,7 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
                 let left = self.expr_to_sql(&bin.left)?;
                 let right = self.expr_to_sql(&bin.right)?;
                 let op = self.translate_binary_op(bin.op)?;
-                Ok(sqlparser::ast::Expr::BinaryOp {
-                    left: Box::new(left),
-                    op,
-                    right: Box::new(right),
-                })
+                Ok(make_binary_op(left, op, right))
             }
 
             Expr::Literal(val, _) => self.translate_literal(val),
@@ -123,10 +128,7 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
 
             Expr::Not(e) => {
                 let sql_inner = self.expr_to_sql(e)?;
-                Ok(sqlparser::ast::Expr::UnaryOp {
-                    op: sqlparser::ast::UnaryOperator::Not,
-                    expr: Box::new(sql_inner),
-                })
+                Ok(make_unary_not(sql_inner))
             }
 
             Expr::IsNotNull(e) => {
@@ -167,7 +169,7 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
 
             Expr::Cast(cast) => {
                 let sql_inner = self.expr_to_sql(&cast.expr)?;
-                let sql_type = self.dialect.type_mapper.map_type(&cast.data_type)?;
+                let sql_type = self.dialect.type_mapper.map_type(cast.field.data_type())?;
                 Ok(sqlparser::ast::Expr::Cast {
                     expr: Box::new(sql_inner),
                     data_type: sql_type,
@@ -179,7 +181,7 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
 
             Expr::TryCast(cast) => {
                 let sql_inner = self.expr_to_sql(&cast.expr)?;
-                let sql_type = self.dialect.type_mapper.map_type(&cast.data_type)?;
+                let sql_type = self.dialect.type_mapper.map_type(cast.field.data_type())?;
                 Ok(sqlparser::ast::Expr::Cast {
                     expr: Box::new(sql_inner),
                     data_type: sql_type,
@@ -229,13 +231,68 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
                     .map(|c| sqlparser::ast::Value::SingleQuotedString(c.to_string()));
 
                 if like.case_insensitive {
-                    Ok(sqlparser::ast::Expr::ILike {
-                        negated: like.negated,
-                        expr: Box::new(expr),
-                        pattern: Box::new(pattern),
-                        escape_char,
-                        any: false,
-                    })
+                    if self.dialect.source_type == strake_common::models::SourceType::Oracle {
+                        let lower_expr = sqlparser::ast::Expr::Function(sqlparser::ast::Function {
+                            name: sqlparser::ast::ObjectName(vec![
+                                sqlparser::ast::ObjectNamePart::Identifier(
+                                    sqlparser::ast::Ident::new("LOWER"),
+                                ),
+                            ]),
+                            args: sqlparser::ast::FunctionArguments::List(
+                                sqlparser::ast::FunctionArgumentList {
+                                    duplicate_treatment: None,
+                                    args: vec![sqlparser::ast::FunctionArg::Unnamed(
+                                        sqlparser::ast::FunctionArgExpr::Expr(expr),
+                                    )],
+                                    clauses: vec![],
+                                },
+                            ),
+                            filter: None,
+                            null_treatment: None,
+                            over: None,
+                            within_group: vec![],
+                            parameters: sqlparser::ast::FunctionArguments::None,
+                            uses_odbc_syntax: false,
+                        });
+                        let lower_pattern =
+                            sqlparser::ast::Expr::Function(sqlparser::ast::Function {
+                                name: sqlparser::ast::ObjectName(vec![
+                                    sqlparser::ast::ObjectNamePart::Identifier(
+                                        sqlparser::ast::Ident::new("LOWER"),
+                                    ),
+                                ]),
+                                args: sqlparser::ast::FunctionArguments::List(
+                                    sqlparser::ast::FunctionArgumentList {
+                                        duplicate_treatment: None,
+                                        args: vec![sqlparser::ast::FunctionArg::Unnamed(
+                                            sqlparser::ast::FunctionArgExpr::Expr(pattern),
+                                        )],
+                                        clauses: vec![],
+                                    },
+                                ),
+                                filter: None,
+                                null_treatment: None,
+                                over: None,
+                                within_group: vec![],
+                                parameters: sqlparser::ast::FunctionArguments::None,
+                                uses_odbc_syntax: false,
+                            });
+                        Ok(sqlparser::ast::Expr::Like {
+                            negated: like.negated,
+                            expr: Box::new(lower_expr),
+                            pattern: Box::new(lower_pattern),
+                            escape_char,
+                            any: false,
+                        })
+                    } else {
+                        Ok(sqlparser::ast::Expr::ILike {
+                            negated: like.negated,
+                            expr: Box::new(expr),
+                            pattern: Box::new(pattern),
+                            escape_char,
+                            any: false,
+                        })
+                    }
                 } else {
                     Ok(sqlparser::ast::Expr::Like {
                         negated: like.negated,
@@ -325,89 +382,149 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
         use sqlparser::ast::WindowFrameBound as SqlBound;
 
         match bound {
-            WindowFrameBound::Preceding(val) => match val {
-                ScalarValue::UInt64(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
-                    sqlparser::ast::Expr::Value(
-                        sqlparser::ast::Value::Number(v.to_string(), false).into(),
-                    ),
-                )))),
-                ScalarValue::Int64(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
-                    sqlparser::ast::Expr::Value(
-                        sqlparser::ast::Value::Number(v.to_string(), false).into(),
-                    ),
-                )))),
-                ScalarValue::IntervalMonthDayNano(Some(v)) => {
-                    let months = v.months;
-                    let days = v.days;
-                    let nanos = v.nanoseconds;
+            WindowFrameBound::Preceding(val) => {
+                if val.is_null() {
+                    Ok(SqlBound::Preceding(None))
+                } else {
+                    match val {
+                        ScalarValue::Int8(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::Int16(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::Int32(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::Int64(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt8(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt16(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt32(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt64(Some(v)) => Ok(SqlBound::Preceding(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::IntervalMonthDayNano(Some(v)) => {
+                            let months = v.months;
+                            let days = v.days;
+                            let nanos = v.nanoseconds;
 
-                    if let Some(expr) = self
-                        .dialect
-                        .capabilities
-                        .format_interval(months, days, nanos)
-                    {
-                        Ok(SqlBound::Preceding(Some(Box::new(expr))))
-                    } else {
-                        Err(SqlGenError::UnsupportedPlan {
-                            message: "Dialect does not support IntervalMonthDayNano".to_string(),
+                            if let Some(expr) = self
+                                .dialect
+                                .capabilities
+                                .format_interval(months, days, nanos)
+                            {
+                                Ok(SqlBound::Preceding(Some(Box::new(expr))))
+                            } else {
+                                Err(SqlGenError::UnsupportedPlan {
+                                    message: "Dialect does not support IntervalMonthDayNano"
+                                        .to_string(),
+                                    node_type: "WindowBound".to_string(),
+                                })
+                            }
+                        }
+                        _ => Err(SqlGenError::UnsupportedPlan {
+                            message: format!("Unsupported window bound value: {:?}", val),
                             node_type: "WindowBound".to_string(),
-                        })
+                        }),
                     }
                 }
-                ScalarValue::UInt64(None)
-                | ScalarValue::Int64(None)
-                | ScalarValue::IntervalMonthDayNano(None) => Ok(SqlBound::Preceding(None)), // UNBOUNDED PRECEDING
-                ScalarValue::Null => Err(SqlGenError::UnsupportedPlan {
-                    message: "NULL is not a valid window frame bound".to_string(),
-                    node_type: "WindowBound".to_string(),
-                }),
-                _ => Err(SqlGenError::UnsupportedPlan {
-                    message: format!("Unsupported window bound value: {:?}", val),
-                    node_type: "WindowBound".to_string(),
-                }),
-            },
+            }
             WindowFrameBound::CurrentRow => Ok(SqlBound::CurrentRow),
-            WindowFrameBound::Following(val) => match val {
-                ScalarValue::UInt64(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
-                    sqlparser::ast::Expr::Value(
-                        sqlparser::ast::Value::Number(v.to_string(), false).into(),
-                    ),
-                )))),
-                ScalarValue::Int64(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
-                    sqlparser::ast::Expr::Value(
-                        sqlparser::ast::Value::Number(v.to_string(), false).into(),
-                    ),
-                )))),
-                ScalarValue::IntervalMonthDayNano(Some(v)) => {
-                    let months = v.months;
-                    let days = v.days;
-                    let nanos = v.nanoseconds;
+            WindowFrameBound::Following(val) => {
+                if val.is_null() {
+                    Ok(SqlBound::Following(None))
+                } else {
+                    match val {
+                        ScalarValue::Int8(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::Int16(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::Int32(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::Int64(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt8(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt16(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt32(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::UInt64(Some(v)) => Ok(SqlBound::Following(Some(Box::new(
+                            sqlparser::ast::Expr::Value(
+                                sqlparser::ast::Value::Number(v.to_string(), false).into(),
+                            ),
+                        )))),
+                        ScalarValue::IntervalMonthDayNano(Some(v)) => {
+                            let months = v.months;
+                            let days = v.days;
+                            let nanos = v.nanoseconds;
 
-                    if let Some(expr) = self
-                        .dialect
-                        .capabilities
-                        .format_interval(months, days, nanos)
-                    {
-                        Ok(SqlBound::Following(Some(Box::new(expr))))
-                    } else {
-                        Err(SqlGenError::UnsupportedPlan {
-                            message: "Dialect does not support IntervalMonthDayNano".to_string(),
+                            if let Some(expr) = self
+                                .dialect
+                                .capabilities
+                                .format_interval(months, days, nanos)
+                            {
+                                Ok(SqlBound::Following(Some(Box::new(expr))))
+                            } else {
+                                Err(SqlGenError::UnsupportedPlan {
+                                    message: "Dialect does not support IntervalMonthDayNano"
+                                        .to_string(),
+                                    node_type: "WindowBound".to_string(),
+                                })
+                            }
+                        }
+                        _ => Err(SqlGenError::UnsupportedPlan {
+                            message: format!("Unsupported window bound value: {:?}", val),
                             node_type: "WindowBound".to_string(),
-                        })
+                        }),
                     }
                 }
-                ScalarValue::UInt64(None)
-                | ScalarValue::Int64(None)
-                | ScalarValue::IntervalMonthDayNano(None) => Ok(SqlBound::Following(None)), // UNBOUNDED FOLLOWING
-                ScalarValue::Null => Err(SqlGenError::UnsupportedPlan {
-                    message: "NULL is not a valid window frame bound".to_string(),
-                    node_type: "WindowBound".to_string(),
-                }),
-                _ => Err(SqlGenError::UnsupportedPlan {
-                    message: format!("Unsupported window bound value: {:?}", val),
-                    node_type: "WindowBound".to_string(),
-                }),
-            },
+            }
         }
     }
 
@@ -452,6 +569,10 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
         &self,
         val: &datafusion::scalar::ScalarValue,
     ) -> Result<sqlparser::ast::Expr, SqlGenError> {
+        if let Some(custom_expr) = self.dialect.capabilities.format_literal(val) {
+            return Ok(custom_expr);
+        }
+
         use datafusion::scalar::ScalarValue;
         let sql_value = match val {
             ScalarValue::Int8(Some(v)) => {
@@ -484,7 +605,9 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
             ScalarValue::Float64(Some(v)) => {
                 sqlparser::ast::Value::Number(v.to_string(), false).into()
             }
-            ScalarValue::Utf8(Some(v)) => {
+            ScalarValue::Utf8(Some(v))
+            | ScalarValue::LargeUtf8(Some(v))
+            | ScalarValue::Utf8View(Some(v)) => {
                 sqlparser::ast::Value::SingleQuotedString(v.clone()).into()
             }
             ScalarValue::Boolean(Some(v)) => sqlparser::ast::Value::Boolean(*v).into(),
@@ -511,6 +634,7 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
                 }
             }
             ScalarValue::Null => sqlparser::ast::Value::Null.into(),
+            _ if val.is_null() => sqlparser::ast::Value::Null.into(),
             _ => {
                 return Err(SqlGenError::UnsupportedPlan {
                     message: format!("Literal value: {:?}", val),
@@ -585,5 +709,119 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
             parameters: FunctionArguments::None,
             uses_odbc_syntax: false,
         }))
+    }
+}
+
+/// Returns operator precedence rank for binary operators.
+///
+/// Higher numeric rank indicates tighter operator binding. Ranks follow standard SQL
+/// operator precedence rules across dialects (Oracle, PostgreSQL, MySQL, SQLite):
+///
+/// 1. `OR` (10)
+/// 2. `AND` (20)
+/// 3. Bitwise operators (`|`, `^`, `&`) (30)
+/// 4. Comparison operators (`=`, `!=`, `<`, `<=`, `>`, `>=`) (40)
+/// 5. String concat (`||`) and spaceship (`<=>`) (45)
+/// 6. Additive operators (`+`, `-`) (50)
+/// 7. Multiplicative operators (`*`, `/`, `%`) (60)
+pub fn binary_op_precedence(op: &sqlparser::ast::BinaryOperator) -> u8 {
+    use sqlparser::ast::BinaryOperator::*;
+    match op {
+        Or => 10,
+        And => 20,
+        BitwiseOr | BitwiseXor | BitwiseAnd => 30,
+        Eq | NotEq | Lt | LtEq | Gt | GtEq => 40,
+        Spaceship | StringConcat => 45,
+        Plus | Minus => 50,
+        Multiply | Divide | Modulo => 60,
+        _ => 40,
+    }
+}
+
+/// Returns the operator precedence rank of a SQL AST expression.
+///
+/// Higher numeric rank indicates tighter operator binding. Expressions wrapped in
+/// [`sqlparser::ast::Expr::Nested`] or primary literals/identifiers have maximum precedence (100).
+pub fn expr_precedence(expr: &sqlparser::ast::Expr) -> u8 {
+    use sqlparser::ast::Expr;
+    match expr {
+        Expr::BinaryOp { op, .. } => binary_op_precedence(op),
+        // NOTE: Unary NOT is assigned rank 25, placing it above AND (20) and OR (10)
+        // but below comparison operators (40). This ensures NOT (A OR B) and NOT (A AND B)
+        // preserve parentheses while NOT col = 1 renders without redundant parens.
+        Expr::UnaryOp {
+            op: sqlparser::ast::UnaryOperator::Not,
+            ..
+        } => 25,
+        Expr::UnaryOp { .. } => 70,
+        Expr::InList { .. }
+        | Expr::Between { .. }
+        | Expr::IsNull(..)
+        | Expr::IsNotNull(..)
+        | Expr::IsTrue(..)
+        | Expr::IsFalse(..)
+        | Expr::IsUnknown(..) => 40,
+        Expr::Nested(..) => 100, // Explicitly parenthesized expression
+        _ => 100,                // Primary expressions (identifiers, literals, functions, casts)
+    }
+}
+
+/// Determines whether a binary operator is right-side non-associative.
+///
+/// Non-associative arithmetic operators (`-`, `/`, `%`) require parenthesizing the right operand
+/// when combining expressions of equal precedence (e.g. `A - (B - C)` or `A / (B * C)`).
+fn is_non_associative(op: &sqlparser::ast::BinaryOperator) -> bool {
+    use sqlparser::ast::BinaryOperator::*;
+    matches!(op, Minus | Divide | Modulo)
+}
+
+/// Constructs a [`sqlparser::ast::Expr::BinaryOp`] with precedence-aware parenthesization.
+///
+/// Automatically wraps `left` or `right` child expressions in [`sqlparser::ast::Expr::Nested`]
+/// if their precedence rank is lower than `op`, or if `right` is non-associative with equal rank.
+pub fn make_binary_op(
+    left: sqlparser::ast::Expr,
+    op: sqlparser::ast::BinaryOperator,
+    right: sqlparser::ast::Expr,
+) -> sqlparser::ast::Expr {
+    let parent_prec = binary_op_precedence(&op);
+    let left_prec = expr_precedence(&left);
+    let right_prec = expr_precedence(&right);
+
+    let left_boxed = if left_prec < parent_prec {
+        Box::new(sqlparser::ast::Expr::Nested(Box::new(left)))
+    } else {
+        Box::new(left)
+    };
+
+    let right_boxed =
+        if right_prec < parent_prec || (right_prec == parent_prec && is_non_associative(&op)) {
+            Box::new(sqlparser::ast::Expr::Nested(Box::new(right)))
+        } else {
+            Box::new(right)
+        };
+
+    sqlparser::ast::Expr::BinaryOp {
+        left: left_boxed,
+        op,
+        right: right_boxed,
+    }
+}
+
+/// Constructs a [`sqlparser::ast::Expr::UnaryOp`] for `NOT` with precedence-aware parenthesization.
+///
+/// Wraps inner expressions with precedence lower than `NOT` (25), such as `OR` (10) or `AND` (20),
+/// in [`sqlparser::ast::Expr::Nested`] to guarantee safe logical evaluation order.
+pub fn make_unary_not(expr: sqlparser::ast::Expr) -> sqlparser::ast::Expr {
+    let parent_prec = 25; // NOT precedence rank
+    let inner_prec = expr_precedence(&expr);
+    let expr_boxed = if inner_prec < parent_prec {
+        Box::new(sqlparser::ast::Expr::Nested(Box::new(expr)))
+    } else {
+        Box::new(expr)
+    };
+    sqlparser::ast::Expr::UnaryOp {
+        op: sqlparser::ast::UnaryOperator::Not,
+        expr: expr_boxed,
     }
 }

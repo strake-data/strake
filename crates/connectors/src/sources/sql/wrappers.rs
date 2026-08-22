@@ -10,7 +10,6 @@ use datafusion::datasource::{TableProvider, TableType};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::ExecutionPlan;
 use futures::stream::TryStreamExt;
-use std::any::Any;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -75,9 +74,6 @@ impl ConcurrencyLimitedTableProvider {
 
 #[async_trait]
 impl TableProvider for ConcurrencyLimitedTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
     fn schema(&self) -> SchemaRef {
         self.inner.schema()
     }
@@ -155,9 +151,7 @@ impl ExecutionPlan for ConcurrencyLimitedExec {
     fn name(&self) -> &str {
         "ConcurrencyLimitedExec"
     }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+
     fn schema(&self) -> SchemaRef {
         self.inner.schema()
     }
@@ -188,7 +182,7 @@ impl ExecutionPlan for ConcurrencyLimitedExec {
     fn partition_statistics(
         &self,
         partition: Option<usize>,
-    ) -> datafusion::common::Result<datafusion::physical_plan::Statistics> {
+    ) -> datafusion::common::Result<Arc<datafusion::common::Statistics>> {
         self.inner.partition_statistics(partition)
     }
 
@@ -311,9 +305,6 @@ impl SchemaAdaptingTableProvider {
 
 #[async_trait]
 impl TableProvider for SchemaAdaptingTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
     fn schema(&self) -> SchemaRef {
         self.custom_schema.clone()
     }

@@ -2,16 +2,16 @@ roles:
   - name: analyst
     description: "Standard data analyst with regional restrictions"
     policies:
-      - resource: "strake.public.orders"
+      - resource: "strake.pg.orders"
         action: "SELECT"
         rls_filter: "o_custkey < 1000" # Simple filter for demonstration
         masking:
-          o_orderpriority: "MASK"
-      - resource: "strake.public.lineitem"
+          o_orderpriority: "redact"
+      - resource: "strake.pg.lineitem"
         action: "SELECT"
         rls_filter: "l_quantity < 10"
         masking:
-          l_returnflag: "MASK" # Simon: using existing column for masking.
+          l_returnflag: "redact" # Simon: using existing column for masking.
 
   - name: admin
     description: "Full access admin"

@@ -52,6 +52,7 @@ pub async fn register_sqlite(params: SqlSourceParams) -> Result<()> {
         inner_factory,
         federation_provider,
         schema_drift: true,
+        max_concurrent_queries: params.max_concurrent_queries,
     };
 
     let connector = GenericSqlConnector {
@@ -59,7 +60,7 @@ pub async fn register_sqlite(params: SqlSourceParams) -> Result<()> {
             db_path: connection_string.clone(),
         }),
         factory: Arc::new(factory),
-        schema_mapping: SchemaMappingRule::SQLite,
+        schema_mapping: SchemaMappingRule::sqlite(&params.schema_mapping),
     };
 
     connector.register(params).await

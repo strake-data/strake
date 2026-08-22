@@ -10,8 +10,106 @@ env:
   STRAKE_LICENSE_PUBKEY_PATH: ${{ github.workspace }}/keys/public.pem
 
 jobs:
+  validate-release:
+    name: Validate Release Metadata & Environment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate Token
+        id: generate-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          token: ${{ steps.generate-token.outputs.token }}
+
+      - name: Validate Version Tag Alignment
+        shell: bash
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            CARGO_VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)
+            PY_VERSION=$(grep -m1 '^version = ' python/pyproject.toml | cut -d '"' -f 2)
+            
+            # Normalize RC strings for cross-ecosystem comparison (e.g. 0.3.0-rc1 -> 0.3.0rc1)
+            NORM_TAG=$(echo "$TAG_VERSION" | sed -E 's/-rc\.?/rc/')
+            NORM_CARGO=$(echo "$CARGO_VERSION" | sed -E 's/-rc\.?/rc/')
+            NORM_PY=$(echo "$PY_VERSION" | sed -E 's/-rc\.?/rc/')
+
+            echo "Git Tag Version: $TAG_VERSION (Normalized: $NORM_TAG)"
+            echo "Cargo Workspace Version: $CARGO_VERSION (Normalized: $NORM_CARGO)"
+            echo "PyPI pyproject Version: $PY_VERSION (Normalized: $NORM_PY)"
+            
+            if [ "$NORM_TAG" != "$NORM_CARGO" ]; then
+              echo "::error::Git tag $TAG_VERSION does not match Cargo.toml version $CARGO_VERSION"
+              exit 1
+            fi
+            if [ "$NORM_TAG" != "$NORM_PY" ]; then
+              echo "::error::Git tag $TAG_VERSION does not match pyproject.toml version $PY_VERSION"
+              exit 1
+            fi
+            echo "✓ Version alignment verified."
+          else
+            echo "Manual or branch release trigger - skipping strict tag version check."
+          fi
+
+      - name: Validate Submodule Status
+        shell: bash
+        run: |
+          SUBMODULE_STATUS=$(git submodule status strake-enterprise)
+          echo "Submodule status: $SUBMODULE_STATUS"
+          if [[ "$SUBMODULE_STATUS" =~ ^- ]]; then
+            echo "::error::Submodule strake-enterprise is not initialized!"
+            exit 1
+          fi
+          if [[ "$SUBMODULE_STATUS" =~ ^\+ ]]; then
+            echo "::warning::Submodule strake-enterprise commit differs from index pointer!"
+          fi
+
+  test:
+    name: Test Suite Gate
+    needs: [validate-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate Token
+        id: generate-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          token: ${{ steps.generate-token.outputs.token }}
+      - name: Setup Enterprise Key
+        shell: bash
+        run: |
+          mkdir -p keys
+          if [ -n "${{ secrets.STRAKE_LICENSE_PUBKEY }}" ]; then
+            echo "${{ secrets.STRAKE_LICENSE_PUBKEY }}" > keys/public.pem
+          else
+            echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem
+            echo "MCowBQYDK2VwAyEAYTi9PtvXVWepOcLdKgBPe/TcZxat3g4f7nRR6My7QM0=" >> keys/public.pem
+            echo "-----END PUBLIC KEY-----" >> keys/public.pem
+          fi
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-test
+      - name: Run Cargo Test
+        run: cargo test --workspace --all-features
+
   build:
     name: Build ${{ matrix.target }}
+    needs: [validate-release, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -52,9 +150,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p keys
-          echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem
-          echo "MCowBQYDK2VwAyEAYTi9PtvXVWepOcLdKgBPe/TcZxat3g4f7nRR6My7QM0=" >> keys/public.pem
-          echo "-----END PUBLIC KEY-----" >> keys/public.pem
+          if [ -n "${{ secrets.STRAKE_LICENSE_PUBKEY }}" ]; then
+            echo "${{ secrets.STRAKE_LICENSE_PUBKEY }}" > keys/public.pem
+          else
+            echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem
+            echo "MCowBQYDK2VwAyEAYTi9PtvXVWepOcLdKgBPe/TcZxat3g4f7nRR6My7QM0=" >> keys/public.pem
+            echo "-----END PUBLIC KEY-----" >> keys/public.pem
+          fi
       
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -110,7 +212,7 @@ jobs:
           export HOST_UID=$(id -u)
           export HOST_GID=$(id -g)
           mkdir -p ~/.cargo/registry ~/.cargo/git
-          docker run --rm -e STRAKE_LICENSE_PUBKEY_PATH=/build/keys/public.pem -v ${{ github.workspace }}:/build -v ~/.cargo/registry:/usr/local/cargo/registry -v ~/.cargo/git:/usr/local/cargo/git -w /build rust:alpine \
+          docker run --rm -e STRAKE_LICENSE_PUBKEY_PATH=/build/keys/public.pem -v ${{ github.workspace }}:/build -v ~/.cargo/registry:/usr/local/cargo/registry -v ~/.cargo/git:/usr/local/cargo/git -w /build rust:alpine3.21 \
             sh -c "apk add --no-cache cmake clang protoc protobuf-dev g++ make perl linux-headers openssl-dev git \
             && export CC_x86_64_unknown_linux_musl=gcc \
             && export CXX_x86_64_unknown_linux_musl=g++ \
@@ -129,6 +231,7 @@ jobs:
 
   python-build:
     name: Build Python Wheels (${{ matrix.os }})
+    needs: [validate-release, test]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -151,9 +254,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p keys
-          echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem
-          echo "MCowBQYDK2VwAyEAYTi9PtvXVWepOcLdKgBPe/TcZxat3g4f7nRR6My7QM0=" >> keys/public.pem
-          echo "-----END PUBLIC KEY-----" >> keys/public.pem
+          if [ -n "${{ secrets.STRAKE_LICENSE_PUBKEY }}" ]; then
+            echo "${{ secrets.STRAKE_LICENSE_PUBKEY }}" > keys/public.pem
+          else
+            echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem
+            echo "MCowBQYDK2VwAyEAYTi9PtvXVWepOcLdKgBPe/TcZxat3g4f7nRR6My7QM0=" >> keys/public.pem
+            echo "-----END PUBLIC KEY-----" >> keys/public.pem
+          fi
       
       - name: Install protoc
         run: |
@@ -234,9 +341,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p keys
-          echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem
-          echo "MCowBQYDK2VwAyEAYTi9PtvXVWepOcLdKgBPe/TcZxat3g4f7nRR6My7QM0=" >> keys/public.pem
-          echo "-----END PUBLIC KEY-----" >> keys/public.pem
+          if [ -n "${{ secrets.STRAKE_LICENSE_PUBKEY }}" ]; then
+            echo "${{ secrets.STRAKE_LICENSE_PUBKEY }}" > keys/public.pem
+          else
+            echo "-----BEGIN PUBLIC KEY-----" > keys/public.pem
+            echo "MCowBQYDK2VwAyEAYTi9PtvXVWepOcLdKgBPe/TcZxat3g4f7nRR6My7QM0=" >> keys/public.pem
+            echo "-----END PUBLIC KEY-----" >> keys/public.pem
+          fi
       
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -277,7 +388,7 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    needs: [python-build]
+    needs: [build, python-build, docker-build]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -302,7 +413,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
-      - name: Rename binaries
+      - name: Rename binaries & Generate SHA256 Checksums
         run: |
           mkdir -p release_assets
           for dir in binaries-*/; do
@@ -322,6 +433,9 @@ jobs:
               cp "$file" "release_assets/${new_name}"
             done
           done
+          cd release_assets
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -332,6 +446,7 @@ jobs:
             release_assets/*
             python-wheels-*/*
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}
           body: |
             ## Docker Image
             ```bash
@@ -346,4 +461,5 @@ jobs:
             # Install all binaries
             curl -sSfL https://strakedata.com/install.sh | sh -s -- --all
             ```
+
 

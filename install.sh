@@ -149,16 +149,67 @@ get_latest_version() {
     echo "$version"
 }
 
+# Calculate SHA-256 digest of a file in POSIX sh
+calc_sha256() {
+    file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$file" | awk '{print $NF}'
+    else
+        echo ""
+    fi
+}
+
+# Verify binary checksum against release SHA256SUMS manifest
+verify_checksum() {
+    file_path="$1"
+    expected_filename="$2"
+    version="$3"
+
+    checksum_url="https://github.com/${REPO}/releases/download/${version}/SHA256SUMS"
+    sums_file=$(mktemp)
+
+    if curl -sSfL "$checksum_url" -o "$sums_file" 2>/dev/null; then
+        expected_hash=$(grep -E "${expected_filename}$" "$sums_file" | awk '{print $1}' || true)
+        rm -f "$sums_file"
+        if [ -n "$expected_hash" ]; then
+            actual_hash=$(calc_sha256 "$file_path")
+            if [ -n "$actual_hash" ]; then
+                if [ "$actual_hash" != "$expected_hash" ]; then
+                    rm -f "$file_path"
+                    log_error "Checksum verification failed for ${expected_filename}! Expected: ${expected_hash}, Actual: ${actual_hash}"
+                else
+                    log_info "✓ Verified SHA256 checksum for ${expected_filename}"
+                fi
+            else
+                log_warn "Skipped checksum validation: no sha256 utility (sha256sum/shasum/openssl) found."
+            fi
+        else
+            log_warn "Asset ${expected_filename} not found in SHA256SUMS manifest."
+        fi
+    else
+        rm -f "$sums_file"
+        log_warn "Could not fetch SHA256SUMS for release ${version}. Skipping checksum verification."
+    fi
+}
+
 # Download and install a binary
 install_binary() {
     binary_name="$1"
     platform="$2"
     version="$3"
     download_url="https://github.com/${REPO}/releases/download/${version}/${binary_name}-${platform}"
-    
+    asset_name="${binary_name}-${platform}"
+
     # Windows uses .exe extension
     case "$platform" in
-        *windows*) download_url="${download_url}.exe" ;;
+        *windows*)
+            download_url="${download_url}.exe"
+            asset_name="${asset_name}.exe"
+            ;;
     esac
 
     temp_file=$(mktemp)
@@ -176,6 +227,9 @@ install_binary() {
         rm -f "$temp_file"
         log_error "Downloaded file is empty"
     fi
+
+    # Verify SHA256 checksum against official release manifest
+    verify_checksum "$temp_file" "$asset_name" "$version"
 
     # Create install directory if it doesn't exist
     mkdir -p "$INSTALL_DIR"

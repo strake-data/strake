@@ -60,6 +60,39 @@ pub fn get_sql_for_plan(plan: &LogicalPlan, source_type: &str) -> Result<Option<
     Ok(Some(sql))
 }
 
+/// Unparses a single DataFusion expression to SQL string for the specified target dialect.
+pub fn unparse_expr_to_sql(
+    expr: &datafusion::logical_expr::Expr,
+    source_type: &str,
+) -> Result<String> {
+    let (dialect_arc, capabilities, type_mapper, function_mapper) = match route_dialect(source_type)
+    {
+        DialectPath::Native(d, cap, tm) => (d, cap, tm, None),
+        DialectPath::Custom(d, cap, tm, mapper) => (d, cap, tm, mapper),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "No dialect available to unparse expression for source '{}'",
+                source_type
+            ));
+        }
+    };
+
+    let generator_dialect = crate::sql_generator::dialect::GeneratorDialect::new(
+        dialect_arc.as_ref(),
+        function_mapper.as_ref(),
+        capabilities,
+        type_mapper,
+        source_type,
+    );
+    let mut context = crate::sql_generator::context::GeneratorContext::new();
+    let mut translator =
+        crate::sql_generator::expr::ExprTranslator::new(&mut context, &generator_dialect);
+    let sql_ast = translator
+        .expr_to_sql(expr)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    Ok(sql_ast.to_string())
+}
+
 // Re-export utility functions from dialect_router for backward compatibility if needed,
 // but they should be used from dialect_router directly.
 pub use crate::dialect_router::{is_local_execution, is_substrait_source};

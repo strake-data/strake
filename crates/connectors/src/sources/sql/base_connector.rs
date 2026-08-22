@@ -9,7 +9,6 @@ use std::sync::Arc;
 use strake_common::retry::retry_async;
 
 use super::common::{SchemaMappingRule, SqlProviderFactory, SqlSourceParams};
-use super::wrappers::wrap_concurrent;
 use crate::introspect::{IntrospectError, SchemaIntrospector};
 use crate::sources::sql::case_insensitive_schema::CaseInsensitiveSchemaProvider;
 
@@ -96,14 +95,6 @@ impl GenericSqlConnector {
             .ok_or_else(|| anyhow::anyhow!("Catalog '{}' not found", params.catalog_name))?;
 
         for (table_name, target_schema, original_schema) in tables_to_register {
-            tracing::debug!(
-                catalog = %params.catalog_name,
-                schema = %target_schema,
-                original_schema = %original_schema,
-                table = %table_name,
-                "Registering table into schema"
-            );
-
             let config_table = params
                 .explicit_tables
                 .as_ref()
@@ -118,20 +109,28 @@ impl GenericSqlConnector {
                 .filter(|t| !t.column_definitions.is_empty())
                 .map(construct_schema_from_config);
 
-            let table_ref = TableReference::bare(table_name.as_str());
+            let table_ref = if self.schema_mapping.is_default_schema(&original_schema) {
+                TableReference::bare(table_name.as_str())
+            } else {
+                TableReference::Partial {
+                    schema: original_schema.as_str().into(),
+                    table: table_name.as_str().into(),
+                }
+            };
+            tracing::debug!(
+                catalog = %params.catalog_name,
+                schema = %target_schema,
+                original_schema = %original_schema,
+                table = %table_name,
+                qualified = %table_ref.to_quoted_string(),
+                "Registering table with table reference",
+            );
             match self
                 .factory
-                .create_table_provider(table_ref, params.cb.clone())
+                .create_table_provider(table_ref, params.cb.clone(), custom_schema)
                 .await
             {
-                Ok(mut provider) => {
-                    if let Some(custom_schema) = custom_schema {
-                        provider = Arc::new(super::wrappers::SchemaAdaptingTableProvider::new(
-                            provider,
-                            custom_schema,
-                        ));
-                    }
-                    let provider = wrap_concurrent(provider, params.max_concurrent_queries);
+                Ok(provider) => {
                     let target_schema_ref = target_schema.as_str();
                     let table_name_ref = table_name.as_str();
 

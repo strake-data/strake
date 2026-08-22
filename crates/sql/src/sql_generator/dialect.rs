@@ -74,16 +74,24 @@ pub trait DialectCapabilities: Send + Sync {
     fn supports_fetch_clause(&self) -> bool {
         false
     }
+    /// Returns true if the dialect supports empty SELECT lists.
+    fn supports_empty_select(&self) -> bool {
+        false
+    }
+    /// Returns the offset rows preference/suffix style for the dialect.
+    fn offset_rows_style(&self) -> sqlparser::ast::OffsetRows {
+        sqlparser::ast::OffsetRows::None
+    }
 
     /// Maps a DataFusion [`Operator`] to a SQL [`BinaryOperator`].
     fn map_operator(&self, _op: &Operator) -> Option<BinaryOperator> {
         None
     }
     /// Maps an aggregate function name to its dialect-specific counterpart.
-    fn map_aggregate_function(&self, _name: &str) -> Option<String> {
+    fn map_aggregate_function(&self, name: &str) -> Option<String> {
         const AGGREGATES: &[&str] = &["sum", "count", "avg", "min", "max", "stddev", "variance"];
-        if AGGREGATES.iter().any(|&a| a.eq_ignore_ascii_case(_name)) {
-            Some(_name.to_uppercase())
+        if AGGREGATES.iter().any(|&a| a.eq_ignore_ascii_case(name)) {
+            Some(name.to_uppercase())
         } else {
             None
         }
@@ -104,73 +112,66 @@ pub trait DialectCapabilities: Send + Sync {
         None
     }
 
+    /// Format a literal scalar value for the dialect.
+    /// Returns None if the dialect relies on standard literal unparsing.
+    fn format_literal(
+        &self,
+        _val: &datafusion::scalar::ScalarValue,
+    ) -> Option<sqlparser::ast::Expr> {
+        None
+    }
+
     /// Normalize function name for the dialect (e.g. casing).
     fn normalize_function_name(&self, name: &str) -> String {
-        // P2 Fix: Avoid allocation by using eq_ignore_ascii_case for common functions.
-        let is_common_func = match name.len() {
-            2 => name.eq_ignore_ascii_case("ln"),
-            3 => {
-                name.eq_ignore_ascii_case("sum")
-                    || name.eq_ignore_ascii_case("avg")
-                    || name.eq_ignore_ascii_case("min")
-                    || name.eq_ignore_ascii_case("max")
-                    || name.eq_ignore_ascii_case("abs")
-                    || name.eq_ignore_ascii_case("exp")
-                    || name.eq_ignore_ascii_case("sin")
-                    || name.eq_ignore_ascii_case("cos")
-                    || name.eq_ignore_ascii_case("tan")
-                    || name.eq_ignore_ascii_case("log")
-            }
-            4 => {
-                name.eq_ignore_ascii_case("rank")
-                    || name.eq_ignore_ascii_case("lead")
-                    || name.eq_ignore_ascii_case("trim")
-                    || name.eq_ignore_ascii_case("ceil")
-                    || name.eq_ignore_ascii_case("sqrt")
-                    || name.eq_ignore_ascii_case("cast")
-            }
-            5 => {
-                name.eq_ignore_ascii_case("count")
-                    || name.eq_ignore_ascii_case("floor")
-                    || name.eq_ignore_ascii_case("round")
-                    || name.eq_ignore_ascii_case("trunc")
-                    || name.eq_ignore_ascii_case("power")
-                    || name.eq_ignore_ascii_case("upper")
-                    || name.eq_ignore_ascii_case("lower")
-            }
-            6 => {
-                name.eq_ignore_ascii_case("stddev")
-                    || name.eq_ignore_ascii_case("ntile")
-                    || name.eq_ignore_ascii_case("length")
-                    || name.eq_ignore_ascii_case("substr")
-                    || name.eq_ignore_ascii_case("concat")
-            }
-            7 => {
-                name.eq_ignore_ascii_case("nullif")
-                    || name.eq_ignore_ascii_case("extract")
-                    || name.eq_ignore_ascii_case("to_char")
-                    || name.eq_ignore_ascii_case("to_date")
-            }
-            8 => {
-                name.eq_ignore_ascii_case("variance")
-                    || name.eq_ignore_ascii_case("greatest")
-                    || name.eq_ignore_ascii_case("coalesce")
-                    || name.eq_ignore_ascii_case("substring")
-            }
-            9 => name.eq_ignore_ascii_case("row_number") || name.eq_ignore_ascii_case("date_part"),
-            10 => {
-                name.eq_ignore_ascii_case("dense_rank")
-                    || name.eq_ignore_ascii_case("last_value")
-                    || name.eq_ignore_ascii_case("percent_rank")
-            }
-            11 => {
-                name.eq_ignore_ascii_case("first_value") || name.eq_ignore_ascii_case("cume_dist")
-            }
-            12 => name.eq_ignore_ascii_case("to_timestamp"),
-            _ => false,
-        };
+        const COMMON_FUNCS: &[&str] = &[
+            "ln",
+            "sum",
+            "avg",
+            "min",
+            "max",
+            "abs",
+            "exp",
+            "sin",
+            "cos",
+            "tan",
+            "log",
+            "rank",
+            "lead",
+            "trim",
+            "ceil",
+            "sqrt",
+            "cast",
+            "count",
+            "floor",
+            "round",
+            "trunc",
+            "power",
+            "upper",
+            "lower",
+            "stddev",
+            "ntile",
+            "length",
+            "substr",
+            "concat",
+            "nullif",
+            "extract",
+            "to_char",
+            "to_date",
+            "variance",
+            "greatest",
+            "coalesce",
+            "substring",
+            "row_number",
+            "date_part",
+            "dense_rank",
+            "last_value",
+            "percent_rank",
+            "first_value",
+            "cume_dist",
+            "to_timestamp",
+        ];
 
-        if is_common_func {
+        if COMMON_FUNCS.iter().any(|&f| f.eq_ignore_ascii_case(name)) {
             name.to_uppercase()
         } else {
             name.to_string()
@@ -204,9 +205,14 @@ impl DialectCapabilities for PostgreSqlCapabilities {
     }
 
     fn format_interval(&self, months: i32, days: i32, nanos: i64) -> Option<sqlparser::ast::Expr> {
-        // Postgres format: 'X MONTHS Y DAYS Z NANOSECONDS' (as currently implemented)
-        // Actually Postgres uses ::interval syntax normally, but the verbose string works too
-        let value = format!("{} MONTHS {} DAYS {} NANOSECONDS", months, days, nanos);
+        let sign = if nanos < 0 { "-" } else { "" };
+        let abs_nanos = nanos.unsigned_abs();
+        let whole_secs = abs_nanos / 1_000_000_000;
+        let rem_nanos = abs_nanos % 1_000_000_000;
+        let value = format!(
+            "{} months {} days {}{}.{:09} seconds",
+            months, days, sign, whole_secs, rem_nanos
+        );
         Some(sqlparser::ast::Expr::Interval(sqlparser::ast::Interval {
             value: Box::new(sqlparser::ast::Expr::Value(
                 sqlparser::ast::Value::SingleQuotedString(value).into(),
@@ -244,6 +250,9 @@ impl DialectCapabilities for DuckDBCapabilities {
         true
     }
     fn strip_schema_qualifier(&self) -> bool {
+        true
+    }
+    fn supports_empty_select(&self) -> bool {
         true
     }
     fn normalize_function_name(&self, name: &str) -> String {
@@ -315,8 +324,8 @@ pub struct GeneratorDialect<'a> {
     pub capabilities: std::sync::Arc<dyn DialectCapabilities>,
     /// Custom type mapper for CAST operations.
     pub type_mapper: std::sync::Arc<dyn TypeMapper>,
-    /// The name of the target dialect (e.g. "postgres").
-    pub dialect_name: &'a str,
+    /// The target source type (e.g. `SourceType::Postgres`).
+    pub source_type: strake_common::models::SourceType,
 }
 
 impl<'a> GeneratorDialect<'a> {
@@ -326,14 +335,45 @@ impl<'a> GeneratorDialect<'a> {
         function_mapper: Option<&'a FunctionMapper>,
         capabilities: std::sync::Arc<dyn DialectCapabilities>,
         type_mapper: std::sync::Arc<dyn TypeMapper>,
-        dialect_name: &'a str,
+        source_type: impl Into<strake_common::models::SourceType>,
     ) -> Self {
         Self {
             unparser_dialect,
             function_mapper,
             capabilities,
             type_mapper,
-            dialect_name,
+            source_type: source_type.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_postgresql_format_interval() {
+        let caps = PostgreSqlCapabilities;
+
+        // Positive interval
+        let expr = caps.format_interval(1, 2, 3_500_000_000).unwrap();
+        assert_eq!(
+            expr.to_string(),
+            "INTERVAL '1 months 2 days 3.500000000 seconds'"
+        );
+
+        // Negative sub-second interval
+        let expr = caps.format_interval(0, 0, -500_000_000).unwrap();
+        assert_eq!(
+            expr.to_string(),
+            "INTERVAL '0 months 0 days -0.500000000 seconds'"
+        );
+
+        // Negative whole-second and sub-second interval
+        let expr = caps.format_interval(0, 0, -1_500_000_000).unwrap();
+        assert_eq!(
+            expr.to_string(),
+            "INTERVAL '0 months 0 days -1.500000000 seconds'"
+        );
     }
 }

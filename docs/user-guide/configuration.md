@@ -292,3 +292,69 @@ Controls AI metadata description generation options during table discovery. For 
 | `ai.model` | `string` | `None` | The specific model name used for introspective descriptions (e.g., `gemini-3.5-flash`). |
 | `ai.url` | `string` | `None` | Custom API endpoint URL for the AI provider. |
 | `ai.temperature` | `float` | `0.7` | Sampling temperature for descriptions (between 0.0 and 1.0). Higher temperature results in more generation variety. |
+
+---
+
+### `schema_mapping` Settings (SQL Sources Only)
+
+Controls how Strake decides whether to qualify table names with their schema in generated pushdown SQL. This is configured **per SQL source** (inside a `sources.yaml` entry), not globally in `strake.yaml`.
+
+When Strake generates pushdown SQL, it must decide whether to write `"orders"` (bare) or `"SCHEMA"."TABLE"` (schema-qualified). Tables in a "default" schema are pushed down unqualified; tables in any other schema are fully qualified.
+
+| Parameter | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `schema_mapping.default_schemas` | `list[string]` | `["public", "default"]` | Schemas treated as "default" for this source. Tables in these schemas are pushed down **without** schema qualification. Comparison is case-insensitive. |
+
+#### Dialect Defaults
+
+| Dialect | Built-in `default_schemas` | Behaviour |
+| :--- | :--- | :--- |
+| PostgreSQL | `["public", "default"]` | Tables in `public` → unqualified; others → `"schema"."table"` |
+| MySQL | `["public", "default"]` | Tables in `public` → unqualified |
+| ClickHouse | `["public", "default"]` | Tables in `default` → unqualified |
+| Oracle | `["public", "default"]` | Oracle schemas (e.g. `GWS_DWH`, `HR`) are uppercase and not in defaults, so they are **always** qualified automatically |
+| SQLite | `["main", "public"]` | Tables in `main` → unqualified |
+| DuckDB | `["main", "public"]` | Tables in `main` → unqualified |
+
+#### Examples
+
+**Postgres — keep the default (tables in `public` are unqualified):**
+```yaml
+sources:
+  - name: pg_prod
+    type: postgres
+    url: "postgres://user:pass@localhost:5432/db"
+    tables:
+      - name: orders
+        schema: public      # → pushdown generates: "orders"
+      - name: audit_log
+        schema: compliance  # → pushdown generates: "compliance"."audit_log"
+```
+
+**Oracle — all schemas qualified (no defaults):**
+```yaml
+sources:
+  - name: oracle_prod
+    type: oracle
+    url: "oracle://system:pass@oracle-host:1521/ORCL"
+    schema_mapping:
+      default_schemas: []   # Every schema is always qualified
+    tables:
+      - name: orders
+        schema: sales     # → pushdown generates: "SALES"."ORDERS"
+```
+
+**Custom — add an application schema as a default:**
+```yaml
+sources:
+  - name: pg_app
+    type: postgres
+    url: "postgres://user:pass@localhost:5432/app_db"
+    schema_mapping:
+      default_schemas:
+        - public
+        - app_schema        # Tables in app_schema also generated without qualification
+```
+
+> [!NOTE]
+> `schema_mapping` is SQL-specific. It has no effect on file-based (`parquet`, `csv`), API (`rest`, `grpc`), or lakehouse (`iceberg`) sources.

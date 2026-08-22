@@ -18,7 +18,6 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream,
 };
 use futures::StreamExt;
-use std::any::Any;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -46,10 +45,6 @@ impl CircuitBreakerTableProvider {
 
 #[async_trait::async_trait]
 impl TableProvider for CircuitBreakerTableProvider {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.inner.schema()
     }
@@ -140,10 +135,6 @@ impl ExecutionPlan for CircuitBreakerExec {
         "CircuitBreakerExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.inner.schema()
     }
@@ -198,7 +189,7 @@ impl ExecutionPlan for CircuitBreakerExec {
     fn partition_statistics(
         &self,
         partition: Option<usize>,
-    ) -> DataFusionResult<datafusion::physical_plan::Statistics> {
+    ) -> DataFusionResult<Arc<datafusion::common::Statistics>> {
         self.inner.partition_statistics(partition)
     }
 }

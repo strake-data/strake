@@ -40,6 +40,34 @@ const SQL_INFO_FLIGHT_SQL_SERVER_READY: u32 = 3;
 const SERVER_VERSION: &str = "1.0.0";
 const DRIVER_VERSION: &str = "17.0.0";
 
+/// Recursively locates the schema with Arrow metadata (descriptions, REMARKS)
+/// by unwrapping known provider layers:
+/// - [`SchemaAdaptingTableProvider`] carries the enriched schema directly.
+/// - `datafusion_federation::FederatedTableProviderAdaptor` hides the inner
+///   provider behind its `table_provider` field.
+/// - Wrapping providers (circuit breaker, concurrency limit, caching, ...) are
+///   unwrapped via [`strake_connectors::sources::as_wrapping`].
+fn find_enriched_schema(
+    provider: &Arc<dyn datafusion::datasource::TableProvider>,
+) -> Option<datafusion::arrow::datatypes::SchemaRef> {
+    use strake_connectors::sources::as_wrapping;
+    use strake_connectors::sources::sql::wrappers::SchemaAdaptingTableProvider;
+
+    if let Some(s) = provider.downcast_ref::<SchemaAdaptingTableProvider>() {
+        return Some(s.enriched_schema());
+    }
+    if let Some(adaptor) =
+        provider.downcast_ref::<datafusion_federation::FederatedTableProviderAdaptor>()
+        && let Some(inner) = adaptor.table_provider.as_ref()
+    {
+        return find_enriched_schema(inner);
+    }
+    if let Some(wrapping) = as_wrapping(provider.as_ref()) {
+        return find_enriched_schema(wrapping.inner());
+    }
+    None
+}
+
 /// FlightSQL service implementation for Strake.
 ///
 /// Implements the Arrow FlightSQL protocol, enabling high-performance
@@ -704,15 +732,13 @@ impl StrakeFlightSqlService {
                         if query.include_schema {
                             if let Ok(Some(table)) = schema_provider.table(&table_name).await {
                                 // Prefer the enriched schema (with Arrow metadata / descriptions)
-                                // when the provider is a SchemaAdaptingTableProvider. The planning
-                                // schema strips metadata to avoid DataFusion physical/logical
-                                // schema mismatch errors, but for Flight SQL GetTables we want
-                                // the full schema including ARROW:FLIGHT:SQL:REMARKS etc.
-                                let schema = table
-                                    .as_any()
-                                    .downcast_ref::<strake_connectors::sources::sql::wrappers::SchemaAdaptingTableProvider>()
-                                    .map(|s| s.enriched_schema())
-                                    .unwrap_or_else(|| table.schema());
+                                // when the provider (or anything it wraps) is a
+                                // SchemaAdaptingTableProvider. The planning schema strips
+                                // metadata to avoid DataFusion physical/logical schema mismatch
+                                // errors, but for Flight SQL GetTables we want the full schema
+                                // including ARROW:FLIGHT:SQL:REMARKS etc.
+                                let schema =
+                                    find_enriched_schema(&table).unwrap_or_else(|| table.schema());
                                 let options = IpcWriteOptions::default();
                                 let data = SchemaAsIpc::new(&schema, &options).try_into();
                                 match data {

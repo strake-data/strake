@@ -110,7 +110,6 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, Partitioning, PlanProperties};
-use std::any::Any;
 
 /// DuckDB connection pool type.
 ///
@@ -176,10 +175,6 @@ impl DisplayAs for DuckDBScanExec {
 impl ExecutionPlan for DuckDBScanExec {
     fn name(&self) -> &str {
         "DuckDBScanExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
@@ -525,10 +520,6 @@ pub fn map_duckdb_type(type_str: &str) -> DataType {
 
 #[async_trait]
 impl TableProvider for DuckDBTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -584,6 +575,8 @@ pub struct DuckDBTableFactory {
     pool: Arc<DuckDBPool>,
     /// Shared federation provider across all tables from this database.
     federation_provider: Arc<dyn datafusion_federation::FederationProvider>,
+    /// Maximum number of concurrent queries allowed for this source (0 = unlimited).
+    max_concurrent_queries: usize,
 }
 
 impl DuckDBTableFactory {
@@ -609,7 +602,14 @@ impl DuckDBTableFactory {
         Ok(Self {
             pool,
             federation_provider,
+            max_concurrent_queries: 0,
         })
+    }
+
+    /// Sets the maximum number of concurrent queries allowed for this source.
+    pub fn with_max_concurrent_queries(mut self, max: usize) -> Self {
+        self.max_concurrent_queries = max;
+        self
     }
 }
 
@@ -619,13 +619,23 @@ impl SqlProviderFactory for DuckDBTableFactory {
         &self,
         table_ref: TableReference,
         cb: Arc<AdaptiveCircuitBreaker>,
+        custom_schema: Option<datafusion::arrow::datatypes::SchemaRef>,
     ) -> Result<Arc<dyn TableProvider>> {
         let table_name = table_ref.table();
         let provider = DuckDBTableProvider::new(self.pool.clone(), table_name.to_string()).await?;
 
+        let schema_adapted: Arc<dyn TableProvider> = if let Some(custom_schema) = custom_schema {
+            Arc::new(super::wrappers::SchemaAdaptingTableProvider::new(
+                Arc::new(provider),
+                custom_schema,
+            ))
+        } else {
+            Arc::new(provider)
+        };
+
         // First wrap with circuit breaker
         // DuckDB is local/authoritative, so we skip schema drift detection.
-        let wrapped_provider = super::wrappers::wrap_provider(Arc::new(provider), cb, false);
+        let wrapped_provider = super::wrappers::wrap_provider(schema_adapted, cb, false);
 
         // Enable federation support using the SHARED federation provider from the factory.
         // This ensures the federation optimizer identifies tables as coming from the same source.
@@ -640,7 +650,10 @@ impl SqlProviderFactory for DuckDBTableFactory {
             ),
         );
 
-        Ok(federated_provider)
+        Ok(super::wrappers::wrap_concurrent(
+            federated_provider,
+            self.max_concurrent_queries,
+        ))
     }
 }
 
@@ -668,10 +681,6 @@ impl DuckDBTableSource {
 }
 
 impl datafusion::logical_expr::TableSource for DuckDBTableSource {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn schema(&self) -> datafusion::arrow::datatypes::SchemaRef {
         self.table_provider.schema()
     }
@@ -704,14 +713,15 @@ pub async fn register_duckdb(params: SqlSourceParams) -> Result<()> {
     let db_path_factory = db_path.clone();
     let factory = tokio::task::spawn_blocking(move || DuckDBTableFactory::new(db_path_factory))
         .await
-        .context("Blocking task panicked")??;
+        .context("Blocking task panicked")??
+        .with_max_concurrent_queries(params.max_concurrent_queries);
 
     let connector = GenericSqlConnector {
         introspector: Arc::new(DuckDBIntrospector {
             db_path: SecretString::from(connection_string.clone()),
         }),
         factory: Arc::new(factory),
-        schema_mapping: SchemaMappingRule::Standard,
+        schema_mapping: SchemaMappingRule::sqlite(&params.schema_mapping),
     };
 
     connector.register(params).await

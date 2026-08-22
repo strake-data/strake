@@ -165,3 +165,12 @@ pub(crate) fn default_fc_pool_size() -> usize {
 pub(crate) fn default_fc_uffd_socket() -> Option<String> {
     None
 }
+
+// --- SQL Schema Mapping ---
+
+/// Default schemas omitted in generated SQL for standard dialects (Postgres, MySQL, ClickHouse, Oracle).
+///
+/// Tables in these schemas are pushed down without schema qualification.
+pub(crate) fn default_standard_schemas() -> Vec<String> {
+    vec!["public".to_string(), "default".to_string()]
+}

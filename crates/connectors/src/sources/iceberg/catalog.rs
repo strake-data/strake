@@ -26,6 +26,7 @@ pub struct CachedRestCatalog {
 }
 
 impl CachedRestCatalog {
+    /// Creates a new `CachedRestCatalog`.
     pub fn new(inner: RestCatalog, config: CacheConfig) -> Self {
         Self {
             inner: Arc::new(inner),
@@ -275,8 +276,24 @@ pub async fn create_rest_catalog(
         }
     }
 
+    // Configure storage factory based on warehouse scheme
+    let warehouse_url = url::Url::parse(&cfg.warehouse).map_err(|e| {
+        IcebergConnectorError::InvalidConfiguration(format!("Invalid warehouse URL: {e}"))
+    })?;
+    let scheme = warehouse_url.scheme();
+
+    let storage_factory: Arc<dyn iceberg::io::StorageFactory> = match scheme {
+        "file" => Arc::new(iceberg::io::LocalFsStorageFactory),
+        "memory" => Arc::new(iceberg::io::MemoryStorageFactory),
+        _ => Arc::new(iceberg_storage_opendal::OpenDalStorageFactory::S3 {
+            customized_credential_load: None,
+        }),
+    };
+
+    let builder = RestCatalogBuilder::default().with_storage_factory(storage_factory);
+
     // Use the provided source name instead of a hardcoded constant
-    let catalog: RestCatalog = CatalogBuilder::load(RestCatalogBuilder::default(), name, props)
+    let catalog: RestCatalog = CatalogBuilder::load(builder, name, props)
         .await
         .map_err(|e| IcebergConnectorError::CatalogError {
             operation: "load_catalog".into(),

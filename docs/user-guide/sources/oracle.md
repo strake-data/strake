@@ -66,7 +66,7 @@ ln -s libclntsh.so.21.1 libclntsh.so
 
 ## 3. Configuration Snippets
 
-### Option A: Embedded Credentials
+### Embedded Credentials
 ```yaml
 sources:
   - name: legacy_oracle
@@ -81,7 +81,7 @@ sources:
         schema: billing
 ```
 
-### Option B: Separated Credentials (Environment Variables)
+### Separated Credentials (Environment Variables)
 ```yaml
 sources:
   - name: legacy_oracle_secure
@@ -94,3 +94,44 @@ sources:
       - name: orders
         schema: sales
 ```
+
+### Non-Default Schemas
+
+If your tables live in a schema other than a standard default, Strake will automatically qualify the generated SQL as `"SCHEMA"."TABLE"`. No extra configuration is required for this to work correctly.
+
+To make every schema always qualified (i.e. never treat any schema as a "default"), set `schema_mapping.default_schemas` to an empty list:
+
+```yaml
+sources:
+  - name: oracle_prod
+    type: oracle
+    url: "oracle://system:OraclePassword123@oracle-host:1521/ORCL"
+    pool_size: 10
+    schema_mapping:
+      default_schemas: []   # Always qualify — no schema is treated as default
+    tables:
+      - name: ORDERS
+        schema: SALES     # Must match Oracle's case (typically uppercase)
+      - name: INVOICES
+        schema: BILLING
+```
+
+---
+
+## 4. Schema Qualification
+
+Oracle folds unquoted identifiers to **uppercase**. Strake enforces this during table discovery: schema names returned from `ALL_TABLES` are always uppercased internally.
+
+When Strake generates pushdown SQL for an Oracle table, it decides whether to qualify the table reference based on the `schema_mapping.default_schemas` list:
+
+- **Schemas in `default_schemas`** → generated as bare table names: `"ORDERS"`
+- **Schemas NOT in `default_schemas`** → generated as fully qualified: `"SCHEMA"."TABLE"`
+
+The built-in defaults for Oracle are `["public", "default"]`. Since Oracle schemas are typically uppercase (e.g. `SALES`, `BILLING`), they will almost always be qualified automatically — no extra configuration needed.
+
+> [!TIP]
+> If you are connecting to a schema that happens to be named `public` or `default` and you want it qualified, override the defaults:
+> ```yaml
+> schema_mapping:
+>   default_schemas: []
+> ```

@@ -28,7 +28,6 @@
 //! This module does not use `unsafe`. It relies on Arrow compute kernels for
 //! type-safe transformations.
 
-use std::any::Any;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -293,10 +292,6 @@ impl ExecutionPlan for SchemaDriftExec {
         "SchemaDriftExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.expected_schema.clone()
     }
@@ -387,7 +382,7 @@ impl ExecutionPlan for SchemaDriftExec {
     fn partition_statistics(
         &self,
         partition: Option<usize>,
-    ) -> DataFusionResult<datafusion::physical_plan::Statistics> {
+    ) -> DataFusionResult<Arc<datafusion::common::Statistics>> {
         self.inner.partition_statistics(partition)
     }
 }
@@ -417,10 +412,6 @@ impl SchemaDriftTableProvider {
 
 #[async_trait]
 impl TableProvider for SchemaDriftTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.expected_schema.clone()
     }
@@ -588,9 +579,7 @@ mod tests {
         fn name(&self) -> &str {
             "MockExec"
         }
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
+
         fn schema(&self) -> SchemaRef {
             self.schema.clone()
         }

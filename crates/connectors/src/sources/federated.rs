@@ -44,17 +44,15 @@ pub trait FederatedPlan: ExecutionPlan {
 /// Failure to register a new type will cause the plan visualizer to skip the `[PUSHED]`
 /// indicator for that node.
 pub fn as_federated_plan(plan: &dyn ExecutionPlan) -> Option<&dyn FederatedPlan> {
-    let any = plan.as_any();
-
     if let Some(p) =
-        any.downcast_ref::<crate::sources::sql::strake_federation::StrakeFederationExec>()
+        plan.downcast_ref::<crate::sources::sql::strake_federation::StrakeFederationExec>()
     {
         return Some(p);
     }
-    if let Some(p) = any.downcast_ref::<crate::sources::sql::oracle::table::OracleSQLExec>() {
+    if let Some(p) = plan.downcast_ref::<crate::sources::sql::oracle::table::OracleSQLExec>() {
         return Some(p);
     }
-    if let Some(p) = any.downcast_ref::<crate::sources::sql::duckdb::DuckDBScanExec>() {
+    if let Some(p) = plan.downcast_ref::<crate::sources::sql::duckdb::DuckDBScanExec>() {
         return Some(p);
     }
 

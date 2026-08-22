@@ -59,9 +59,9 @@ use datafusion_datasource::file_scan_config::FileScanConfigBuilder;
 use datafusion_datasource::source::DataSourceExec;
 use datafusion_datasource_parquet::source::ParquetSource;
 use datafusion_datasource_parquet::{DefaultParquetFileReaderFactory, ParquetFileReaderFactory};
-// #[cfg(feature = "iceberg")]
-// use iceberg::metadata_columns::RESERVED_COL_NAME_FILE;
-// #[cfg(not(feature = "iceberg"))]
+#[cfg(feature = "iceberg")]
+use iceberg::metadata_columns::RESERVED_COL_NAME_FILE;
+#[cfg(not(feature = "iceberg"))]
 const RESERVED_COL_NAME_FILE: &str = "_file_path";
 use strake_common::predicate_cache::{BlockKey, PredicateCache};
 
@@ -333,10 +333,6 @@ impl ExecutionPlan for RecordingExec {
         "RecordingExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.inner.schema()
     }
@@ -402,7 +398,7 @@ impl ExecutionPlan for RecordingExec {
     fn partition_statistics(
         &self,
         partition: Option<usize>,
-    ) -> DataFusionResult<datafusion::physical_plan::Statistics> {
+    ) -> DataFusionResult<Arc<datafusion::common::Statistics>> {
         self.inner.partition_statistics(partition)
     }
 }
@@ -449,10 +445,6 @@ impl crate::sources::WrappingTableProvider for CachingTableProvider {
 
 #[async_trait::async_trait]
 impl TableProvider for CachingTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.inner.schema()
     }
@@ -732,7 +724,7 @@ pub fn inject_factory_into_plan(
     runtime_env: Arc<datafusion::execution::runtime_env::RuntimeEnv>,
     context: PredicateCachingContext,
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-    if let Some(data_source_exec) = plan.as_any().downcast_ref::<DataSourceExec>() {
+    if let Some(data_source_exec) = plan.downcast_ref::<DataSourceExec>() {
         let (base_config, parquet_source) = data_source_exec
             .downcast_to_file_source::<ParquetSource>()
             .ok_or_else(|| {
@@ -766,7 +758,7 @@ pub fn inject_factory_into_plan(
         return Ok(Arc::new(DataSourceExec::new(Arc::new(new_config))));
     }
 
-    if let Some(projection_exec) = plan.as_any().downcast_ref::<ProjectionExec>() {
+    if let Some(projection_exec) = plan.downcast_ref::<ProjectionExec>() {
         let child = projection_exec.children()[0].clone();
         let new_child = inject_factory_into_plan(Arc::clone(&child), runtime_env, context)?;
         return plan.with_new_children(vec![new_child]);
@@ -991,9 +983,6 @@ mod tests {
         struct FailingProvider;
         #[async_trait::async_trait]
         impl TableProvider for FailingProvider {
-            fn as_any(&self) -> &dyn Any {
-                self
-            }
             fn schema(&self) -> SchemaRef {
                 Arc::new(datafusion::arrow::datatypes::Schema::empty())
             }
@@ -1032,9 +1021,6 @@ mod tests {
         struct FailingProvider;
         #[async_trait::async_trait]
         impl TableProvider for FailingProvider {
-            fn as_any(&self) -> &dyn Any {
-                self
-            }
             fn schema(&self) -> SchemaRef {
                 Arc::new(datafusion::arrow::datatypes::Schema::empty())
             }

@@ -22,7 +22,7 @@ import contextlib
 MAX_PAYLOAD_SIZE = 10 * 1024 * 1024  # 10MB limit
 
 
-def _harden_environment():
+def _harden_environment() -> None:
     """
     Defense in depth: disables a few convenient introspection entry points.
 
@@ -68,7 +68,7 @@ def _harden_environment():
     builtins.__build_class__ = safe_build_class  # type: ignore
 
 
-def _recv_exact(sock, n):
+def _recv_exact(sock: socket.socket, n: int) -> bytes:
     """Accurately receive exactly n bytes from a stream socket."""
     buf = bytearray()
     while len(buf) < n:
@@ -100,7 +100,7 @@ GUEST_SAFE_BUILTINS = {
 }
 
 
-def run_vsock_server():
+def run_vsock_server() -> None:
     """Binds to the VSOCK guest CID and listens for host payloads."""
     # VSOCK Constants
     VMADDR_CID_ANY = 4294967295

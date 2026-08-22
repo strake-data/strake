@@ -24,6 +24,8 @@ def connect(
     :param mode: If "embedded", forces local execution. If "remote", requires a grpc:// URL.
     :param trace_dir: Optional directory to store session traces. Defaults to
                       ``.strake/traces/`` relative to the running script.
+    :raises ConfigError: If configuration parsing or validation fails.
+    :raises ConnectionError: If connecting to the remote server fails.
     """
     if trace_dir:
         from .tracing import get_emitter

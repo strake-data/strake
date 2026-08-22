@@ -6,10 +6,14 @@ use secrecy::{ExposeSecret, SecretString};
 use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
 
+/// Credentials used for S3/FileIO storage access.
 #[derive(Clone)]
 pub struct S3Credentials {
+    /// S3 access key ID.
     pub access_key_id: String,
+    /// S3 secret access key.
     pub secret_access_key: SecretString,
+    /// Optional S3 session token.
     pub session_token: Option<SecretString>,
 }
 
@@ -24,6 +28,7 @@ impl std::fmt::Debug for S3Credentials {
 }
 
 impl S3Credentials {
+    /// Creates `S3Credentials` from AWS SDK credentials.
     pub fn from_sdk(creds: &aws_credential_types::Credentials) -> Self {
         Self {
             access_key_id: creds.access_key_id().to_string(),
@@ -45,6 +50,7 @@ pub trait IcebergAuthProvider: Send + Sync + std::fmt::Debug {
     async fn s3_credentials(&self) -> Result<Option<S3Credentials>>;
 }
 
+/// OAuth2 authentication provider for Iceberg REST catalog.
 #[derive(Debug)]
 pub struct OAuthIcebergAuth {
     client_id: String,
@@ -54,6 +60,7 @@ pub struct OAuthIcebergAuth {
 }
 
 impl OAuthIcebergAuth {
+    /// Creates a new `OAuthIcebergAuth` provider.
     pub fn new(
         client_id: String,
         client_secret: SecretString,
@@ -88,12 +95,14 @@ impl IcebergAuthProvider for OAuthIcebergAuth {
     }
 }
 
+/// Static token authentication provider for Iceberg REST catalog.
 #[derive(Debug)]
 pub struct StaticTokenAuth {
     token: SecretString,
 }
 
 impl StaticTokenAuth {
+    /// Creates a new `StaticTokenAuth` provider.
     pub fn new(token: SecretString) -> Self {
         Self { token }
     }
@@ -110,6 +119,7 @@ impl IcebergAuthProvider for StaticTokenAuth {
     }
 }
 
+/// AWS IAM Roles for Service Accounts (IRSA) / EKS authentication provider.
 #[derive(Debug)]
 pub struct AwsIrsaAuth {
     cache: RwLock<Option<(S3Credentials, SystemTime)>>,
@@ -124,6 +134,7 @@ impl Default for AwsIrsaAuth {
 }
 
 impl AwsIrsaAuth {
+    /// Creates a new `AwsIrsaAuth` provider.
     pub fn new() -> Self {
         Self {
             cache: RwLock::new(None),
@@ -132,6 +143,7 @@ impl AwsIrsaAuth {
         }
     }
 
+    /// Creates a new `AwsIrsaAuth` provider with static credentials override.
     pub fn with_static_credentials(creds: S3Credentials) -> Self {
         Self {
             cache: RwLock::new(None),
@@ -226,6 +238,7 @@ impl IcebergAuthProvider for AwsIrsaAuth {
     }
 }
 
+/// Composite authentication provider combining REST catalog and S3 storage auth.
 #[derive(Debug)]
 pub struct CompositeAuth {
     rest_auth: Option<Box<dyn IcebergAuthProvider>>,
@@ -233,6 +246,7 @@ pub struct CompositeAuth {
 }
 
 impl CompositeAuth {
+    /// Creates a new `CompositeAuth` provider.
     pub fn new(
         rest_auth: Option<Box<dyn IcebergAuthProvider>>,
         s3_auth: Box<dyn IcebergAuthProvider>,

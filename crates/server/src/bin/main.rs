@@ -8,6 +8,8 @@
 //! - `--sources`: Path to `sources.yaml` (data sources)
 //! - `--mcp`: Flag to enable the Python MCP sidecar
 use strake_server::StrakeServer;
+/// The version of the Strake Server, embedded at compile time.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(clap::Parser)]
 struct Args {
@@ -42,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     let _sidecar_handle = strake_runtime::sidecar::spawn_sidecar(&app_config).await?;
 
     println!("--------------------------------------------------");
-    println!("   Strake Community Edition");
+    println!("   Strake Community Edition v{}", VERSION);
     println!("   Licensed to: Open Source (Apache-2.0)");
     println!("   Tier:        community");
     println!("   Features:    [\"core\", \"flight-sql\", \"federation\"]");

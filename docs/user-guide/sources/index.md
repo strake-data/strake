@@ -1,33 +1,51 @@
-# Connectors Overview
+# Data Sources (Connectors) Overview
 
 Strake is a high-performance, federation-first query engine. By translating query plans and pushing predicate filters directly to where your data lives, Strake allows you to query diverse databases, files, object stores, and APIs as a single logical data warehouse.
 
 ---
 
-## 1. Modular Connector Directory
+## 1. Connector Feature Matrix
 
-Strake supports native, asynchronous federation across relational databases, storage files, lakehouses, APIs, and microservices. 
+Before exploring individual setups, use this comparison matrix to identify the capabilities supported by each connector:
+
+| Connector | Source Type | Pushdown Support | Auth Methods | Schema Discovery |
+|---|---|---|---|---|
+| **[PostgreSQL](postgres.md)** | Relational (`sql`) | Filter, Projection, Limit | Password, TLS | Automatic |
+| **[MySQL](mysql.md)** | Relational (`sql`) | Filter, Projection, Limit | Password | Automatic |
+| **[SQLite](sqlite.md)** | Relational (`sql`) | Filter, Projection, Limit | None | Automatic |
+| **[DuckDB](duckdb.md)** | Relational (`sql`) | Filter, Projection, Limit | None | Automatic |
+| **[ClickHouse](clickhouse.md)** | Relational (`sql`) | Filter, Projection, Limit | Password | Automatic |
+| **[Oracle](oracle.md)** | Relational (`sql`) | Filter, Projection, Limit | Password | Automatic |
+| **[Files & Cloud Storage](file.md)** | Object Store (`file`) | Filter (Parquet), Projection, Limit | IAM, Access Keys | Auto-infer / Explicit |
+| **[Apache Iceberg](iceberg.md)** | Lakehouse (`iceberg_rest`) | Filter, Projection | OAuth 2.0 | Automatic |
+| **[Arrow Flight SQL](flight_sql.md)** | Vectorized Warehouse | Query delegation | Token-based | Remote |
+| **[REST APIs](rest.md)** | HTTP Service (`rest`) | Pushdown mappings | Basic, Bearer, OAuth, JWT | Declarative (YAML) |
+| **[gRPC Services](grpc.md)** | Microservice (`grpc`) | Parameter injection | None / Custom | Protobuf / Descriptor |
+
+---
+
+## 2. Modular Connector Directory
 
 Select a connector below for detailed configuration parameters, authentication schemes, connection string syntaxes, and driver setups:
 
 ### Relational Databases (`type: sql`)
-- **[PostgreSQL](connectors/postgres.md):** Active wire integration with deep predicate/limit pushdown.
-- **[MySQL & MariaDB](connectors/mysql.md):** Optimized SQL dialect translation and connection pooling.
-- **[SQLite](connectors/sqlite.md):** Ultra-lightweight local caching and zero-config testing.
-- **[DuckDB](connectors/duckdb.md):** Persistent local file or in-memory analytics.
-- **[ClickHouse](connectors/clickhouse.md):** OLAP-optimized translations for fast table queries.
-- **[Oracle](connectors/oracle.md):** Thin connection syntax and detailed Oracle Instant Client driver requirements.
+- **[PostgreSQL](postgres.md):** Active wire integration with deep predicate/limit pushdown.
+- **[MySQL & MariaDB](mysql.md):** Optimized SQL dialect translation and connection pooling.
+- **[SQLite](sqlite.md):** Ultra-lightweight local caching and zero-config testing.
+- **[DuckDB](duckdb.md):** Persistent local file or in-memory analytics.
+- **[ClickHouse](clickhouse.md):** OLAP-optimized translations for fast table queries.
+- **[Oracle](oracle.md):** Thin connection syntax and detailed Oracle Instant Client driver requirements.
 
 ### Storage, API & Microservices
-- **[Files & Cloud Object Storage](connectors/file.md) (`type: file`):** OpenDAL backend supporting Parquet, CSV, JSON, Avro, and Excel across S3, GCS, and Azure buckets.
-- **[Apache Iceberg](connectors/iceberg.md) (`type: iceberg_rest`):** *Experimental* REST catalog queries and time-travel snapshots.
-- **[Arrow Flight SQL](connectors/flight_sql.md) (`type: flight_sql`):** Low-overhead vectorized warehouse querying (Snowflake, Dremio).
-- **[REST APIs & SaaS](connectors/rest.md) (`type: rest`):** Declarative endpoint mapping, auth headers, pagination, and URL pushdowns.
-- **[gRPC Services](connectors/grpc.md) (`type: grpc`):** Microservice calls using Protobuf reflection or FileDescriptorSet binaries.
+- **[Files & Cloud Object Storage](file.md) (`type: file`):** OpenDAL backend supporting Parquet, CSV, JSON, Avro, and Excel across S3, GCS, and Azure buckets.
+- **[Apache Iceberg](iceberg.md) (`type: iceberg_rest`):** *Experimental* REST catalog queries and time-travel snapshots.
+- **[Arrow Flight SQL](flight_sql.md) (`type: flight_sql`):** Low-overhead vectorized warehouse querying (Snowflake, Dremio).
+- **[REST APIs & SaaS](rest.md) (`type: rest`):** Declarative endpoint mapping, auth headers, pagination, and URL pushdowns.
+- **[gRPC Services](grpc.md) (`type: grpc`):** Microservice calls using Protobuf reflection or FileDescriptorSet binaries.
 
 ---
 
-## 2. Unified `sources.yaml`
+## 3. Unified `sources.yaml`
 
 This comprehensive `sources.yaml` registers and configures all supported data sources inside a single Strake project directory:
 
@@ -39,9 +57,9 @@ sources:
   # ----------------------------------------------------
   - name: internal_pg
     type: sql
+    url: "postgres://db_user:secure_password@localhost:5432/production_db?sslmode=prefer"
     config:
       dialect: postgres
-      connection: "postgres://db_user:secure_password@localhost:5432/production_db?sslmode=prefer"
       pool_size: 15
       tables:
         - name: users
@@ -52,11 +70,12 @@ sources:
   # ----------------------------------------------------
   - name: legacy_oracle
     type: sql
+    url: "oracle://system:OraclePassword123@oracle-free:1521/FREEPDB1"
     config:
       dialect: oracle
-      # Strict URL format containing the oracle:// scheme
-      connection: "oracle://system:OraclePassword123@oracle-free:1521/FREEPDB1"
       pool_size: 10
+      # Non-default schemas (e.g. GWS_DWH) are automatically qualified in SQL.
+      # Use schema_mapping.default_schemas: [] to force qualification for all schemas.
       tables:
         - name: orders
           schema: sales
@@ -66,19 +85,19 @@ sources:
   # ----------------------------------------------------
   - name: cache_sqlite
     type: sql
+    url: "sqlite:///workspaces/rust-postgres/data/app_cache.db"
     config:
       dialect: sqlite
-      connection: "sqlite:///workspaces/rust-postgres/data/app_cache.db"
 
   # ----------------------------------------------------
   # 4. Amazon S3 Parquet (Files & Cloud Storage)
   # ----------------------------------------------------
   - name: telemetry_s3
     type: file
-    source_type: parquet
+    format: parquet
     predicate_cache: true
+    url: "s3://my-company-analytics-bucket/logs/"
     config:
-      path: "s3://my-company-analytics-bucket/logs/"
       options:
         aws_access_key_id: "AKIAIOSFODNN7EXAMPLE"
         aws_secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
@@ -93,8 +112,8 @@ sources:
   # ----------------------------------------------------
   - name: analytics_iceberg
     type: iceberg_rest
+    url: "http://polaris:8181/api/catalog"
     config:
-      catalog_uri: "http://polaris:8181/api/catalog"
       warehouse: "s3://my-iceberg-lakehouse/"
       region: "us-east-1"
       oauth_client_id: "strake-client"

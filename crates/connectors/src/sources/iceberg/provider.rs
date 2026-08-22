@@ -23,12 +23,10 @@ use strake_common::config::TableConfig;
 use super::error::IcebergConnectorError;
 use super::telemetry::IcebergTelemetry;
 use crate::sources::iceberg::federation::IcebergExecutor;
-use crate::sources::sql::common::FetchedMetadata;
 use crate::sources::sql::wrappers::{wrap_concurrent, wrap_provider};
 use datafusion_federation::FederatedTableProviderAdaptor;
 use iceberg::{Catalog, NamespaceIdent, TableIdent};
 use iceberg_datafusion::IcebergStaticTableProvider;
-use std::any::Any;
 use std::time::Instant;
 use strake_common::circuit_breaker::{AdaptiveCircuitBreaker, CircuitBreakerConfig};
 use strake_common::config::RetrySettings;
@@ -79,64 +77,63 @@ enum LoadResult {
 }
 
 use crate::sources::predicate_caching::{
-    CacheMode, FileRecordingState, RecordingExec, inject_factory_into_plan,
+    CacheMode, FileRecordingState, PredicateCachingContext, RecordingExec, inject_factory_into_plan,
 };
+use moka::future::Cache as MokaCache;
+use parquet::file::metadata::ParquetMetaData;
 use strake_common::predicate_cache::PredicateCache;
 
+/// Configuration and context for registering an Iceberg REST catalog source.
+#[derive(Clone)]
+pub struct IcebergRegistration {
+    /// DataFusion session context.
+    pub ctx: Arc<SessionContext>,
+    /// Target catalog name.
+    pub catalog_name: String,
+    /// Name of the source.
+    pub source_name: String,
+    /// Parsed Iceberg REST config.
+    pub cfg: Arc<IcebergRestConfig>,
+    /// Tables configuration to register.
+    pub tables: Arc<Vec<TableConfig>>,
+    /// Global retry settings.
+    pub retry_settings: RetrySettings,
+    /// Shared predicate cache.
+    pub predicate_cache: Arc<PredicateCache>,
+    /// Whether predicate cache is enabled.
+    pub predicate_cache_enabled: bool,
+}
+
 /// Register Iceberg tables with DataFusion context
-#[allow(clippy::too_many_arguments)]
-pub async fn register_iceberg_rest(
-    ctx: Arc<SessionContext>,
-    catalog_name: String,
-    source_name: String,
-    cfg: Arc<IcebergRestConfig>,
-    tables: Arc<Vec<TableConfig>>,
-    retry_settings: RetrySettings,
-    predicate_cache: Arc<PredicateCache>,
-    predicate_cache_enabled: bool,
-) -> Result<()> {
+pub async fn register_iceberg_rest(reg: IcebergRegistration) -> Result<()> {
     let cb = Arc::new(AdaptiveCircuitBreaker::new(CircuitBreakerConfig::default()));
+    let retry_settings = reg.retry_settings;
+    let source_name = reg.source_name.clone();
 
     retry_async(
         format!("iceberg_register({})", source_name),
         retry_settings,
         move || {
             let cb = cb.clone();
-            let predicate_cache = predicate_cache.clone();
-            let catalog_name = catalog_name.clone();
-            let source_name = source_name.clone();
-            let cfg = cfg.clone();
-            let tables = tables.clone();
-            let ctx = ctx.clone();
-            async move {
-                try_register_iceberg_rest(
-                    ctx.clone(),
-                    catalog_name.clone(),
-                    source_name.clone(),
-                    cfg.clone(),
-                    tables.clone(),
-                    cb.clone(),
-                    predicate_cache.clone(),
-                    predicate_cache_enabled,
-                )
-                .await
-            }
+            let reg = reg.clone();
+            async move { try_register_iceberg_rest(reg, cb).await }
         },
     )
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn try_register_iceberg_rest(
-    ctx: Arc<SessionContext>,
-    catalog_name: String,
-    source_name: String,
-    cfg: Arc<IcebergRestConfig>,
-    tables: Arc<Vec<TableConfig>>,
+    reg: IcebergRegistration,
     cb: Arc<AdaptiveCircuitBreaker>,
-    predicate_cache: Arc<PredicateCache>,
-    predicate_cache_enabled: bool,
 ) -> Result<()> {
+    let cfg = &reg.cfg;
+    let ctx = &reg.ctx;
+    let tables = &reg.tables;
+    let catalog_name = reg.catalog_name.as_str();
+    let source_name = reg.source_name.as_str();
+    let predicate_cache = &reg.predicate_cache;
+    let predicate_cache_enabled = reg.predicate_cache_enabled;
+
     // 1. Setup Auth
     let rest_auth: Option<Box<dyn IcebergAuthProvider>> = if let Some(token) = &cfg.token {
         Some(Box::new(StaticTokenAuth::new(token.clone())))
@@ -169,7 +166,7 @@ async fn try_register_iceberg_rest(
     let auth: Arc<dyn IcebergAuthProvider> = Arc::new(CompositeAuth::new(rest_auth, s3_auth));
 
     // 2. Create catalog with caching
-    let rest_catalog = create_rest_catalog(&source_name, &cfg, &auth).await?;
+    let rest_catalog = create_rest_catalog(source_name, cfg, &auth).await?;
     let cache_config = cfg.cache.clone().unwrap_or_default();
     let iceberg_catalog = Arc::new(CachedRestCatalog::new(rest_catalog, cache_config));
 
@@ -179,10 +176,10 @@ async fn try_register_iceberg_rest(
 
     // 3. Ensure target catalog exists in DataFusion
     let catalog = ctx
-        .catalog(&catalog_name)
+        .catalog(catalog_name)
         .ok_or_else(|| anyhow::anyhow!("Catalog '{}' not found", catalog_name))?;
 
-    let schema_name = cfg.namespace.as_deref().unwrap_or(&source_name);
+    let schema_name = cfg.namespace.as_deref().unwrap_or(source_name);
 
     if catalog.schema(schema_name).is_none() {
         tracing::debug!(
@@ -191,6 +188,24 @@ async fn try_register_iceberg_rest(
             catalog_name
         );
         catalog.register_schema(schema_name, Arc::new(MemorySchemaProvider::new()))?;
+    }
+
+    // Register dedicated catalog using source_name if different from catalog_name
+    if catalog_name != source_name {
+        if ctx.catalog(source_name).is_none() {
+            tracing::info!(
+                "Catalog '{}' not found, registering new MemoryCatalogProvider for Iceberg source",
+                source_name
+            );
+            ctx.register_catalog(
+                source_name,
+                Arc::new(datafusion::catalog::MemoryCatalogProvider::new()),
+            );
+        }
+        let source_catalog = ctx.catalog(source_name).unwrap();
+        if source_catalog.schema(schema_name).is_none() {
+            source_catalog.register_schema(schema_name, Arc::new(MemorySchemaProvider::new()))?;
+        }
     }
 
     let max_concurrency = cfg.max_concurrent_queries.unwrap_or(0);
@@ -236,41 +251,57 @@ async fn try_register_iceberg_rest(
             })?;
         let schema = TableProvider::schema(&dummy_provider);
 
-        let lazy_provider = LazyIcebergTableProvider::new(
+        let lazy_provider = Arc::new(LazyIcebergTableProvider::new(
             iceberg_catalog.clone(),
             ident.clone(),
             cfg.version.clone(),
             schema.clone(),
             predicate_cache.clone(),
             predicate_cache_enabled,
-        );
+        ));
 
         // Wrap with federation adaptor to enable pushdown/join splitting
         // Use SQLTableSource for federation logic
         let sql_source = datafusion_federation::sql::SQLTableSource::new_with_schema(
             federation_provider.clone(),
-            TableReference::full(catalog_name.clone(), schema_name, table_cfg.name.as_str()).into(),
-            schema,
+            TableReference::full(catalog_name, schema_name, table_cfg.name.as_str()).into(),
+            schema.clone(),
         );
 
         // Wrap with federation adaptor
         let federated_provider = Arc::new(FederatedTableProviderAdaptor::new_with_provider(
             Arc::new(sql_source),
-            Arc::new(lazy_provider),
+            lazy_provider.clone(),
         ));
 
-        let enriched_provider = wrap_provider(
-            federated_provider,
-            cb.clone(),
-            false,
-        );
+        let enriched_provider = wrap_provider(federated_provider, cb.clone(), false);
         let limited_provider = wrap_concurrent(enriched_provider, max_concurrency);
-        let qualified =
-            TableReference::full(catalog_name.clone(), schema_name, table_cfg.name.as_str());
+        let qualified = TableReference::full(catalog_name, schema_name, table_cfg.name.as_str());
         ctx.register_table(qualified, limited_provider)?;
 
         // Note: we track registration metric immediately as we don't load anymore
-        IcebergTelemetry::table_registered(&catalog_name, schema_name, &table_cfg.name);
+        IcebergTelemetry::table_registered(catalog_name, schema_name, &table_cfg.name);
+
+        if catalog_name != source_name {
+            let source_sql_source = datafusion_federation::sql::SQLTableSource::new_with_schema(
+                federation_provider.clone(),
+                TableReference::full(source_name, schema_name, table_cfg.name.as_str()).into(),
+                schema,
+            );
+            let source_federated_provider =
+                Arc::new(FederatedTableProviderAdaptor::new_with_provider(
+                    Arc::new(source_sql_source),
+                    lazy_provider,
+                ));
+            let source_enriched_provider =
+                wrap_provider(source_federated_provider, cb.clone(), false);
+            let source_limited_provider =
+                wrap_concurrent(source_enriched_provider, max_concurrency);
+            let source_qualified =
+                TableReference::full(source_name, schema_name, table_cfg.name.as_str());
+            ctx.register_table(source_qualified, source_limited_provider)?;
+            IcebergTelemetry::table_registered(source_name, schema_name, &table_cfg.name);
+        }
     }
 
     Ok(())
@@ -291,9 +322,11 @@ pub struct LazyIcebergTableProvider {
     state: RwLock<LoadState>,
     schema_cache: OnceLock<SchemaRef>,
     snapshot_id: OnceLock<i64>,
+    metadata_cache: Arc<MokaCache<String, Arc<ParquetMetaData>>>,
 }
 
 impl LazyIcebergTableProvider {
+    /// Creates a new `LazyIcebergTableProvider`.
     pub fn new(
         catalog: Arc<CachedRestCatalog>,
         ident: TableIdent,
@@ -305,6 +338,13 @@ impl LazyIcebergTableProvider {
         let schema_cache = OnceLock::new();
         let _ = schema_cache.set(known_schema);
 
+        let metadata_cache = Arc::new(
+            MokaCache::builder()
+                .max_capacity(1000)
+                .time_to_live(std::time::Duration::from_secs(300))
+                .build(),
+        );
+
         Self {
             catalog,
             ident,
@@ -314,6 +354,7 @@ impl LazyIcebergTableProvider {
             state: RwLock::new(LoadState::Unloaded),
             schema_cache,
             snapshot_id: OnceLock::new(),
+            metadata_cache,
         }
     }
 
@@ -533,9 +574,6 @@ impl LazyIcebergTableProvider {
 // FIXME: DynamicFilterSource (#812) not implemented for lazy provider.
 // This prevents runtime join filter pushdown until the table is loaded.
 impl TableProvider for LazyIcebergTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
     fn schema(&self) -> SchemaRef {
         // Guaranteed to be present by constructor
         self.schema_cache
@@ -629,15 +667,17 @@ impl TableProvider for LazyIcebergTableProvider {
                     Arc::new(dashmap::DashMap::<String, Arc<FileRecordingState>>::new());
                 let partition_row_offsets = Arc::new(dashmap::DashMap::new());
 
-                let instrumented_plan = inject_factory_into_plan(
-                    plan,
-                    state.runtime_env().clone(),
-                    self.predicate_cache.clone(),
+                let context = PredicateCachingContext {
+                    cache: self.predicate_cache.clone(),
                     snapshot_id,
-                    recording_states.clone(),
-                    partition_row_offsets.clone(),
-                    cache_mode,
-                )?;
+                    recording_states: recording_states.clone(),
+                    partition_row_offsets: partition_row_offsets.clone(),
+                    mode: cache_mode,
+                    metadata_cache: self.metadata_cache.clone(),
+                };
+
+                let instrumented_plan =
+                    inject_factory_into_plan(plan, state.runtime_env().clone(), context)?;
 
                 if cache_mode == CacheMode::Recording {
                     Ok(Arc::new(RecordingExec::new(

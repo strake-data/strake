@@ -134,10 +134,7 @@ impl PlanTreeFormatter {
     }
 
     fn compute_size(&self, plan: &Arc<dyn ExecutionPlan>) -> (usize, usize) {
-        if self.elide_repartition
-            && plan.as_any().is::<RepartitionExec>()
-            && plan.children().len() == 1
-        {
+        if self.elide_repartition && plan.is::<RepartitionExec>() && plan.children().len() == 1 {
             return self.compute_size(plan.children()[0]);
         }
         let children = plan.children();
@@ -161,10 +158,7 @@ impl PlanTreeFormatter {
         x: usize,
         y: usize,
     ) -> usize {
-        if self.elide_repartition
-            && plan.as_any().is::<RepartitionExec>()
-            && plan.children().len() == 1
-        {
+        if self.elide_repartition && plan.is::<RepartitionExec>() && plan.children().len() == 1 {
             return self.place_in_grid(grid, plan.children()[0], x, y);
         }
 
@@ -494,7 +488,6 @@ impl PlanTreeFormatter {
 
     fn get_node_details_list(&self, plan: &Arc<dyn ExecutionPlan>) -> Vec<String> {
         let mut lines = Vec::new();
-        let any = plan.as_any();
 
         // Federated Nodes
         if let Some(fed) = federated::as_federated_plan(plan.as_ref()) {
@@ -505,7 +498,7 @@ impl PlanTreeFormatter {
         }
 
         // Filter
-        if let Some(filter) = any.downcast_ref::<FilterExec>() {
+        if let Some(filter) = plan.downcast_ref::<FilterExec>() {
             let pred = format!("{}", filter.predicate());
             // Check if this filter is above a pushed-down source
             let pushed = plan
@@ -520,7 +513,7 @@ impl PlanTreeFormatter {
         }
 
         // Projection
-        if let Some(proj) = any.downcast_ref::<ProjectionExec>() {
+        if let Some(proj) = plan.downcast_ref::<ProjectionExec>() {
             for item in proj.expr() {
                 if item.alias.is_empty() {
                     lines.push(format!("{}", item.expr));
@@ -532,18 +525,18 @@ impl PlanTreeFormatter {
         }
 
         // Joins
-        if let Some(join) = any.downcast_ref::<HashJoinExec>() {
+        if let Some(join) = plan.downcast_ref::<HashJoinExec>() {
             lines.push(format!("join_type: {:?}", join.join_type()));
             for (l, r) in join.on() {
                 lines.push(format!("{} = {}", l, r));
             }
             return lines;
         }
-        if let Some(nl) = any.downcast_ref::<NestedLoopJoinExec>() {
+        if let Some(nl) = plan.downcast_ref::<NestedLoopJoinExec>() {
             lines.push(format!("join_type: {:?}", nl.join_type()));
             return lines;
         }
-        if any.is::<CrossJoinExec>() {
+        if plan.is::<CrossJoinExec>() {
             lines.push("join_type: Cross".to_string());
             return lines;
         }
@@ -555,7 +548,7 @@ impl PlanTreeFormatter {
         }
 
         // DataSource
-        if let Some(ds) = any.downcast_ref::<DataSourceExec>() {
+        if let Some(ds) = plan.downcast_ref::<DataSourceExec>() {
             if let Some((_, parquet_source)) = ds.downcast_to_file_source::<ParquetSource>()
                 && let Some(filter) = parquet_source.filter()
             {
@@ -612,7 +605,7 @@ impl PlanTreeFormatter {
         }
 
         // 2. Check for local data source filter pushdown
-        if let Some(ds) = plan.as_any().downcast_ref::<DataSourceExec>()
+        if let Some(ds) = plan.downcast_ref::<DataSourceExec>()
             && let Some((_, parquet_source)) = ds.downcast_to_file_source::<ParquetSource>()
             && parquet_source.filter().is_some()
         {
@@ -694,7 +687,6 @@ mod tests {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::physical_plan::{DisplayAs, DisplayFormatType, PlanProperties};
-    use std::any::Any;
 
     #[test]
     fn test_formatter_creation() {
@@ -764,9 +756,7 @@ mod tests {
         fn name(&self) -> &str {
             "MockScanExec"
         }
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
+
         fn schema(&self) -> SchemaRef {
             self.schema.clone()
         }
@@ -850,9 +840,7 @@ mod tests {
             fn name(&self) -> &str {
                 "MockBinaryExec"
             }
-            fn as_any(&self) -> &dyn Any {
-                self
-            }
+
             fn schema(&self) -> SchemaRef {
                 self.children[0].schema()
             }

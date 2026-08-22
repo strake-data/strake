@@ -9,6 +9,24 @@
 //! delegates to specific dialect implementations while providing common
 //! infrastructure for connection pooling, circuit breaking, and concurrency control.
 //!
+//! ## Usage
+//!
+//! ```rust
+//! use datafusion::prelude::SessionContext;
+//! use strake_connectors::sources::SourceProvider;
+//! use strake_connectors::sources::sql::SqlSourceProvider;
+//! use strake_common::config::RetrySettings;
+//!
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let ctx = SessionContext::new();
+//! let provider = SqlSourceProvider {
+//!     global_retry: RetrySettings::default(),
+//! };
+//! assert_eq!(provider.type_name(), "sql");
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! ## Errors
 //!
 //! - `anyhow::Error` for configuration parsing failures or unsupported dialects.
@@ -75,57 +93,61 @@ impl SourceProvider for SqlSourceProvider {
     ) -> Result<()> {
         #[derive(serde::Deserialize)]
         struct SqlConfig {
+            #[serde(default)]
             dialect: Option<SqlDialect>,
-            connection: Option<String>,
+            #[serde(default)]
+            url: Option<String>,
             #[serde(default = "default_pool_size")]
             pool_size: usize,
             #[serde(default)]
             retry: Option<RetrySettings>,
             #[serde(default)]
             tables: Option<Vec<TableConfig>>,
+            #[serde(default)]
+            username: Option<String>,
+            #[serde(default)]
+            password: Option<String>,
+            #[serde(default)]
+            schema_mapping: strake_common::config::SchemaMappingConfig,
         }
         fn default_pool_size() -> usize {
             10
         }
 
-        let sql_config: SqlConfig =
-            serde_json::from_value(config.config.clone()).unwrap_or_else(|_| SqlConfig {
-                dialect: None,
-                connection: None,
-                pool_size: default_pool_size(),
-                retry: None,
-                tables: None,
-            });
+        let sql_config: SqlConfig = serde_json::from_value(config.config.clone()).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to parse SQL source configuration from '{:?}': {}",
+                config.config,
+                e
+            )
+        })?;
 
-        let dialect = if let Some(d) = sql_config.dialect {
-            d
-        } else {
-            match &config.source_type {
-                strake_common::models::SourceType::Postgres => SqlDialect::Postgres,
-                strake_common::models::SourceType::Mysql => SqlDialect::MySql,
-                strake_common::models::SourceType::Sqlite => SqlDialect::Sqlite,
-                strake_common::models::SourceType::Clickhouse => SqlDialect::Clickhouse,
-                strake_common::models::SourceType::Duckdb => SqlDialect::DuckDB,
-                strake_common::models::SourceType::Other(s) => match s.to_lowercase().as_str() {
-                    "postgres" => SqlDialect::Postgres,
-                    "mysql" => SqlDialect::MySql,
-                    "sqlite" => SqlDialect::Sqlite,
-                    "clickhouse" => SqlDialect::Clickhouse,
-                    "duckdb" => SqlDialect::DuckDB,
-                    "oracle" => SqlDialect::Oracle,
-                    _ => anyhow::bail!(
-                        "SQL dialect must be explicitly configured or inferred from the source type (e.g. 'postgres')"
-                    ),
-                },
-                other => anyhow::bail!("Cannot infer SQL dialect for source type: {:?}", other),
-            }
+        let dialect = match sql_config.dialect {
+            Some(d) => d,
+            None => SqlDialect::try_from(&config.source_type)?,
         };
 
-        let connection_string = config
+        let mut connection_string = config
             .url
             .clone()
-            .or_else(|| sql_config.connection.clone())
+            .or_else(|| sql_config.url.clone())
             .context("Connection string/URL is required for SQL source registration (specify either 'url' or 'connection')")?;
+
+        let username = config
+            .username
+            .as_deref()
+            .or(sql_config.username.as_deref());
+        let password = config
+            .password
+            .as_ref()
+            .map(|p| {
+                use secrecy::ExposeSecret;
+                p.expose_secret()
+            })
+            .or(sql_config.password.as_deref());
+
+        connection_string =
+            common::merge_credentials_into_url(&connection_string, username, password);
 
         let effective_retry = sql_config.retry.unwrap_or(self.global_retry);
 
@@ -154,6 +176,7 @@ impl SourceProvider for SqlSourceProvider {
             explicit_tables: Arc::new(explicit_tables),
             retry: effective_retry,
             max_concurrent_queries: config.max_concurrent_queries.unwrap_or(0),
+            schema_mapping: sql_config.schema_mapping,
         })
         .await
     }
@@ -175,6 +198,7 @@ pub async fn register_sql_source(options: common::SqlRegistrationOptions) -> Res
         explicit_tables: options.explicit_tables,
         retry: options.retry,
         max_concurrent_queries: options.max_concurrent_queries,
+        schema_mapping: options.schema_mapping,
     };
 
     match options.dialect {

@@ -34,6 +34,7 @@ The PostgreSQL database is configured as a `postgres` source type (or `sql` with
 | `password` | string | No | - | Optional password. Supports environment variables via `${env:VAR}` format. |
 | `pool_size` | integer | No | `10` | Maximum size of the asynchronous connection pool. |
 | `retry` | object | No | - | Retry settings for queries and pool connection. |
+| `schema_mapping.default_schemas` | list[string] | No | `["public", "default"]` | Schemas treated as default — tables in these schemas are pushed down without qualification. See [Schema Mapping](../configuration.md#schema_mapping-settings-sql-sources-only). |
 
 ---
 

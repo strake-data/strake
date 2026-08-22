@@ -82,10 +82,10 @@ async fn test_oracle_cast() -> Result<()> {
         .table("users")
         .await?
         .select(vec![datafusion::logical_expr::Expr::Cast(
-            datafusion::logical_expr::Cast {
-                expr: Box::new(col("id")),
-                data_type: arrow::datatypes::DataType::Utf8,
-            },
+            datafusion::logical_expr::Cast::new(
+                Box::new(col("id")),
+                arrow::datatypes::DataType::Utf8,
+            ),
         )])?
         .into_optimized_plan()?;
 

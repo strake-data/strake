@@ -33,8 +33,9 @@ pub(crate) fn handle_aggregate(
     agg: &Aggregate,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     // 1. Get a stable relation for the input
+    let checkpoint = generator.context.checkpoint();
     let mut input_query = generator.plan_to_query(&agg.input)?;
-    let input_relation = generator.extract_relation(&mut input_query, None)?;
+    let input_relation = generator.extract_relation(&mut input_query, None, checkpoint)?;
     debug_assert!(
         generator.context.scope_stack_len() > 0,
         "extract_relation contract: must pop one scope and push its replacement"
@@ -79,7 +80,7 @@ pub(crate) fn handle_aggregate(
             let mut sql = expr_translator.expr_to_sql(e)?;
 
             // Explicitly cast arguments for SUM/AVG to DOUBLE for DuckDB
-            if generator.dialect.dialect_name == crate::dialect_router::DUCKDB_DIALECT
+            if generator.dialect.source_type == strake_common::models::SourceType::Duckdb
                 && let sqlparser::ast::Expr::Function(ref mut f) = sql
             {
                 let name = f.name.to_string().to_lowercase();
@@ -169,10 +170,11 @@ pub(crate) fn handle_window(
     window: &datafusion::logical_expr::Window,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     // 1. Get inner query
+    let checkpoint = generator.context.checkpoint();
     let mut input_query: sqlparser::ast::Query = generator.plan_to_query(&window.input)?;
 
     // 2. Extract stable relation from inner query
-    let input_relation = generator.extract_relation(&mut input_query, None)?;
+    let input_relation = generator.extract_relation(&mut input_query, None, checkpoint)?;
 
     let input_scope =
         generator

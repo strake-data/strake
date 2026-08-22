@@ -1,7 +1,52 @@
+"""Utility helpers for the Strake Python codebase.
+
+This module provides directory resolution helpers and SQL/LanceDB identifier
+and value sanitization functions to prevent SQL injection vulnerabilities.
+"""
+
 import sys
 import os
+import re
 from pathlib import Path
 from typing import Optional
+
+
+def sanitize_identifier(name: str) -> str:
+    """Validate against a simple identifier pattern before interpolating.
+
+    Allows alphanumeric characters, underscores, and dots (for FQN).
+
+    Args:
+        name: The identifier string to check.
+
+    Returns:
+        The validated name string.
+
+    Raises:
+        ValueError: If the identifier contains invalid characters.
+    """
+    if name and all(c.isalnum() or c in ("_", ".") for c in name):
+        return name
+    raise ValueError(f"Invalid identifier: {name}")
+
+
+def sanitize_lance_value(value: str) -> str:
+    """Validate a registry LanceDB value to prevent where-clause injection.
+
+    Allows alphanumeric characters, underscores, dots, and colons (for cardinality '1:N').
+
+    Args:
+        value: The value string to check.
+
+    Returns:
+        The validated value string.
+
+    Raises:
+        ValueError: If the value contains invalid characters.
+    """
+    if value and all(c.isalnum() or c in ("_", ".", ":") for c in value):
+        return value
+    raise ValueError(f"Invalid value: {value}")
 
 
 def get_script_dir() -> Optional[Path]:
@@ -44,13 +89,17 @@ def get_script_dir() -> Optional[Path]:
 def get_strake_dir(subdir: Optional[str] = None) -> Path:
     """
     Unified helper to return the resolved .strake directory.
-    Defaults to script-relative if possible, falling back to ~/.strake.
+    Checks STRAKE_DIR env var first, then defaults to script-relative if possible, falling back to ~/.strake.
     """
-    script_dir = get_script_dir()
-    if script_dir:
-        base = (script_dir / ".strake").resolve()
+    env_dir = os.environ.get("STRAKE_DIR")
+    if env_dir:
+        base = Path(env_dir).resolve()
     else:
-        base = Path(os.path.expanduser("~/.strake")).resolve()
+        script_dir = get_script_dir()
+        if script_dir:
+            base = (script_dir / ".strake").resolve()
+        else:
+            base = Path(os.path.expanduser("~/.strake")).resolve()
 
     if subdir:
         path = (base / subdir).resolve()

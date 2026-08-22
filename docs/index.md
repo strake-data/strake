@@ -1,33 +1,50 @@
 # Welcome to Strake
 
-**Strake** is the AI Data Layer. It's the sandboxed execution environment where agents meet your data and return answers, not rows. It acts as a secure layer, enabling you to query and join data across disparate sources: PostgreSQL, S3 (Parquet/JSON/CSV), REST APIs, and more, using a single standard SQL interface without the need for data movement or ETL.
+Strake is the AI Data Layer: a sandboxed execution environment where AI agents meet your data and return answers, not rows.
 
 ---
 
-## Why Strake?
+## Getting Started
 
-Modern data stacks are fragmented. You have transactional data in Postgres, historical logs in S3 Parquet files, and SaaS data in REST APIs. Operationalizing analysis across these often requires fragile ETL pipelines or expensive data warehousing.
+Explore Strake using these primary entry points:
 
-Strake solves this by **bringing the compute to the data**:
+1. **[Get Started](getting-started/)** - Quickstart tour and step-by-step installation guides.
+2. **[Connect a Data Source](user-guide/sources/)** - Comprehensive connector setups for PostgreSQL, S3, REST, and more.
+3. **[Explore the CLI](user-guide/cli/)** - GitOps validation, db migrations, and API key management commands.
 
-*   **Zero-ETL**: Query data where it lives. No need to load it into a central store first.
-*   **High Performance**: Built on Rust and Arrow, Strake pushes down filters, projections, and limits to the source whenever possible, minimizing data transfer.
-*   **Unified Interface**: One SQL dialect (Postgres-compatible) for all your data.
-*   **Embeddable or Server**: Run it locally inside your Python script for development, or deploy it as a Flight SQL server for production.
+---
+
+## System Architecture Overview
+
+Strake operates as a zero-copy data federation mesh using standard Apache Arrow Flight SQL connectivity.
+
+```mermaid
+graph TD
+    PythonE[Python Embedded Mode] --> Core[Strake Server]
+    PythonC[Python Client Mode] --> |Arrow Flight| Server[Strake Server]
+
+    Client[SQL Client] -->|ArrowFlightSQL| Server[Strake Server]
+    Server --> Engine[Federation Engine]
+    
+    subgraph Core
+        Engine --> Registry[Source Registry]
+        Registry --> PG[RDBMS Source]
+        Registry --> S3[S3 Source]
+        Registry --> API[REST Source]
+    end
+    
+    PG --> DB[Postgres DB]
+    S3 --> Obj[S3 Bucket]
+    API --> Web[Web Service]
+```
+
+---
 
 ## Key Features
 
-*   **High Performance**: Sub-second latency for federated joins using Apache Arrow.
-*   **Pluggable Sources**: Postgres, S3, Local Files, REST, gRPC, and more.
-*   **Enterprise Governance**: Row-Level Security (RLS), Column Masking, and OIDC Authentication (Enterprise Edition).
-*   **Python Native**: Zero-copy integration with Pandas and Polars via PyO3.
-*   **Observability**: Built-in OpenTelemetry tracing and Prometheus metrics.
-*   **Enterprise Features**: OIDC, Row-Level Security, and Data Contracts (see [Enterprise Edition](./enterprise.md)).
-
-## Next Steps
-
-*   [**Installation**](./install.md): Get Strake running on your machine.
-*   [**Quickstart**](./quickstart.md): Run your first federated query in 5 minutes.
-*   [**Core Concepts**](./concepts.md): Understand how Strake optimizes your queries.
-*   [**Authentication**](./authentication.md): Secure your Strake deployment.
-*   [**Python API**](./python-api.md): Detailed reference for the Python client.
+* **High Performance**: Sub-second latency for federated joins using Apache Arrow.
+* **Pluggable Sources**: Postgres, S3, Local Files, REST, gRPC, and more.
+* **Enterprise Governance**: Row-Level Security (RLS), Column Masking, and OIDC Authentication (see [Enterprise Edition](advanced/enterprise.md)).
+* **Python Native**: Zero-copy integration with Pandas and Polars via PyO3.
+* **Observability**: Built-in OpenTelemetry tracing and Prometheus metrics.
+* **Federation Examples**: Check out [Examples](examples/) to see cross-source joins in action.

@@ -550,7 +550,7 @@ impl FederationEngine {
     ) -> Result<()> {
         let errors = Self::register_sources_core(context, catalog, sources, registry).await;
         for (name, err) in &errors {
-            tracing::error!("Failed to register source '{}': {:#}", name, err);
+            tracing::error!("Failed to register source '{}': {:?}", name, err);
         }
         Ok(())
     }
@@ -567,7 +567,7 @@ impl FederationEngine {
         if let Some((name, first_err)) = errors.first() {
             for (curr_name, err) in &errors {
                 tracing::error!(
-                    "Strict registration failed for source '{}': {:#}",
+                    "Strict registration failed for source '{}': {:?}",
                     curr_name,
                     err
                 );

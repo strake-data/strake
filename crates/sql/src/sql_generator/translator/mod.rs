@@ -106,7 +106,7 @@ impl<'a> SqlGenerator<'a> {
                 tracing::debug!(target: "sql_generator", sql = %sql, "Generated SQL");
                 sql
             })
-            .map_err(|e: SqlGenError| e.to_strake_error(self.dialect.dialect_name))
+            .map_err(|e: SqlGenError| e.to_strake_error(self.dialect.source_type.as_str()))
     }
 
     /// Returns a skeleton SQL [`Query`] structure (equivalent to `SELECT *`).
@@ -212,9 +212,13 @@ impl<'a> SqlGenerator<'a> {
         }
     }
 
+    /// Translates `plan` to SQL, wrapping it as a stable derived table when
+    /// necessary, and discarding all input scopes pushed above the checkpoint
+    /// when the wrap happens.
     pub(crate) fn plan_to_stable_query(
         &mut self,
         plan: &LogicalPlan,
+        checkpoint: crate::sql_generator::context::Checkpoint,
     ) -> Result<Query, SqlGenError> {
         let mut query = self.plan_to_query(plan)?;
 
@@ -243,7 +247,8 @@ impl<'a> SqlGenerator<'a> {
 
         if should_wrap {
             let wrapper_alias = self.context.next_alias();
-            let relation = self.extract_relation(&mut query, Some(wrapper_alias.to_string()))?;
+            let relation =
+                self.extract_relation(&mut query, Some(wrapper_alias.to_string()), checkpoint)?;
             let mut select = self.create_skeleton_select();
             select.from = vec![TableWithJoins {
                 relation,
@@ -299,25 +304,32 @@ impl<'a> SqlGenerator<'a> {
 
     /// Wraps a query as a derived table with a stable alias.
     ///
-    /// Pops the current scope, re-aliases the query's projection to match the
-    /// popped scope's column names, pushes a replacement scope with the same alias,
-    /// and returns the `TableFactor::Derived`.
+    /// Pops all scopes pushed above the checkpoint, re-aliases the query's
+    /// projection to match the popped scope's column names, pushes a
+    /// replacement scope with the same alias, and returns the
+    /// `TableFactor::Derived`.
     ///
-    /// **Net scope stack depth change: zero** (pop one, push one).
-    /// Callers relying on this invariant (e.g., `handle_aggregate`) assert it.
+    /// Every scope pushed above the checkpoint (i.e. all intermediate scopes
+    /// left behind by the input subplan's translation) is discarded, so the
+    /// stack holds exactly one scope per translated subplan. Callers capture
+    /// the checkpoint before translating their input.
+    ///
+    /// **Net scope stack depth change: zero** (pop N, push one; N = 1 when the
+    /// input subplan left exactly one scope above the checkpoint). Callers
+    /// relying on this invariant (e.g., `handle_aggregate`) assert that the
+    /// stack is non-empty afterwards.
     pub(crate) fn extract_relation(
         &mut self,
         query: &mut Query,
         alias: Option<String>,
+        checkpoint: crate::sql_generator::context::Checkpoint,
     ) -> Result<TableFactor, SqlGenError> {
-        let inner_scope =
-            self.context
-                .scope_stack
-                .pop()
-                .ok_or_else(|| SqlGenError::UnsupportedPlan {
-                    message: "Missing scope".to_string(),
-                    node_type: "ExtractRelation".to_string(),
-                })?;
+        let inner_scope = self.context.pop_to_checkpoint(checkpoint).ok_or_else(|| {
+            SqlGenError::UnsupportedPlan {
+                message: "Missing scope".to_string(),
+                node_type: "ExtractRelation".to_string(),
+            }
+        })?;
         let sub_alias = alias.unwrap_or_else(|| inner_scope.alias.to_string());
         tracing::debug!(target: "sql_generator", sub_alias = %sub_alias, col_count = inner_scope.columns.len(), "Extracting relation");
 
@@ -407,9 +419,12 @@ impl<'a> SqlGenerator<'a> {
 ///
 /// It also handles function expressions by recursively stripping qualifiers from their arguments.
 pub fn derive_bare_name(name: &str) -> Arc<str> {
-    // If it contains parentheses, it's a function expression.
-    // Strip all qualifiers inside to ensure stable, bare names.
-    let base = if name.contains('(') && name.ends_with(')') {
+    let base = if (name.contains('(') && name.ends_with(')'))
+        || name.contains("PARTITION BY")
+        || name.contains("ORDER BY")
+        || name.contains("RANGE")
+        || name.contains("ROWS")
+    {
         strip_qualifiers_in_function(name)
     } else if let Some(idx) = name.rfind('.') {
         name[idx + 1..].to_string()

@@ -150,7 +150,6 @@ mod tests {
     use datafusion::common::stats::Precision;
     use datafusion::physical_plan::Statistics;
     use datafusion::physical_plan::{DisplayAs, PlanProperties};
-    use std::any::Any;
 
     // Fix imports based on likely locations in DataFusion v51
     use datafusion::physical_expr::EquivalenceProperties;
@@ -194,9 +193,7 @@ mod tests {
         fn name(&self) -> &str {
             "MockExec"
         }
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
+
         fn schema(&self) -> Arc<Schema> {
             self.schema.clone()
         }
@@ -224,8 +221,8 @@ mod tests {
         ) -> Result<datafusion::physical_plan::SendableRecordBatchStream> {
             unimplemented!()
         }
-        fn partition_statistics(&self, _partition: Option<usize>) -> Result<Statistics> {
-            Ok(self.stats.clone())
+        fn partition_statistics(&self, _partition: Option<usize>) -> Result<Arc<Statistics>> {
+            Ok(Arc::new(self.stats.clone()))
         }
     }
 

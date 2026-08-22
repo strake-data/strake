@@ -115,11 +115,11 @@ pub(crate) fn handle_table_scan(
         for f in &scan.filters {
             let f_sql = translator.expr_to_sql(f)?;
             selection = match selection {
-                Some(e) => Some(SqlExpr::BinaryOp {
-                    left: Box::new(e),
-                    op: BinaryOperator::And,
-                    right: Box::new(f_sql),
-                }),
+                Some(e) => Some(crate::sql_generator::expr::make_binary_op(
+                    e,
+                    BinaryOperator::And,
+                    f_sql,
+                )),
                 None => Some(f_sql),
             };
         }
@@ -161,8 +161,7 @@ pub(crate) fn handle_table_scan(
         .enter_scope(alias.clone(), projected_columns.clone(), qualifiers)
         .commit();
 
-    // 3. Generate the SELECT query with ONLY projected columns
-    let projection = projected_columns
+    let mut projection = projected_columns
         .iter()
         .map(|c| {
             Ok(sqlparser::ast::SelectItem::UnnamedExpr(
@@ -173,6 +172,12 @@ pub(crate) fn handle_table_scan(
             ))
         })
         .collect::<Result<Vec<_>, SqlGenError>>()?;
+
+    if projection.is_empty() && !generator.dialect.capabilities.supports_empty_select() {
+        projection.push(sqlparser::ast::SelectItem::UnnamedExpr(SqlExpr::Value(
+            sqlparser::ast::Value::Number("1".to_string(), false).into(),
+        )));
+    }
 
     let mut select = generator.create_skeleton_select();
     select.from = vec![TableWithJoins {

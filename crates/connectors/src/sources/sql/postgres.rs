@@ -44,6 +44,7 @@ pub async fn register_postgres(params: SqlSourceParams) -> Result<()> {
         inner_factory,
         federation_provider,
         schema_drift: true,
+        max_concurrent_queries: params.max_concurrent_queries,
     };
 
     let connector = GenericSqlConnector {
@@ -51,7 +52,7 @@ pub async fn register_postgres(params: SqlSourceParams) -> Result<()> {
             connection_string: SecretString::from(connection_string.clone()),
         }),
         factory: Arc::new(factory),
-        schema_mapping: SchemaMappingRule::Standard,
+        schema_mapping: SchemaMappingRule::standard(&params.schema_mapping),
     };
 
     connector.register(params).await

@@ -181,7 +181,7 @@ async def search_schemas(
     include_descriptions: bool = True,
     description_scope: Literal["tables_only", "all", "none"] = "tables_only",
     max_description_length: int = 100,
-) -> list[dict[str, Any]] | types.CallToolResult:
+) -> Any:
     """
     Search semantic index of available database schemas (tables and columns).
     Use this to find which tables contain the data you need.
@@ -210,7 +210,7 @@ async def search_schemas(
 
 
 @mcp.tool()
-async def get_schema_details(fqn: str) -> list[dict[str, Any]] | types.CallToolResult:
+async def get_schema_details(fqn: str) -> Any:
     """
     Get the full schema metadata and descriptions for a specific table.
     Use this to inspect a table after discovering it via search_schemas.
@@ -231,9 +231,10 @@ async def get_schema_details(fqn: str) -> list[dict[str, Any]] | types.CallToolR
                 indexer.build_index()
             table = indexer.db.open_table(indexer.table_name)
 
-            # Use SQL string with escaped single quotes to prevent injection
-            # since some lancedb versions expect a string for .where().
-            fqn_escaped = fqn.replace("'", "''")
+            from strake.utils import sanitize_identifier
+
+            # Use SQL string with sanitized identifier to prevent injection
+            fqn_escaped = sanitize_identifier(fqn)
             results = (
                 table.search()
                 .where(f"table_id = '{fqn_escaped}'")
@@ -261,7 +262,46 @@ async def get_schema_details(fqn: str) -> list[dict[str, Any]] | types.CallToolR
 
 
 @mcp.tool()
-async def run_python(script: str) -> str | types.CallToolResult:
+async def get_join_hints(
+    left_fqn: str, right_fqn: str, enable_fuzzy: bool | None = None
+) -> Any:
+    """
+    Retrieve candidate join paths between two tables, sorted by confidence descending.
+    Use this tool to find correct join keys between two tables.
+
+    Args:
+        left_fqn: Fully qualified name of the left table.
+        right_fqn: Fully qualified name of the right table.
+        enable_fuzzy: Optional boolean flag to enable fuzzy name matching.
+
+    Returns:
+        List of dictionaries with left/right column mappings, confidence, cardinality, and basis.
+    """
+    try:
+        await _SERVER.get_sandbox()
+        conn = _SERVER._connection
+        if conn is None:
+            raise RuntimeError("Strake connection not initialized")
+
+        def _get_hints():
+            from strake.joins import join_hints
+
+            return join_hints(conn, left_fqn, right_fqn, enable_fuzzy=enable_fuzzy)
+
+        async with _tool_span(
+            "get_join_hints", left_fqn=left_fqn, right_fqn=right_fqn
+        ) as span_meta:
+            results = await asyncio.to_thread(_get_hints)
+            span_meta["result_count"] = len(results)
+            return results
+    except Exception as exc:
+        return types.CallToolResult(
+            isError=True, content=[types.TextContent(type="text", text=f"Error: {exc}")]
+        )
+
+
+@mcp.tool()
+async def run_python(script: str) -> Any:
     """
     Execute a Python script in the Strake Safe Runtime.
 
@@ -339,7 +379,7 @@ def load_stdin_config() -> None:
         raise
 
 
-def main():
+def main() -> None:
     """Entry point for python -m strake.mcp"""
     parser = argparse.ArgumentParser(description="Strake MCP Server")
     parser.add_argument(
@@ -378,6 +418,107 @@ def main():
         uvicorn.run(app, host=args.host, port=args.port)
     else:
         mcp.run()
+
+
+class MCPRegistry:
+    """Registry for discovering and managing MCP tools."""
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        """List all available tools in the registry with their schemas.
+
+        Returns:
+            A list of dictionary schemas describing tool names, descriptions, and inputs.
+        """
+        tools = []
+        from strake.mcp import mcp
+
+        # NOTE: FastMCP does not expose a public tool listing API as of mcp v0.1.0.
+        # Accessing _tool_manager directly; pin mcp version in requirements.
+        try:
+            raw_tools = mcp._tool_manager.list_tools()
+        except AttributeError:
+            raw_tools = []
+        for t in raw_tools:
+            tools.append(
+                {
+                    "name": getattr(t, "name", "unknown"),
+                    "description": getattr(t, "description", "") or "",
+                    "input_schema": getattr(t, "parameters", None)
+                    or getattr(t, "inputSchema", {}),
+                }
+            )
+        if not any(t["name"] == "sql_query" for t in tools):
+            tools.append(
+                {
+                    "name": "sql_query",
+                    "description": "Execute a SQL query against the federated database engine.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The SQL query to execute",
+                            },
+                            "config_path": {
+                                "type": "string",
+                                "description": "Optional path to the configuration yaml file",
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                }
+            )
+        return tools
+
+
+async def execute_tool(payload: dict) -> dict:
+    """Execute an MCP tool or sql_query dynamically by name.
+
+    Args:
+        payload: A dictionary containing "tool" and "parameters".
+
+    Returns:
+        A dictionary with "status" and either "data" or "error".
+    """
+    tool_name = payload.get("tool")
+    parameters = payload.get("parameters", {})
+    if tool_name == "sql_query":
+        query = parameters.get("query")
+        config_path = parameters.get("config_path")
+        async with _tool_span("sql_query", query=query):
+            try:
+                if config_path:
+
+                    def _run_standalone():
+                        from strake import StrakeConnection
+
+                        conn = StrakeConnection(config_path)
+                        return conn.sql(query).to_pylist()
+
+                    data = await asyncio.to_thread(_run_standalone)
+                else:
+                    await (
+                        _SERVER.get_sandbox()
+                    )  # Ensure server and connection are initialized
+
+                    def _run_shared():
+                        conn = _SERVER._connection
+                        if conn is None:
+                            raise RuntimeError("Strake connection not initialized")
+                        return conn.sql(query).to_pylist()
+
+                    data = await asyncio.to_thread(_run_shared)
+                return {"status": "success", "data": data}
+            except Exception as e:
+                return {"status": "error", "error": str(e)}
+    else:
+        from strake.mcp import mcp
+
+        try:
+            res = await mcp.call_tool(tool_name, parameters)
+            return {"status": "success", "data": res}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
 
 
 if __name__ == "__main__":

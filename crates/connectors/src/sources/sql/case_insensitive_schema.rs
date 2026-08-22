@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use datafusion::catalog::{MemorySchemaProvider, SchemaProvider};
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result as DataFusionResult;
-use std::any::Any;
 use std::sync::Arc;
 
 /// A `SchemaProvider` that wraps a `MemorySchemaProvider` and provides
@@ -31,10 +30,6 @@ impl CaseInsensitiveSchemaProvider {
 
 #[async_trait]
 impl SchemaProvider for CaseInsensitiveSchemaProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn table_names(&self) -> Vec<String> {
         self.inner.table_names()
     }

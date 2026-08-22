@@ -1,8 +1,10 @@
 use tracing::info;
 
+/// Telemetry utility for logging Iceberg REST catalog connector events.
 pub struct IcebergTelemetry;
 
 impl IcebergTelemetry {
+    /// Logs registration of an Iceberg table.
     #[inline]
     pub fn table_registered(catalog: &str, schema: &str, table: &str) {
         info!(

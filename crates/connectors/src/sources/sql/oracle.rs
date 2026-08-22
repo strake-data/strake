@@ -38,12 +38,13 @@ pub async fn register_oracle(params: SqlSourceParams) -> anyhow::Result<()> {
         inner_factory,
         federation_provider,
         schema_drift: true,
+        max_concurrent_queries: params.max_concurrent_queries,
     };
 
     let connector = GenericSqlConnector {
         introspector: Arc::new(OracleIntrospector { pool: pool.clone() }),
         factory: Arc::new(federated_factory),
-        schema_mapping: SchemaMappingRule::Standard,
+        schema_mapping: SchemaMappingRule::standard(&params.schema_mapping),
     };
 
     connector.register(params).await
@@ -103,7 +104,9 @@ impl SchemaIntrospector for OracleIntrospector {
                 })?;
 
             for i in 0..batch.num_rows() {
-                let owner = owner_col.value(i).to_string();
+                // Oracle folds unquoted identifiers to uppercase. We enforce this
+                // defensively so schema comparisons in SchemaMappingRule are consistent.
+                let owner = owner_col.value(i).to_uppercase();
                 let table = table_col.value(i).to_string();
 
                 // Construct fully qualified name for pattern matching

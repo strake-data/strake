@@ -70,10 +70,10 @@ impl StrakeBroadcastJoinRule {
     }
 
     fn strip_branch(&self, plan: Arc<dyn ExecutionPlan>) -> DFResult<Arc<dyn ExecutionPlan>> {
-        if let Some(repart) = plan.as_any().downcast_ref::<RepartitionExec>() {
+        if let Some(repart) = plan.downcast_ref::<RepartitionExec>() {
             return self.strip_branch(repart.children()[0].clone());
         }
-        if let Some(coalesce) = plan.as_any().downcast_ref::<CoalesceBatchesExec>() {
+        if let Some(coalesce) = plan.downcast_ref::<CoalesceBatchesExec>() {
             return self.strip_branch(coalesce.children()[0].clone());
         }
 
@@ -112,7 +112,6 @@ impl StrakeBroadcastJoinRule {
 
     fn estimate_bytes_from_files(&self, plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
         if let Some((base_config, _)) = plan
-            .as_any()
             .downcast_ref::<DataSourceExec>()
             .and_then(|ds| ds.downcast_to_file_source::<ParquetSource>())
         {
@@ -155,7 +154,7 @@ impl PhysicalOptimizerRule for StrakeBroadcastJoinRule {
             .collect::<DFResult<Vec<_>>>()?;
         let plan = plan.with_new_children(optimized_children)?;
 
-        if let Some(hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() {
+        if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() {
             let left = hash_join.left();
             let right = hash_join.right();
 
@@ -272,25 +271,24 @@ impl PhysicalOptimizerRule for SingleNodeAggregationRule {
         let plan = plan.with_new_children(optimized_children)?;
 
         // Look for the Final phase of a two-phase aggregate
-        if let Some(final_agg) = plan.as_any().downcast_ref::<AggregateExec>().filter(|a| {
+        if let Some(final_agg) = plan.downcast_ref::<AggregateExec>().filter(|a| {
             *a.mode() == AggregateMode::Final || *a.mode() == AggregateMode::FinalPartitioned
         }) {
             let mut child = Arc::clone(final_agg.input());
 
             // Traverse down the intermediate partition/merge operators
-            while let Some(merge) = child.as_any().downcast_ref::<SortPreservingMergeExec>() {
+            while let Some(merge) = child.downcast_ref::<SortPreservingMergeExec>() {
                 child = merge.children()[0].clone();
             }
-            while let Some(coalesce) = child.as_any().downcast_ref::<CoalescePartitionsExec>() {
+            while let Some(coalesce) = child.downcast_ref::<CoalescePartitionsExec>() {
                 child = coalesce.children()[0].clone();
             }
-            while let Some(repart) = child.as_any().downcast_ref::<RepartitionExec>() {
+            while let Some(repart) = child.downcast_ref::<RepartitionExec>() {
                 child = repart.children()[0].clone();
             }
 
             // If the underlying source is a Partial aggregate, collapse it
             if let Some(partial_agg) = child
-                .as_any()
                 .downcast_ref::<AggregateExec>()
                 .filter(|a| *a.mode() == AggregateMode::Partial)
             {
@@ -348,26 +346,26 @@ impl PhysicalOptimizerRule for StrakeSinglePartitionOptimizer {
 
         if target_partitions == 1 {
             // Strip SortPreservingMergeExec
-            if let Some(merge) = plan.as_any().downcast_ref::<SortPreservingMergeExec>() {
+            if let Some(merge) = plan.downcast_ref::<SortPreservingMergeExec>() {
                 return Ok(merge.children()[0].clone());
             }
             // Strip CoalescePartitionsExec
-            if let Some(coalesce) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
+            if let Some(coalesce) = plan.downcast_ref::<CoalescePartitionsExec>() {
                 return Ok(coalesce.children()[0].clone());
             }
             // Strip RepartitionExec
-            if let Some(repart) = plan.as_any().downcast_ref::<RepartitionExec>() {
+            if let Some(repart) = plan.downcast_ref::<RepartitionExec>() {
                 return Ok(repart.children()[0].clone());
             }
         } else {
             // Strip if child only has 1 partition anyway
-            if let Some(merge) = plan.as_any().downcast_ref::<SortPreservingMergeExec>() {
+            if let Some(merge) = plan.downcast_ref::<SortPreservingMergeExec>() {
                 let child = &merge.children()[0];
                 if child.properties().partitioning.partition_count() == 1 {
                     return Ok(Arc::clone(child));
                 }
             }
-            if let Some(coalesce) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
+            if let Some(coalesce) = plan.downcast_ref::<CoalescePartitionsExec>() {
                 let child = &coalesce.children()[0];
                 if child.properties().partitioning.partition_count() == 1 {
                     return Ok(Arc::clone(child));
@@ -413,7 +411,7 @@ impl PhysicalOptimizerRule for PushDownFilter {
         let plan = plan.with_new_children(optimized_children)?;
 
         // Check if current plan is FilterExec
-        if let Some(filter) = plan.as_any().downcast_ref::<FilterExec>() {
+        if let Some(filter) = plan.downcast_ref::<FilterExec>() {
             let predicate = filter.predicate();
             let input = filter.input();
 
@@ -445,7 +443,7 @@ fn push_down_filter_to_scan(
     use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::expressions::BinaryExpr;
 
-    if let Some(ds_exec) = plan.as_any().downcast_ref::<DataSourceExec>()
+    if let Some(ds_exec) = plan.downcast_ref::<DataSourceExec>()
         && let Some((base_config, parquet_source)) =
             ds_exec.downcast_to_file_source::<ParquetSource>()
     {
@@ -464,7 +462,10 @@ fn push_down_filter_to_scan(
         let new_source = parquet_source.clone().with_predicate(combined_predicate);
 
         // Estimate new statistics
-        let original_stats = ds_exec.partition_statistics(None).unwrap_or_default();
+        let original_stats = ds_exec
+            .partition_statistics(None)
+            .map(|s| s.as_ref().clone())
+            .unwrap_or_default();
         let selectivity = 0.1; // Simple selectivity heuristic for pushed filters
         let mut new_stats = original_stats.clone();
 

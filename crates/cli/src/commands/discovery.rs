@@ -782,24 +782,43 @@ pub(crate) async fn resolve_introspector(
         .as_ref()
         .and_then(|c| c.sources.iter().find(|s| s.name.as_ref() == source_name))
     {
-        let source_type_str = match source.source_type.as_str() {
-            "sql" => source
-                .config
-                .get("dialect")
-                .and_then(|v| v.as_str())
-                .unwrap_or("postgres"),
-            other => other,
+        use strake_common::models::SourceType;
+
+        let resolved_source_type: SourceType = match &source.source_type {
+            SourceType::Other(s) if s.eq_ignore_ascii_case("sql") => {
+                let dialect = source
+                    .config
+                    .get("dialect")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("postgres");
+                let Ok(st) = dialect.parse();
+                st
+            }
+            other => other.clone(),
         };
-        match source_type_str {
-            "postgres" => {
-                let conn_str_opt = source.url.clone().or_else(|| {
-                    source
-                        .config
-                        .get("connection")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                });
-                let conn_str = conn_str_opt
+
+        let merged_connection_string = source
+            .url
+            .clone()
+            .or_else(|| {
+                source
+                    .config
+                    .get("connection")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+            .map(|connection_string| {
+                strake_connectors::sources::sql::common::merge_credentials_into_url(
+                    &connection_string,
+                    source.config.get("username").and_then(|v| v.as_str()),
+                    source.config.get("password").and_then(|v| v.as_str()),
+                )
+            });
+
+        match resolved_source_type {
+            SourceType::Postgres => {
+                let conn_str = merged_connection_string
+                    .clone()
                     .context("Postgres URL/Connection string is required for introspection")?;
                 return Ok(Box::new(
                     strake_connectors::sources::sql::postgres_introspect::PostgresIntrospector {
@@ -807,15 +826,9 @@ pub(crate) async fn resolve_introspector(
                     },
                 ));
             }
-            "sqlite" => {
-                let db_path_opt = source.url.clone().or_else(|| {
-                    source
-                        .config
-                        .get("connection")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                });
-                let db_path = db_path_opt
+            SourceType::Sqlite => {
+                let db_path = merged_connection_string
+                    .clone()
                     .context("SQLite path/Connection string is required for introspection")?;
                 let clean_path = db_path.strip_prefix("sqlite://").unwrap_or(&db_path);
                 return Ok(Box::new(
@@ -824,15 +837,9 @@ pub(crate) async fn resolve_introspector(
                     },
                 ));
             }
-            "duckdb" => {
-                let db_path_opt = source.url.clone().or_else(|| {
-                    source
-                        .config
-                        .get("connection")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                });
-                let db_path = db_path_opt
+            SourceType::Duckdb => {
+                let db_path = merged_connection_string
+                    .clone()
                     .context("DuckDB path/Connection string is required for introspection")?;
                 return Ok(Box::new(
                     strake_connectors::sources::sql::duckdb_introspect::DuckDBIntrospector {
@@ -840,15 +847,9 @@ pub(crate) async fn resolve_introspector(
                     },
                 ));
             }
-            "mysql" => {
-                let conn_str_opt = source.url.clone().or_else(|| {
-                    source
-                        .config
-                        .get("connection")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                });
-                let conn_str = conn_str_opt
+            SourceType::Mysql => {
+                let conn_str = merged_connection_string
+                    .clone()
                     .context("MySQL URL/Connection string is required for introspection")?;
                 return Ok(Box::new(
                     strake_connectors::sources::sql::mysql::MySqlIntrospector {
@@ -856,15 +857,9 @@ pub(crate) async fn resolve_introspector(
                     },
                 ));
             }
-            "clickhouse" => {
-                let conn_str_opt = source.url.clone().or_else(|| {
-                    source
-                        .config
-                        .get("connection")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                });
-                let conn_str = conn_str_opt
+            SourceType::Clickhouse => {
+                let conn_str = merged_connection_string
+                    .clone()
                     .context("ClickHouse URL/Connection string is required for introspection")?;
                 return Ok(Box::new(
                     strake_connectors::sources::sql::clickhouse::ClickHouseIntrospector {
@@ -872,21 +867,16 @@ pub(crate) async fn resolve_introspector(
                     },
                 ));
             }
-            "oracle" => {
-                let conn_str_opt = source.url.clone().or_else(|| {
-                    source
-                        .config
-                        .get("connection")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                });
-                let conn_str = conn_str_opt
+            SourceType::Oracle => {
+                let conn_str = merged_connection_string
+                    .clone()
                     .context("Oracle URL/Connection string is required for introspection")?;
                 let pool_size = source
                     .config
                     .get("pool_size")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(10) as usize;
+
                 let pool = std::sync::Arc::new(
                     strake_connectors::sources::sql::oracle::pool::OracleConnectionPool::new(
                         &conn_str, pool_size,

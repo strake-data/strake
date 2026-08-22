@@ -107,4 +107,4 @@ To add Strake to Claude Desktop, edit your `claude_desktop_config.json`:
 
 Strake’s prompt-injection / exfiltration guardrails are intended to be **agent-only** protections: they should activate for queries executed inside an MCP tool call context (LLM in the loop), and stay off for direct SDK/CLI/batch usage (no LLM, no injection threat).
 
-Internal design details and rollout modes (`disabled` / `dry_run` / `enforce`) live in `strake/productmanagement/agent-guard-activation.md`.
+Internal design details and rollout modes (`disabled` / `dry_run` / `enforce`) live in [agent-guard-activation.md](../../productmanagement/old/agent-guard-activation.md).

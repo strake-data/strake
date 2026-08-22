@@ -26,7 +26,7 @@ Built on [Apache Arrow DataFusion](https://github.com/apache/arrow-datafusion), 
 - **MCP-Native Discovery**: Built for the Model Context Protocol. Your agents immediately discover your entire data catalog and schemas.
 - **Run Python, Not Prompts**: Every agent execution runs inside strict native OS sandboxes for performance, or ephemeral MicroVMs for hardware-level isolation.
 - **Zero-Copy Federation**: Query Postgres, S3, Local Files, REST, gRPC, and more simultaneously with Pushdown optimization via Apache Arrow.
-- **Read-Only by Default**: Strict read-only enforcement, dynamic Row-Level Security (RLS), and PII masking out of the box.
+- **Read-Only by Default**: Strict read-only enforcement by default to protect your upstream data sources.
 - **Developer First**: Built for engineers shipping agents to production. Type-safe configuration, rich CLI tooling, and local development workflows.
 - **Python Native**: Zero-copy integration with Pandas and Polars via PyO3.
 - **GitOps Native**: Manage your data mesh configuration as code. Version control your sources, policies, and metrics.
@@ -43,7 +43,7 @@ from strake.mcp import run_python
 
 script = """
 # 1. Query 10M rows instantly via DataFusion
-df = strake.sql("SELECT * FROM user_events")
+df = strake.sql("SELECT * FROM user_events").to_pandas()
 
 # 2. Aggregate in Python to prevent context bloat
 summary = df.groupby('feature_flag')['latency'].median()
@@ -133,7 +133,8 @@ print(df)
 | [**strake-runtime**](crates/runtime) | Orchestration layer (Federation Engine, Sidecar). |
 | [**strake-connectors**](crates/connectors) | Data source implementations (Postgres, S3, REST, etc). |
 | [**strake-sql**](crates/sql) | SQL Dialects, Query Optimization, and Substrait generation. |
-| [**strake-common**](crates/common) | Shared types, configuration, and error handling. |
+| [**strake-common**](crates/common) | Shared types, configuration, and telemetry. |
+| [**strake-error**](crates/error) | Unified error handling, error codes, and exception types. |
 | [**strake-server**](crates/server) | Arrow Flight SQL server implementation. |
 | [**strake-cli**](crates/cli) | GitOps CLI for managing data mesh configurations. |
 | [**strake-python**](python) | Python bindings for high-performance data access. |

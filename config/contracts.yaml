@@ -26,6 +26,9 @@ contracts:
         type: char
       - name: o_clerk
         type: varchar
+        constraints:
+          - type: regex
+            value: "^Clerk#.*$"
       - name: o_shippriority
         type: integer
 

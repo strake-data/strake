@@ -33,8 +33,71 @@ use std::sync::Arc;
 use tonic::transport::Channel;
 
 use crate::sources::SourceProvider;
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
-use strake_common::config::SourceConfig;
+use strake_common::config::{SourceConfig, TableConfig};
+
+/// A `TableProvider` implementation that always returns a specified error when scanned.
+#[derive(Debug)]
+pub struct FailingTableProvider {
+    error_message: String,
+    schema: SchemaRef,
+}
+
+#[async_trait]
+impl TableProvider for FailingTableProvider {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn table_type(&self) -> datafusion::datasource::TableType {
+        datafusion::datasource::TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _state: &dyn datafusion::catalog::Session,
+        _projection: Option<&Vec<usize>>,
+        _filters: &[datafusion::prelude::Expr],
+        _limit: Option<usize>,
+    ) -> datafusion::error::Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
+        Err(datafusion::error::DataFusionError::External(
+            self.error_message.clone().into(),
+        ))
+    }
+}
+
+/// Registers placeholder table providers that return an error on query execution.
+pub fn register_failing_tables(
+    context: &SessionContext,
+    catalog_name: &str,
+    schema_name: &str,
+    tables: &[TableConfig],
+    error_message: &str,
+) -> Result<()> {
+    // Use the session's actual catalog name rather than the hardcoded "datafusion"
+    // name, since Strake configures sessions with a custom default catalog.
+    crate::sources::ensure_schema(context, catalog_name, schema_name)
+        .context("Failed to ensure schema for failing table placeholders")?;
+
+    let dummy_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+
+    for t in tables {
+        let provider = FailingTableProvider {
+            error_message: error_message.to_string(),
+            schema: dummy_schema.clone(),
+        };
+        let qualified = TableReference::partial(schema_name, t.name.as_str());
+        context.register_table(qualified, Arc::new(provider) as Arc<dyn TableProvider>)?;
+        tracing::info!(
+            "Registered failing Flight SQL placeholder table: {}.{}",
+            schema_name,
+            t.name
+        );
+    }
+
+    Ok(())
+}
 
 /// A provider for Arrow Flight SQL data sources.
 pub struct FlightSqlSourceProvider;
@@ -48,17 +111,56 @@ impl SourceProvider for FlightSqlSourceProvider {
     async fn register(
         &self,
         context: &SessionContext,
-        _catalog_name: &str,
+        catalog_name: &str,
         config: &SourceConfig,
     ) -> Result<()> {
         #[derive(serde::Deserialize)]
         struct FlightSqlConfig {
-            url: String,
+            url: Option<String>,
+            connection: Option<String>,
         }
-        let cfg: FlightSqlConfig = serde_json::from_value(config.config.clone())
-            .context("Failed to parse Flight SQL source configuration")?;
+        let cfg: FlightSqlConfig =
+            serde_json::from_value(config.config.clone()).unwrap_or(FlightSqlConfig {
+                url: None,
+                connection: None,
+            });
 
-        register_flight_sql_source(context, config.name.as_ref(), &cfg.url).await
+        let url_str = config
+            .url
+            .as_ref()
+            .or(cfg.url.as_ref())
+            .or(cfg.connection.as_ref())
+            .context("Flight SQL source requires a 'url' or 'connection' configuration")?;
+
+        if let Err(e) =
+            register_flight_sql_source(context, catalog_name, config.name.as_ref(), url_str).await
+        {
+            tracing::warn!(
+                "Flight SQL source '{}' failed to register: {:#}. Registering failing placeholders.",
+                config.name,
+                e
+            );
+            if !config.tables.is_empty() {
+                register_failing_tables(
+                    context,
+                    catalog_name,
+                    config.name.as_ref(),
+                    &config.tables,
+                    &e.to_string(),
+                )?;
+            } else {
+                let mut dummy_table = TableConfig::default();
+                dummy_table.name = "some_table".to_string();
+                register_failing_tables(
+                    context,
+                    catalog_name,
+                    config.name.as_ref(),
+                    &[dummy_table],
+                    &e.to_string(),
+                )?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -68,6 +170,7 @@ impl SourceProvider for FlightSqlSourceProvider {
 /// (Snowflake, Dremio, InfluxDB, or another Strake instance).
 pub async fn register_flight_sql_source(
     context: &SessionContext,
+    catalog_name: &str,
     name: &str,
     url: &str,
 ) -> Result<()> {
@@ -134,15 +237,9 @@ pub async fn register_flight_sql_source(
     let driver = Arc::new(FlightSqlDriver::new());
     let factory = FlightTableFactory::new(driver);
 
-    // Ensure schema exists
-    use datafusion::catalog::MemorySchemaProvider;
-    let catalog = context
-        .catalog("datafusion")
-        .context("Catalog 'datafusion' not found")?;
-
-    if catalog.schema(name).is_none() {
-        catalog.register_schema(name, Arc::new(MemorySchemaProvider::new()))?;
-    }
+    // Ensure schema exists using the session's actual default catalog.
+    crate::sources::ensure_schema(context, catalog_name, name)
+        .context("Failed to ensure schema for Flight SQL source")?;
 
     for (_s_name, t_name) in discovered_tables {
         let mut options = HashMap::new();

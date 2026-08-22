@@ -9,6 +9,25 @@
 //! OpenDAL abstraction. Parquet tables support predicate caching;
 //! CSV/JSON do not (row-group metadata unavailable).
 //!
+//! ## Usage
+//!
+//! ```rust
+//! use std::sync::Arc;
+//! use datafusion::prelude::SessionContext;
+//! use strake_connectors::sources::SourceProvider;
+//! use strake_connectors::sources::file::FileSourceProvider;
+//! use strake_common::predicate_cache::PredicateCache;
+//!
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let ctx = SessionContext::new();
+//! let provider = FileSourceProvider {
+//!     predicate_cache: Arc::new(PredicateCache::new()),
+//! };
+//! assert_eq!(provider.type_name(), "file");
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! ## Errors
 //!
 //! - `SourceError::UnsupportedType` if the source type is not Parquet/CSV/JSON.
@@ -46,8 +65,8 @@ use strake_common::config::{ColumnConfig, SourceConfig, TableConfig};
 use thiserror::Error;
 use url::Url;
 
-#[derive(Error, Debug)]
 /// Errors that can occur when discovering or registering file-based sources.
+#[derive(Error, Debug)]
 pub enum SourceError {
     /// The specified source type (e.g., Avro) is not supported.
     #[error("Unsupported file source type: {0}")]
@@ -79,18 +98,76 @@ impl SourceProvider for FileSourceProvider {
         config: &SourceConfig,
     ) -> Result<()> {
         use strake_common::models::SourceType;
-        match &config.source_type {
+        let mut source_type = config.source_type.clone();
+        if let SourceType::Other(s) = &source_type
+            && s == "file"
+        {
+            let format_val = config
+                .config
+                .get("format")
+                .or_else(|| config.config.get("source_type"))
+                .or_else(|| {
+                    config
+                        .config
+                        .get("config")
+                        .and_then(|v| v.get("format").or_else(|| v.get("source_type")))
+                })
+                .and_then(|v| v.as_str());
+
+            if let Some(format_val) = format_val {
+                use std::str::FromStr;
+                let st = SourceType::from_str(format_val).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Cannot infer file source type from format '{}': {}. \
+                         Expected one of: parquet, csv, json",
+                        format_val,
+                        e
+                    )
+                })?;
+                match st {
+                    SourceType::Parquet | SourceType::Csv | SourceType::Json => {
+                        source_type = st;
+                    }
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "Cannot infer file source type from format '{}'. \
+                             Expected one of: parquet, csv, json",
+                            format_val
+                        ));
+                    }
+                }
+            }
+        }
+
+        let mut final_config = config.config.clone();
+        if let Some(nested_cfg) = config.config.get("config").and_then(|v| v.as_object())
+            && let Some(final_map) = final_config.as_object_mut()
+        {
+            for (k, v) in nested_cfg {
+                if !final_map.contains_key(k) {
+                    final_map.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        match &source_type {
             SourceType::Parquet => {
                 #[derive(serde::Deserialize)]
                 struct ParquetConfig {
-                    path: String,
+                    #[serde(alias = "path")]
+                    #[serde(alias = "connection")]
+                    url: Option<String>,
                     #[serde(default)]
                     options: Option<HashMap<String, String>>,
                     #[serde(default)]
                     tables: Option<Vec<TableConfig>>,
                 }
-                let cfg: ParquetConfig = serde_json::from_value(config.config.clone())
+                let cfg: ParquetConfig = serde_json::from_value(final_config.clone())
                     .context("Failed to parse Parquet source configuration")?;
+
+                let path = config.url.clone()
+                    .or_else(|| cfg.url.clone())
+                    .context("Parquet source path/URL is required (specify top-level 'url' or nested 'path')")?;
 
                 let tables = if !config.tables.is_empty() {
                     Some(config.tables.clone())
@@ -98,27 +175,29 @@ impl SourceProvider for FileSourceProvider {
                     cfg.tables
                 };
 
-                register_object_store(context, &cfg.path, cfg.options.unwrap_or_default()).await?;
-                register_parquet(
+                register_object_store(context, &path, cfg.options.unwrap_or_default()).await?;
+                register_parquet(ParquetRegistration {
                     context,
-                    catalog_name,
-                    config.name.as_ref(),
-                    &cfg.path,
-                    &tables,
-                    self.predicate_cache.clone(),
-                    config.predicate_cache,
-                    config
+                    catalog: catalog_name,
+                    name: config.name.as_ref(),
+                    path: &path,
+                    tables_config: &tables,
+                    cache: self.predicate_cache.clone(),
+                    predicate_cache_enabled: config.predicate_cache,
+                    metadata_cache_capacity: config
                         .cache
                         .as_ref()
                         .map(|c| c.metadata_cache_capacity)
                         .unwrap_or_else(strake_common::models::default_metadata_cache_capacity),
-                )
+                })
                 .await
             }
             SourceType::Csv => {
                 #[derive(serde::Deserialize)]
                 struct CsvConfig {
-                    path: String,
+                    #[serde(alias = "path")]
+                    #[serde(alias = "connection")]
+                    url: Option<String>,
                     #[serde(default)]
                     options: Option<HashMap<String, String>>,
                     #[serde(default)]
@@ -127,8 +206,12 @@ impl SourceProvider for FileSourceProvider {
                     #[serde(default)]
                     tables: Option<Vec<TableConfig>>,
                 }
-                let cfg: CsvConfig = serde_json::from_value(config.config.clone())
+                let cfg: CsvConfig = serde_json::from_value(final_config.clone())
                     .context("Failed to parse CSV source configuration")?;
+
+                let path = config.url.clone().or_else(|| cfg.url.clone()).context(
+                    "CSV source path/URL is required (specify top-level 'url' or nested 'path')",
+                )?;
 
                 let tables = if !config.tables.is_empty() {
                     Some(config.tables.clone())
@@ -136,12 +219,12 @@ impl SourceProvider for FileSourceProvider {
                     cfg.tables
                 };
 
-                register_object_store(context, &cfg.path, cfg.options.unwrap_or_default()).await?;
+                register_object_store(context, &path, cfg.options.unwrap_or_default()).await?;
                 register_csv(
                     context,
                     catalog_name,
                     config.name.as_ref(),
-                    &cfg.path,
+                    &path,
                     cfg.has_header,
                     cfg.delimiter,
                     &tables,
@@ -151,14 +234,20 @@ impl SourceProvider for FileSourceProvider {
             SourceType::Json => {
                 #[derive(serde::Deserialize)]
                 struct JsonConfig {
-                    path: String,
+                    #[serde(alias = "path")]
+                    #[serde(alias = "connection")]
+                    url: Option<String>,
                     #[serde(default)]
                     options: Option<HashMap<String, String>>,
                     #[serde(default)]
                     tables: Option<Vec<TableConfig>>,
                 }
-                let cfg: JsonConfig = serde_json::from_value(config.config.clone())
+                let cfg: JsonConfig = serde_json::from_value(final_config.clone())
                     .context("Failed to parse JSON source configuration")?;
+
+                let path = config.url.clone().or_else(|| cfg.url.clone()).context(
+                    "JSON source path/URL is required (specify top-level 'url' or nested 'path')",
+                )?;
 
                 let tables = if !config.tables.is_empty() {
                     Some(config.tables.clone())
@@ -166,17 +255,10 @@ impl SourceProvider for FileSourceProvider {
                     cfg.tables
                 };
 
-                register_object_store(context, &cfg.path, cfg.options.unwrap_or_default()).await?;
-                register_json(
-                    context,
-                    catalog_name,
-                    config.name.as_ref(),
-                    &cfg.path,
-                    &tables,
-                )
-                .await
+                register_object_store(context, &path, cfg.options.unwrap_or_default()).await?;
+                register_json(context, catalog_name, config.name.as_ref(), &path, &tables).await
             }
-            _ => Err(SourceError::UnsupportedType(config.source_type.to_string()).into()),
+            _ => Err(SourceError::UnsupportedType(source_type.to_string()).into()),
         }
     }
 }
@@ -278,23 +360,33 @@ pub async fn register_object_store(
     Ok(())
 }
 
+/// Registration arguments for registering a Parquet source provider.
+pub struct ParquetRegistration<'a> {
+    /// DataFusion session context
+    pub context: &'a SessionContext,
+    /// Catalog name target
+    pub catalog: &'a str,
+    /// Name of the source
+    pub name: &'a str,
+    /// URI/path pointing to the Parquet file or directory
+    pub path: &'a str,
+    /// Tables schema and partition projections configuration
+    pub tables_config: &'a Option<Vec<TableConfig>>,
+    /// Shared predicate cache implementation
+    pub cache: Arc<strake_common::predicate_cache::PredicateCache>,
+    /// Whether predicate caching is enabled
+    pub predicate_cache_enabled: bool,
+    /// Limit on the maximum number of items inside metadata cache
+    pub metadata_cache_capacity: usize,
+}
+
 /// Registers Parquet tables with the DataFusion context.
 ///
 /// Supports predicate caching if enabled.
 ///
 /// # Errors
 /// Returns `Err` if the schema cannot be inferred or if table registration fails.
-#[allow(clippy::too_many_arguments)]
-pub async fn register_parquet(
-    context: &SessionContext,
-    catalog: &str,
-    name: &str,
-    path: &str,
-    tables_config: &Option<Vec<TableConfig>>,
-    cache: Arc<strake_common::predicate_cache::PredicateCache>,
-    predicate_cache_enabled: bool,
-    metadata_cache_capacity: usize,
-) -> Result<()> {
+pub async fn register_parquet(reg: ParquetRegistration<'_>) -> Result<()> {
     use crate::sources::predicate_caching::CachingTableProvider;
     use sha2::{Digest, Sha256};
 
@@ -308,17 +400,17 @@ pub async fn register_parquet(
     let file_format = ParquetFormat::default().with_options(parquet_options);
     let listing_options = ListingOptions::new(Arc::new(file_format));
 
-    let start_url = ListingTableUrl::parse(path)?;
+    let start_url = ListingTableUrl::parse(reg.path)?;
 
-    if let Some(tables) = tables_config {
+    if let Some(tables) = reg.tables_config {
         for table_cfg in tables {
-            let table_path = table_cfg.path.as_deref().unwrap_or(path);
+            let table_path = table_cfg.path.as_deref().unwrap_or(reg.path);
             let table_url = ListingTableUrl::parse(table_path)?;
             let resolved_schema = if !table_cfg.column_definitions.is_empty() {
                 build_schema_from_config(&table_cfg.column_definitions)?
             } else {
                 listing_options
-                    .infer_schema(&context.state(), &table_url)
+                    .infer_schema(&reg.context.state(), &table_url)
                     .await?
             };
 
@@ -344,10 +436,10 @@ pub async fn register_parquet(
             };
             let provider: Arc<dyn TableProvider> = Arc::new(CachingTableProvider::new(
                 provider,
-                cache.clone(),
+                reg.cache.clone(),
                 snapshot_id,
-                predicate_cache_enabled,
-                metadata_cache_capacity,
+                reg.predicate_cache_enabled,
+                reg.metadata_cache_capacity,
             ));
 
             let schema_name = if table_cfg.schema.is_empty() {
@@ -358,16 +450,16 @@ pub async fn register_parquet(
             tracing::debug!(
                 "Registering table {} in catalog {} schema {}",
                 table_cfg.name,
-                catalog,
+                reg.catalog,
                 schema_name
             );
-            let schema_provider = ensure_schema(context, catalog, schema_name)?;
+            let schema_provider = ensure_schema(reg.context, reg.catalog, schema_name)?;
             schema_provider.register_table(table_cfg.name.to_string(), provider)?;
             tracing::debug!("Successfully registered table {}", table_cfg.name);
         }
     } else {
         let resolved_schema = listing_options
-            .infer_schema(&context.state(), &start_url)
+            .infer_schema(&reg.context.state(), &start_url)
             .await?;
         let config = ListingTableConfig::new(start_url)
             .with_listing_options(listing_options)
@@ -375,8 +467,8 @@ pub async fn register_parquet(
         let provider = Arc::new(ListingTable::try_new(config)?);
 
         let mut hasher = Sha256::new();
-        hasher.update(path.as_bytes());
-        hasher.update(name.as_bytes());
+        hasher.update(reg.path.as_bytes());
+        hasher.update(reg.name.as_bytes());
         let result = hasher.finalize();
         // NOTE: Using stable SHA-256 hash truncated to 64-bits as a cache key.
         // If the key format changes in future versions, a version prefix should be added.
@@ -387,14 +479,26 @@ pub async fn register_parquet(
 
         let wrapped = Arc::new(CachingTableProvider::new(
             provider,
-            cache,
+            reg.cache,
             snapshot_id,
-            predicate_cache_enabled,
-            metadata_cache_capacity,
+            reg.predicate_cache_enabled,
+            reg.metadata_cache_capacity,
         ));
 
-        let schema_provider = ensure_schema(context, catalog, "public")?;
-        schema_provider.register_table(name.to_string(), wrapped)?;
+        let basename = reg
+            .path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or_default();
+        let stem = basename.rsplit_once('.').map_or(basename, |(s, _)| s);
+        let table_name = if stem.is_empty() || stem.contains('*') || stem.contains('?') {
+            reg.name
+        } else {
+            stem
+        };
+        let schema_provider = ensure_schema(reg.context, reg.catalog, reg.name)?;
+        schema_provider.register_table(table_name.to_string(), wrapped)?;
     }
 
     Ok(())
@@ -455,8 +559,19 @@ pub async fn register_csv(
             .with_schema(resolved_schema);
         let provider = Arc::new(ListingTable::try_new(config)?);
 
-        let schema_provider = ensure_schema(context, catalog, "public")?;
-        schema_provider.register_table(name.to_string(), provider)?;
+        let basename = path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or_default();
+        let stem = basename.rsplit_once('.').map_or(basename, |(s, _)| s);
+        let table_name = if stem.is_empty() || stem.contains('*') || stem.contains('?') {
+            name
+        } else {
+            stem
+        };
+        let schema_provider = ensure_schema(context, catalog, name)?;
+        schema_provider.register_table(table_name.to_string(), provider)?;
     }
 
     Ok(())
@@ -512,8 +627,19 @@ pub async fn register_json(
             .with_schema(resolved_schema);
         let provider = Arc::new(ListingTable::try_new(config)?);
 
-        let schema_provider = ensure_schema(context, catalog, "public")?;
-        schema_provider.register_table(name.to_string(), provider)?;
+        let basename = path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or_default();
+        let stem = basename.rsplit_once('.').map_or(basename, |(s, _)| s);
+        let table_name = if stem.is_empty() || stem.contains('*') || stem.contains('?') {
+            name
+        } else {
+            stem
+        };
+        let schema_provider = ensure_schema(context, catalog, name)?;
+        schema_provider.register_table(table_name.to_string(), provider)?;
     }
 
     Ok(())

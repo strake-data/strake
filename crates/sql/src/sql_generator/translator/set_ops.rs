@@ -143,7 +143,7 @@ pub(crate) fn handle_limit(
         validate_limit_offset_expr(skip)?;
         Some(Offset {
             value: translator.expr_to_sql(skip)?,
-            rows: sqlparser::ast::OffsetRows::None,
+            rows: translator.dialect.capabilities.offset_rows_style(),
         })
     } else {
         None
@@ -348,8 +348,9 @@ fn rewrite_distinct_on_to_row_number(
     on: &datafusion::logical_expr::DistinctOn,
 ) -> Result<sqlparser::ast::Query, SqlGenError> {
     // 1. Get input query
+    let checkpoint = generator.context.checkpoint();
     let mut input_query = generator.plan_to_query(&on.input)?;
-    let input_relation = generator.extract_relation(&mut input_query, None)?;
+    let input_relation = generator.extract_relation(&mut input_query, None, checkpoint)?;
     let input_scope =
         generator
             .context

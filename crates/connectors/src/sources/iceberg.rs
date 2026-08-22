@@ -1,18 +1,45 @@
-//! Apache Iceberg data source.
+//! # Iceberg REST Catalog Connector
 //!
-//! Supports reading Iceberg tables via REST catalog with S3-backed storage.
-//! Leverages partition pruning and snapshot isolation via iceberg-rust.
+//! Provides integration with external Apache Iceberg REST catalogs.
+//! Discovers namespace tables dynamically and registers them as read-only table
+//! providers within DataFusion.
 //!
-//! # Configuration Example
+//! ## Overview
+//!
+//! This module parses an [`IcebergRestConfig`] containing REST URI endpoints, S3 properties,
+//! and OAuth2 credentials, and interacts with the external Iceberg REST API via `iceberg-rust`
+//! to register catalog schemas dynamically.
+//!
+//! ## Usage
+//!
+//! ```rust
+//! use std::sync::Arc;
+//! use datafusion::prelude::SessionContext;
+//! use strake_connectors::sources::SourceProvider;
+//! use strake_connectors::sources::iceberg::IcebergSourceProvider;
+//! use strake_common::config::RetrySettings;
+//! use strake_common::predicate_cache::PredicateCache;
+//!
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let ctx = SessionContext::new();
+//! let provider = IcebergSourceProvider {
+//!     global_retry: RetrySettings::default(),
+//!     predicate_cache: Arc::new(PredicateCache::new()),
+//! };
+//! assert_eq!(provider.type_name(), "iceberg_rest");
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Configuration via `sources.yaml` example:
 //!
 //! ```yaml
-//! sources:
-//!   - name: my_iceberg
-//!     type: iceberg_rest
-//!     config:
-//!       catalog_uri: http://localhost:8181/v1
-//!       warehouse: s3://bucket/warehouse
+//! - name: iceberg_source
+//!   type: iceberg_rest
+//!   url: http://localhost:8181/v1
+//!   config:
 //!       region: us-east-1
+//!       warehouse: s3://my-bucket/warehouse
 //!       # OAuth authentication (preferred)
 //!       oauth_client_id: "client-id"
 //!       oauth_client_secret: "${OAUTH_SECRET}"
@@ -20,19 +47,42 @@
 //!       # Or static token (not recommended for production)
 //!       # token: "${STATIC_TOKEN}"
 //! ```
+//!
+//! ## Errors
+//!
+//! Returns [`IcebergConnectorError::InvalidConfiguration`] if mandatory parameters are missing
+//! or fail validation checks. Returns upstream networking/HTTP error descriptors if REST calls fail.
+//!
+//! ## Safety
+//!
+//! This module is implemented using safe Rust constructs.
+//!
+//! ## Performance Characteristics
+//!
+//! Table structures and catalogs are cached locally per `CacheConfig` limits (TTL and max tables limit)
+//! to avoid redundant REST requests during query optimization phases.
+
 use crate::sources::iceberg::error::IcebergConnectorError;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use datafusion::prelude::SessionContext;
+use std::sync::Arc;
+use strake_common::predicate_cache::PredicateCache;
 
 use crate::sources::SourceProvider;
 use strake_common::config::SourceConfig;
 
+/// Authentication providers and mechanisms for Iceberg REST catalog.
 pub mod auth;
+/// Iceberg REST catalog client wrapper with local caching.
 pub mod catalog;
+/// Iceberg connector error definitions.
 pub mod error;
+/// Iceberg table provider federation and catalog registration logic.
 pub mod federation;
+/// Table provider implementation for Apache Iceberg.
 pub mod provider;
+/// Telemetry and instrumentation helpers for Iceberg.
 pub mod telemetry;
 
 use provider::register_iceberg_rest;
@@ -165,6 +215,7 @@ impl Default for CacheConfig {
 }
 
 impl IcebergRestConfig {
+    /// Validates the Iceberg configuration settings.
     pub fn validate(&self) -> Result<()> {
         //// TODO: Remove hardcoded limits
         if let Some(max) = self.max_concurrent_queries
@@ -239,11 +290,12 @@ impl fmt::Debug for IcebergRestConfig {
     }
 }
 
-use std::sync::Arc;
-use strake_common::predicate_cache::PredicateCache;
-
+/// Provider for registering dynamically discovered Apache Iceberg tables
+/// from an external Iceberg REST catalog.
 pub struct IcebergSourceProvider {
+    /// Default retry settings for Iceberg operations.
     pub global_retry: strake_common::config::RetrySettings,
+    /// Shared predicate cache for Iceberg sources.
     pub predicate_cache: Arc<PredicateCache>,
 }
 
@@ -259,13 +311,23 @@ impl SourceProvider for IcebergSourceProvider {
         catalog_name: &str,
         config: &SourceConfig,
     ) -> Result<()> {
-        let cfg: IcebergRestConfig =
-            serde_json::from_value(config.config.clone()).map_err(|e| {
-                IcebergConnectorError::InvalidConfiguration(format!(
-                    "Failed to parse configuration: {}",
-                    e
-                ))
-            })?;
+        let mut raw_config = config.config.clone();
+        if let Some(url) = &config.url
+            && let Some(obj) = raw_config.as_object_mut()
+            && !obj.contains_key("catalog_uri")
+        {
+            obj.insert(
+                "catalog_uri".to_string(),
+                serde_json::Value::String(url.clone()),
+            );
+        }
+
+        let cfg: IcebergRestConfig = serde_json::from_value(raw_config).map_err(|e| {
+            IcebergConnectorError::InvalidConfiguration(format!(
+                "Failed to parse configuration: {}",
+                e
+            ))
+        })?;
 
         cfg.validate()
             .map_err(|e| IcebergConnectorError::InvalidConfiguration(e.to_string()))?;
@@ -280,16 +342,16 @@ impl SourceProvider for IcebergSourceProvider {
         }
 
         let effective_retry = self.global_retry;
-        register_iceberg_rest(
-            Arc::new(context.clone()),
-            catalog_name.to_string(),
-            config.name.to_string(),
-            Arc::new(cfg),
-            Arc::new(config.tables.clone()),
-            effective_retry,
-            self.predicate_cache.clone(),
-            config.predicate_cache,
-        )
+        register_iceberg_rest(provider::IcebergRegistration {
+            ctx: Arc::new(context.clone()),
+            catalog_name: catalog_name.to_string(),
+            source_name: config.name.to_string(),
+            cfg: Arc::new(cfg),
+            tables: Arc::new(config.tables.clone()),
+            retry_settings: effective_retry,
+            predicate_cache: self.predicate_cache.clone(),
+            predicate_cache_enabled: config.predicate_cache,
+        })
         .await
     }
 }

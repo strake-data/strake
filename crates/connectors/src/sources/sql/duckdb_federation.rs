@@ -105,7 +105,7 @@ impl std::fmt::Debug for DuckDBExecutor {
 #[async_trait]
 impl SQLExecutor for DuckDBExecutor {
     fn name(&self) -> &str {
-        "duckdb"
+        strake_common::models::SourceType::Duckdb.as_str()
     }
 
     fn compute_context(&self) -> Option<String> {

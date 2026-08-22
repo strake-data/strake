@@ -323,3 +323,57 @@ async fn test_recursive_query_generation() -> Result<()> {
     });
     Ok(())
 }
+
+#[tokio::test]
+async fn test_multiple_in_predicates_parenthesization() -> Result<()> {
+    let ctx = setup_context().await?;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("region", DataType::Utf8, false),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("priority", DataType::Utf8, false),
+    ]));
+    let batch = datafusion::arrow::record_batch::RecordBatch::new_empty(schema);
+    ctx.register_batch("EVENTS", batch)?;
+
+    let filter_expr = in_list(col("REGION"), vec![lit("NORTH"), lit("SOUTH")], false)
+        .and(in_list(
+            col("STATUS"),
+            vec![lit("OPEN"), lit("CLOSED")],
+            false,
+        ))
+        .and(in_list(
+            col("PRIORITY"),
+            vec![lit("HIGH"), lit("LOW")],
+            false,
+        ));
+
+    let plan = ctx
+        .table("EVENTS")
+        .await?
+        .filter(filter_expr)?
+        .select(vec![col("ID")])?
+        .into_optimized_plan()?;
+
+    let sql = strake_sql::sql_gen::get_sql_for_plan(&plan, "oracle")
+        .map_err(|e| datafusion::common::DataFusionError::Internal(e.to_string()))?
+        .expect("SQL generation failed");
+
+    assert!(
+        sql.contains("(\"rel_1\".\"region\" = 'NORTH' OR \"rel_1\".\"region\" = 'SOUTH')")
+            || sql.contains("(\"rel_0\".\"region\" = 'NORTH' OR \"rel_0\".\"region\" = 'SOUTH')"),
+        "Generated SQL missing parenthesized region OR chain: {sql}"
+    );
+    assert!(
+        sql.contains("(\"rel_1\".\"status\" = 'OPEN' OR \"rel_1\".\"status\" = 'CLOSED')")
+            || sql.contains("(\"rel_0\".\"status\" = 'OPEN' OR \"rel_0\".\"status\" = 'CLOSED')"),
+        "Generated SQL missing parenthesized status OR chain: {sql}"
+    );
+    assert!(
+        sql.contains("(\"rel_1\".\"priority\" = 'HIGH' OR \"rel_1\".\"priority\" = 'LOW')")
+            || sql.contains("(\"rel_0\".\"priority\" = 'HIGH' OR \"rel_0\".\"priority\" = 'LOW')"),
+        "Generated SQL missing parenthesized priority OR chain: {sql}"
+    );
+
+    Ok(())
+}

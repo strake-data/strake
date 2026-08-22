@@ -83,10 +83,11 @@ Use `uv` to run your script with all dependencies managed automatically:
 uv run main.py
 ```
 
-## 5. Next Steps
+## 5. What next?
 
 Now that you have your first query running:
 
+* Set up a complete production [Installation](installation.md) on your server.
 * Add an **S3 Source** to join S3 Parquet files against your Postgres DB.
-* Explore the [Connectors](connectors.md) page for a full list of supported sources.
-* Check out the [Python API](python-api.md) for more advanced usage.
+* Explore the [Data Sources (Connectors)](../user-guide/sources/index.md) page for a full list of supported sources.
+* Check out the [Python API](../user-guide/python-api.md) for more advanced usage.
