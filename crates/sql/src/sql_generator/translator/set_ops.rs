@@ -257,15 +257,14 @@ pub(crate) fn handle_values(
         sql_rows.push(sql_row);
     }
 
-    let combined_query;
-    if generator.dialect.capabilities.supports_values_clause() {
+    let combined_query = if generator.dialect.capabilities.supports_values_clause() {
         let mut query = generator.create_skeleton_query();
         query.body = Box::new(SetExpr::Values(sqlparser::ast::Values {
             explicit_row: false,
             rows: sql_rows,
             value_keyword: true,
         }));
-        combined_query = query;
+        query
     } else {
         // Fallback to UNION ALL
         let mut selects = Vec::new();
@@ -317,8 +316,8 @@ pub(crate) fn handle_values(
 
         let mut query = generator.create_skeleton_query();
         query.body = Box::new(body);
-        combined_query = query;
-    }
+        query
+    };
 
     let alias = generator.context.next_alias();
     let columns = values
