@@ -76,30 +76,45 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
             }
 
             Expr::WindowFunction(window) => {
-                let over = WindowSpec {
-                    partition_by: window
-                        .params
-                        .partition_by
-                        .iter()
-                        .map(|e| self.expr_to_sql(e))
-                        .collect::<Result<Vec<_>, SqlGenError>>()?,
-                    order_by: window
-                        .params
-                        .order_by
-                        .iter()
-                        .map(|e| {
-                            let sql_expr = self.expr_to_sql(&e.expr)?;
-                            Ok(sqlparser::ast::OrderByExpr {
-                                expr: sql_expr,
-                                options: sqlparser::ast::OrderByOptions {
-                                    asc: Some(e.asc),
-                                    nulls_first: Some(e.nulls_first),
-                                },
-                                with_fill: None,
-                            })
+                let partition_by = window
+                    .params
+                    .partition_by
+                    .iter()
+                    .map(|e| self.expr_to_sql(e))
+                    .collect::<Result<Vec<_>, SqlGenError>>()?;
+
+                let order_by = window
+                    .params
+                    .order_by
+                    .iter()
+                    .map(|e| {
+                        let sql_expr = self.expr_to_sql(&e.expr)?;
+                        Ok(sqlparser::ast::OrderByExpr {
+                            expr: sql_expr,
+                            options: sqlparser::ast::OrderByOptions {
+                                asc: Some(e.asc),
+                                nulls_first: Some(e.nulls_first),
+                            },
+                            with_fill: None,
                         })
-                        .collect::<Result<Vec<_>, SqlGenError>>()?,
-                    window_frame: Some(self.translate_window_frame(&window.params.window_frame)?),
+                    })
+                    .collect::<Result<Vec<_>, SqlGenError>>()?;
+
+                let window_frame = if order_by.is_empty()
+                    && !self
+                        .dialect
+                        .capabilities
+                        .supports_window_frame_without_order_by()
+                {
+                    None
+                } else {
+                    Some(self.translate_window_frame(&window.params.window_frame)?)
+                };
+
+                let over = WindowSpec {
+                    partition_by,
+                    order_by,
+                    window_frame,
                     window_name: None,
                 };
 

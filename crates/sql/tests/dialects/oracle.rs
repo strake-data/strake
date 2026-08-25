@@ -264,3 +264,60 @@ fn unparse_nested_precedence_matrix() {
         "(\"a\" = 1 OR \"b\" = 2) AND \"c\" = 3"
     );
 }
+
+// ----------------------------------------------------------------------------
+// Window function unparsing tests (ORA-30485)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn unparse_window_partition_by_without_order_by_omits_frame() {
+    use datafusion::functions_window::expr_fn::row_number;
+    use datafusion::logical_expr::col;
+    use datafusion::prelude::ExprFunctionExt;
+    use strake_sql::sql_gen::unparse_expr_to_sql;
+
+    let window_fn = row_number()
+        .partition_by(vec![col("INGOT_NUM")])
+        .build()
+        .unwrap();
+
+    let sql = unparse_expr_to_sql(&window_fn, "oracle").unwrap();
+    assert_eq!(sql, "ROW_NUMBER() OVER (PARTITION BY \"ingot_num\")");
+}
+
+#[test]
+fn unparse_window_empty_over_omits_frame() {
+    use datafusion::functions_window::expr_fn::row_number;
+    use strake_sql::sql_gen::unparse_expr_to_sql;
+
+    let window_fn = row_number();
+
+    let sql = unparse_expr_to_sql(&window_fn, "oracle").unwrap();
+    assert_eq!(sql, "ROW_NUMBER() OVER ()");
+}
+
+#[test]
+fn unparse_window_with_order_by_preserves_frame() {
+    use datafusion::functions_window::expr_fn::row_number;
+    use datafusion::logical_expr::col;
+    use datafusion::prelude::ExprFunctionExt;
+    use strake_sql::sql_gen::unparse_expr_to_sql;
+
+    let window_fn = row_number()
+        .partition_by(vec![col("INGOT_NUM")])
+        .order_by(vec![col("EVENT_DATE").sort(true, false)])
+        .build()
+        .unwrap();
+
+    let sql = unparse_expr_to_sql(&window_fn, "oracle").unwrap();
+    assert!(
+        sql.contains("ORDER BY \"event_date\" ASC NULLS LAST"),
+        "Expected ORDER BY in: {}",
+        sql
+    );
+    assert!(
+        sql.contains("ROWS BETWEEN"),
+        "Expected window frame when ORDER BY is present in: {}",
+        sql
+    );
+}

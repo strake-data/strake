@@ -332,3 +332,186 @@ async fn test_oracle_self_join_pushdown_sql_gen() -> Result<()> {
 
     Ok(())
 }
+
+// =============================================================================
+// Phase 3: Window Frame Correctness Tests (ORA-30485 Prevention)
+// =============================================================================
+
+#[tokio::test]
+async fn test_oracle_partition_only_window_omits_rows_frame() -> Result<()> {
+    let ctx = SessionContext::new();
+    register_table(
+        &ctx,
+        "rep_produced",
+        vec![
+            (
+                "EVENT_DATE",
+                arrow::datatypes::DataType::Timestamp(
+                    arrow::datatypes::TimeUnit::Microsecond,
+                    None,
+                ),
+            ),
+            ("INGOT_NUM", arrow::datatypes::DataType::Int64),
+            ("END_POS", arrow::datatypes::DataType::Int32),
+        ],
+    );
+
+    // Minimal reproduction query from issue:
+    // SELECT MAX("EVENT_DATE") OVER (PARTITION BY "INGOT_NUM") AS "LATEST_EVENT_DATE"
+    // FROM rep_produced WHERE "END_POS" = 999 LIMIT 1
+    let plan = ctx
+        .sql(
+            r#"SELECT MAX("EVENT_DATE") OVER (PARTITION BY "INGOT_NUM") AS "LATEST_EVENT_DATE"
+               FROM rep_produced
+               WHERE "END_POS" = 999
+               LIMIT 1"#,
+        )
+        .await?
+        .into_optimized_plan()?;
+
+    println!("Partition-only window plan:\n{}", plan.display_indent());
+
+    let sql = get_sql_for_plan(&plan, "oracle")?.expect("expected SQL output");
+    println!("Generated Oracle SQL: {}", sql);
+
+    let sql_upper = sql.to_uppercase();
+
+    // 1. Must contain MAX and PARTITION BY
+    assert!(
+        sql_upper.contains("MAX("),
+        "SQL should contain MAX aggregate"
+    );
+    assert!(
+        sql_upper.contains("OVER (PARTITION BY") || sql_upper.contains("OVER ( PARTITION BY"),
+        "SQL should contain OVER (PARTITION BY)"
+    );
+
+    // 2. Must NOT contain ROWS frame in the OVER (...) specification (which triggers ORA-30485 when ORDER BY is absent)
+    let over_idx = sql_upper
+        .find("OVER (")
+        .or_else(|| sql_upper.find("OVER("))
+        .expect("expected OVER clause");
+    let over_clause = &sql_upper[over_idx..];
+    let over_end = over_clause
+        .find(')')
+        .expect("expected closing paren for OVER clause");
+    let over_spec = &over_clause[..=over_end];
+
+    assert!(
+        !over_spec.contains("ROWS"),
+        "The OVER specification must NOT contain 'ROWS' frame when ORDER BY is missing. Got: {}",
+        over_spec
+    );
+    assert!(
+        !over_spec.contains("RANGE"),
+        "The OVER specification must NOT contain 'RANGE' frame when ORDER BY is missing. Got: {}",
+        over_spec
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_oracle_window_with_order_by_preserves_frame() -> Result<()> {
+    let ctx = SessionContext::new();
+    register_table(
+        &ctx,
+        "rep_produced",
+        vec![
+            (
+                "EVENT_DATE",
+                arrow::datatypes::DataType::Timestamp(
+                    arrow::datatypes::TimeUnit::Microsecond,
+                    None,
+                ),
+            ),
+            ("INGOT_NUM", arrow::datatypes::DataType::Int64),
+            ("END_POS", arrow::datatypes::DataType::Int32),
+        ],
+    );
+
+    // Window with ORDER BY
+    let plan = ctx
+        .sql(
+            r#"SELECT MAX("EVENT_DATE") OVER (PARTITION BY "INGOT_NUM" ORDER BY "EVENT_DATE") AS "LATEST_EVENT_DATE"
+               FROM rep_produced"#,
+        )
+        .await?
+        .into_optimized_plan()?;
+
+    let sql = get_sql_for_plan(&plan, "oracle")?.expect("expected SQL output");
+    println!("Generated Oracle SQL with ORDER BY: {}", sql);
+
+    let sql_upper = sql.to_uppercase();
+
+    // 1. Must contain ORDER BY
+    assert!(
+        sql_upper.contains("ORDER BY"),
+        "SQL should contain ORDER BY"
+    );
+    // 2. Oracle supports explicit frame when ORDER BY is present
+    assert!(sql_upper.contains("OVER (PARTITION BY") || sql_upper.contains("OVER ( PARTITION BY"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_oracle_empty_window_omits_rows_frame() -> Result<()> {
+    let ctx = SessionContext::new();
+    register_table(
+        &ctx,
+        "rep_produced",
+        vec![
+            (
+                "EVENT_DATE",
+                arrow::datatypes::DataType::Timestamp(
+                    arrow::datatypes::TimeUnit::Microsecond,
+                    None,
+                ),
+            ),
+            ("INGOT_NUM", arrow::datatypes::DataType::Int64),
+            ("END_POS", arrow::datatypes::DataType::Int32),
+        ],
+    );
+
+    // Empty window OVER ()
+    let plan = ctx
+        .sql(
+            r#"SELECT MAX("EVENT_DATE") OVER () AS "LATEST_EVENT_DATE"
+               FROM rep_produced"#,
+        )
+        .await?
+        .into_optimized_plan()?;
+
+    let sql = get_sql_for_plan(&plan, "oracle")?.expect("expected SQL output");
+    println!("Generated Oracle SQL with empty OVER: {}", sql);
+
+    let sql_upper = sql.to_uppercase();
+
+    assert!(
+        sql_upper.contains("MAX("),
+        "SQL should contain MAX aggregate"
+    );
+    assert!(
+        sql_upper.contains("OVER ()") || sql_upper.contains("OVER ( )"),
+        "SQL should contain OVER ()"
+    );
+
+    let over_idx = sql_upper
+        .find("OVER (")
+        .or_else(|| sql_upper.find("OVER("))
+        .expect("expected OVER clause");
+    let over_clause = &sql_upper[over_idx..];
+    let over_end = over_clause
+        .find(')')
+        .expect("expected closing paren for OVER clause");
+    let over_spec = &over_clause[..=over_end];
+
+    assert!(
+        !over_spec.contains("ROWS"),
+        "The OVER specification must NOT contain 'ROWS' frame for empty OVER. Got: {}",
+        over_spec
+    );
+
+    Ok(())
+}

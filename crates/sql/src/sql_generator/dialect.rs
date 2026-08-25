@@ -78,6 +78,11 @@ pub trait DialectCapabilities: Send + Sync {
     fn supports_empty_select(&self) -> bool {
         false
     }
+    /// Returns true if the dialect supports window frame clauses without an ORDER BY clause.
+    /// In Oracle, any window frame specification requires an ORDER BY expression (ORA-30485).
+    fn supports_window_frame_without_order_by(&self) -> bool {
+        true
+    }
     /// Returns the offset rows preference/suffix style for the dialect.
     fn offset_rows_style(&self) -> sqlparser::ast::OffsetRows {
         sqlparser::ast::OffsetRows::None

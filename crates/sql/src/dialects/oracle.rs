@@ -379,6 +379,9 @@ impl crate::sql_generator::dialect::DialectCapabilities for OracleDialect {
     fn supports_distinct_on(&self) -> bool {
         false
     }
+    fn supports_window_frame_without_order_by(&self) -> bool {
+        false
+    }
     fn strip_catalog_qualifier(&self) -> bool {
         true
     }
