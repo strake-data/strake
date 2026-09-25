@@ -234,6 +234,7 @@ pub struct SourceConfig {
     pub source_type: SourceType,
 
     /// Connection URL or file path.
+    #[serde(default, alias = "connection")]
     pub url: Option<String>,
     /// Optional username for authentication.
     pub username: Option<String>,

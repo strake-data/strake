@@ -68,7 +68,7 @@ pub(crate) mod set_ops;
 pub(crate) mod sort;
 
 /// Maximum allowed recursion depth for logical plan translation.
-pub(crate) const MAX_RECURSION_DEPTH: usize = 50;
+pub const MAX_RECURSION_DEPTH: usize = 50;
 
 /// The main orchestrator for translating DataFusion logical plans into SQL queries.
 pub struct SqlGenerator<'a> {
@@ -333,11 +333,14 @@ impl<'a> SqlGenerator<'a> {
         let sub_alias = alias.unwrap_or_else(|| inner_scope.alias.to_string());
         tracing::debug!(target: "sql_generator", sub_alias = %sub_alias, col_count = inner_scope.columns.len(), "Extracting relation");
 
-        let column_names: Vec<Arc<str>> = inner_scope
-            .columns
-            .iter()
-            .map(|c| derive_bare_name(c.name.as_ref()))
-            .collect::<Vec<Arc<str>>>();
+        let max_id_len = self.dialect.capabilities.max_identifier_length();
+        let mut seen_names = std::collections::HashSet::new();
+        let mut column_names: Vec<Arc<str>> = Vec::with_capacity(inner_scope.columns.len());
+        for c in inner_scope.columns.iter() {
+            let base_name = derive_bare_name(c.name.as_ref());
+            let name = disambiguate_identifier(base_name.as_ref(), &mut seen_names, max_id_len);
+            column_names.push(name);
+        }
 
         if let SetExpr::Select(ref mut select) = *query.body {
             for (i, item) in select.projection.iter_mut().enumerate() {
@@ -359,20 +362,30 @@ impl<'a> SqlGenerator<'a> {
             .iter()
             .enumerate()
             .map(|(i, name)| {
-                let (data_type, inner_provenance) =
+                let (data_type, provenance, qualified_provenance) =
                     if let Some(inner_col) = inner_scope.columns.get(i) {
-                        (inner_col.data_type.clone(), inner_col.provenance.clone())
+                        let mut prov = vec![sub_alias.clone(), inner_col.name.to_string()];
+                        prov.extend(inner_col.provenance.clone());
+                        let mut qprov = inner_col.qualified_provenance.clone();
+                        qprov.push(crate::sql_generator::context::ColumnProvenance {
+                            qualifier: Some(sub_alias.clone()),
+                            column_name: inner_col.name.to_string(),
+                        });
+                        (inner_col.data_type.clone(), prov, qprov)
                     } else {
-                        (datafusion::arrow::datatypes::DataType::Null, vec![])
+                        (
+                            datafusion::arrow::datatypes::DataType::Null,
+                            vec![sub_alias.clone()],
+                            vec![],
+                        )
                     };
-                let mut provenance = vec![sub_alias.clone()];
-                provenance.extend(inner_provenance);
                 ColumnEntry {
                     name: name.clone(),
                     name_lower: Arc::from(name.to_lowercase().as_str()),
                     data_type,
                     source_alias: sub_alias.clone().into(),
                     provenance,
+                    qualified_provenance,
                     unique_id: self.context.next_column_id(),
                 }
             })
@@ -404,6 +417,52 @@ impl<'a> SqlGenerator<'a> {
     }
 }
 
+/// Truncates `base` to at most `max_len` bytes without splitting a UTF-8
+/// character.
+///
+/// Dialect identifier limits (Oracle's 128, SQL Server's 128) are denominated in
+/// bytes, so slicing `&s[..max_len]` directly is not safe: a name whose encoding
+/// has no char boundary at that offset panics. Column names originate from remote
+/// catalog metadata, so this is reachable from operator-controlled input.
+fn truncate_bytes_on_char_boundary(base: &str, max_len: usize) -> &str {
+    if base.len() <= max_len {
+        return base;
+    }
+    let mut end = max_len;
+    while end > 0 && !base.is_char_boundary(end) {
+        end -= 1;
+    }
+    &base[..end]
+}
+
+/// Disambiguates an identifier candidate against previously taken names, capping length at `max_len` bytes.
+#[must_use]
+fn disambiguate_identifier(
+    base: &str,
+    taken: &mut std::collections::HashSet<String>,
+    max_len: usize,
+) -> Arc<str> {
+    debug_assert!(
+        max_len >= 3,
+        "max_identifier_length must allow a `_N` suffix, got {max_len}"
+    );
+    let base_truncated = truncate_bytes_on_char_boundary(base, max_len);
+    let mut candidate = base_truncated.to_string();
+    let mut counter = 1usize;
+    loop {
+        if candidate.len() <= max_len && !taken.contains(&candidate.to_lowercase()) {
+            break;
+        }
+        let suffix = format!("_{counter}");
+        let max_base_len = max_len.saturating_sub(suffix.len());
+        let prefix = truncate_bytes_on_char_boundary(base, max_base_len);
+        candidate = format!("{prefix}{suffix}");
+        counter += 1;
+    }
+    taken.insert(candidate.to_lowercase());
+    candidate.into()
+}
+
 /// Derives a stable bare name from a potentially qualified schema field name.
 ///
 /// This function normalizes field names to match what the normalized expressions produce.
@@ -421,9 +480,13 @@ impl<'a> SqlGenerator<'a> {
 pub fn derive_bare_name(name: &str) -> Arc<str> {
     let base = if (name.contains('(') && name.ends_with(')'))
         || name.contains("PARTITION BY")
+        || name.contains("partition by")
         || name.contains("ORDER BY")
+        || name.contains("order by")
         || name.contains("RANGE")
+        || name.contains("range")
         || name.contains("ROWS")
+        || name.contains("rows")
     {
         strip_qualifiers_in_function(name)
     } else if let Some(idx) = name.rfind('.') {
@@ -439,47 +502,88 @@ pub fn derive_bare_name(name: &str) -> Arc<str> {
     sanitized.into()
 }
 
-/// Strips all qualifiers (single or multi-part) from inside function call expressions.
+/// Finds `needle` in `haystack` case-insensitively, returning a byte offset that
+/// is valid for `haystack`.
+///
+/// Deliberately avoids `to_lowercase()`: that mapping is not byte-length
+/// preserving (`'İ'` U+0130 is 2 bytes but lowercases to 3), so an offset located
+/// in a lowercased copy cannot be used to slice the original. Comparing
+/// equal-length ASCII-case-folded byte runs cannot split a char boundary.
+fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let (h, n) = (haystack.as_bytes(), needle.as_bytes());
+    if n.is_empty() || n.len() > h.len() {
+        return None;
+    }
+    (0..=h.len() - n.len()).find(|&i| h[i..i + n.len()].eq_ignore_ascii_case(n))
+}
+
+/// Strips all qualifiers (single or multi-part) from inside function call expressions
+/// and bracketed identifiers.
 ///
 /// "SUM(testdb.public.orders.amount)"   → "SUM(amount)"
 /// "SUM(o.amount)"                      → "SUM(amount)"
 /// "COUNT(DISTINCT testdb.public.u.id)" → "COUNT(DISTINCT id)"
 fn strip_qualifiers_in_function(name: &str) -> String {
-    let mut result = String::with_capacity(name.len());
-    let mut current_part = String::new();
-    let mut depth: usize = 0;
+    let mut s = name;
+    const DEFAULT_FRAMES_IN_ALIASES: &[&str] = &[
+        " range between unbounded preceding and unbounded following",
+        " range between unbounded preceding and current row",
+        " rows between unbounded preceding and unbounded following",
+        " rows between unbounded preceding and current row",
+    ];
+    for default_frame in DEFAULT_FRAMES_IN_ALIASES {
+        if let Some(pos) = find_ci(s, default_frame) {
+            s = &s[..pos];
+            break;
+        }
+    }
 
-    for ch in name.chars() {
+    let mut result = String::with_capacity(s.len());
+    let mut current_part = String::new();
+    let mut paren_depth: usize = 0;
+    let mut bracket_depth: usize = 0;
+
+    for ch in s.chars() {
         match ch {
             '(' => {
                 result.push_str(&current_part);
                 current_part.clear();
                 result.push('(');
-                depth += 1;
+                paren_depth += 1;
             }
             ')' => {
-                // End of function arguments - flush the last part
                 let last = current_part.rsplit('.').next().unwrap_or(&current_part);
                 result.push_str(last);
                 current_part.clear();
                 result.push(')');
-                depth = depth.saturating_sub(1);
+                paren_depth = paren_depth.saturating_sub(1);
             }
-            ',' if depth > 0 => {
-                // Argument separator
+            '[' => {
+                result.push_str(&current_part);
+                current_part.clear();
+                result.push('[');
+                bracket_depth += 1;
+            }
+            ']' => {
+                let last = current_part.rsplit('.').next().unwrap_or(&current_part);
+                result.push_str(last);
+                current_part.clear();
+                result.push(']');
+                bracket_depth = bracket_depth.saturating_sub(1);
+            }
+            ',' if paren_depth > 0 || bracket_depth > 0 => {
                 let last = current_part.rsplit('.').next().unwrap_or(&current_part);
                 result.push_str(last);
                 current_part.clear();
                 result.push(',');
             }
-            ' ' | '+' | '-' | '*' | '/' if depth > 0 => {
-                // Operator or space inside function - also separators
+            ' ' | '+' | '-' | '*' | '/' if paren_depth > 0 || bracket_depth > 0 => {
                 let last = current_part.rsplit('.').next().unwrap_or(&current_part);
                 result.push_str(last);
                 current_part.clear();
                 result.push(ch);
             }
-            _ if depth > 0 => {
+            _ if paren_depth > 0 || bracket_depth > 0 => {
                 current_part.push(ch);
             }
             _ => {
@@ -515,7 +619,16 @@ impl Drop for RecursionGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::datasource::DefaultTableSource;
+    use datafusion::datasource::empty::EmptyTable;
+    use datafusion::logical_expr::{
+        Expr, LogicalPlanBuilder, WindowFrame, WindowFrameBound, WindowFrameUnits, col,
+    };
+    use datafusion::scalar::ScalarValue;
     use datafusion::sql::unparser::dialect::PostgreSqlDialect as DataFusionPostgres;
+    use std::collections::HashSet;
+
     #[tokio::test]
     async fn test_concurrent_generation_safety() {
         let sqlparser_dialect = DataFusionPostgres {};
@@ -536,5 +649,445 @@ mod tests {
         for task in tasks {
             task.await.unwrap();
         }
+    }
+
+    #[test]
+    fn test_user_authored_rows_frame_under_order_by_survives_verbatim() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Int64, false),
+            Field::new("t", DataType::Int64, false),
+        ]));
+        let table_source = Arc::new(DefaultTableSource::new(Arc::new(EmptyTable::new(schema))));
+        let scan = LogicalPlanBuilder::scan("t", table_source, None)
+            .unwrap()
+            .build()
+            .unwrap();
+
+        // Author a ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING window under ORDER BY
+        let custom_frame = WindowFrame::new_bounds(
+            WindowFrameUnits::Rows,
+            WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
+            WindowFrameBound::Following(ScalarValue::UInt64(None)),
+        );
+
+        let window_expr =
+            Expr::WindowFunction(Box::new(datafusion::logical_expr::expr::WindowFunction {
+                fun: datafusion::logical_expr::WindowFunctionDefinition::AggregateUDF(
+                    datafusion::functions_aggregate::sum::sum_udaf(),
+                ),
+                params: datafusion::logical_expr::expr::WindowFunctionParams {
+                    args: vec![col("x")],
+                    partition_by: vec![],
+                    order_by: vec![datafusion::logical_expr::expr::Sort {
+                        expr: col("t"),
+                        asc: true,
+                        nulls_first: false,
+                    }],
+                    window_frame: custom_frame,
+                    null_treatment: None,
+                    distinct: false,
+                    filter: None,
+                },
+            }));
+
+        let plan = LogicalPlanBuilder::from(scan)
+            .window(vec![window_expr])
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let sql = crate::sql_gen::get_sql_for_plan(&plan, "oracle")
+            .unwrap()
+            .unwrap();
+
+        let sql_upper = sql.to_uppercase();
+        assert!(
+            sql_upper.contains("ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING"),
+            "User-authored ROWS frame must survive verbatim in generated Oracle SQL: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_user_authored_range_frame_under_order_by_survives_verbatim() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Int64, false),
+            Field::new("t", DataType::Int64, false),
+        ]));
+        let table_source = Arc::new(DefaultTableSource::new(Arc::new(EmptyTable::new(schema))));
+        let scan = LogicalPlanBuilder::scan("t", table_source, None)
+            .unwrap()
+            .build()
+            .unwrap();
+
+        // Author an explicit RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING window under ORDER BY
+        let custom_frame = WindowFrame::new_bounds(
+            WindowFrameUnits::Range,
+            WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
+            WindowFrameBound::Following(ScalarValue::UInt64(None)),
+        );
+
+        let window_expr =
+            Expr::WindowFunction(Box::new(datafusion::logical_expr::expr::WindowFunction {
+                fun: datafusion::logical_expr::WindowFunctionDefinition::AggregateUDF(
+                    datafusion::functions_aggregate::sum::sum_udaf(),
+                ),
+                params: datafusion::logical_expr::expr::WindowFunctionParams {
+                    args: vec![col("x")],
+                    partition_by: vec![],
+                    order_by: vec![datafusion::logical_expr::expr::Sort {
+                        expr: col("t"),
+                        asc: true,
+                        nulls_first: false,
+                    }],
+                    window_frame: custom_frame,
+                    null_treatment: None,
+                    distinct: false,
+                    filter: None,
+                },
+            }));
+
+        let plan = LogicalPlanBuilder::from(scan)
+            .window(vec![window_expr])
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let sql = crate::sql_gen::get_sql_for_plan(&plan, "oracle")
+            .unwrap()
+            .unwrap();
+
+        let sql_upper = sql.to_uppercase();
+        assert!(
+            sql_upper.contains("RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING"),
+            "User-authored explicit RANGE frame with ORDER BY must survive verbatim: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_user_authored_rows_current_row_under_order_by_survives() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Int64, false),
+            Field::new("t", DataType::Int64, false),
+        ]));
+        let table_source = Arc::new(DefaultTableSource::new(Arc::new(EmptyTable::new(schema))));
+        let scan = LogicalPlanBuilder::scan("t", table_source, None)
+            .unwrap()
+            .build()
+            .unwrap();
+
+        // This is the value DataFusion's sql planner builds from user-authored
+        // `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. It is value-equal
+        // to `WindowFrame::new(Some(true))`, which an earlier revision used as the
+        // "synthetic default" sentinel for ordered windows -- and therefore
+        // silently elided, rewriting ROWS semantics into peer-inclusive RANGE.
+        let custom_frame = WindowFrame::new_bounds(
+            WindowFrameUnits::Rows,
+            WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
+            WindowFrameBound::CurrentRow,
+        );
+        assert_eq!(
+            custom_frame,
+            WindowFrame::new(Some(true)),
+            "guard: the sentinel this test defends against must still be value-equal"
+        );
+
+        let window_expr =
+            Expr::WindowFunction(Box::new(datafusion::logical_expr::expr::WindowFunction {
+                fun: datafusion::logical_expr::WindowFunctionDefinition::AggregateUDF(
+                    datafusion::functions_aggregate::sum::sum_udaf(),
+                ),
+                params: datafusion::logical_expr::expr::WindowFunctionParams {
+                    args: vec![col("x")],
+                    partition_by: vec![],
+                    order_by: vec![datafusion::logical_expr::expr::Sort {
+                        expr: col("t"),
+                        asc: true,
+                        nulls_first: false,
+                    }],
+                    window_frame: custom_frame,
+                    null_treatment: None,
+                    distinct: false,
+                    filter: None,
+                },
+            }));
+
+        let plan = LogicalPlanBuilder::from(scan)
+            .window(vec![window_expr])
+            .unwrap()
+            .build()
+            .unwrap();
+
+        for dialect in ["oracle", "postgres"] {
+            let sql = crate::sql_gen::get_sql_for_plan(&plan, dialect)
+                .unwrap()
+                .unwrap();
+            let sql_upper = sql.to_uppercase();
+            assert!(
+                sql_upper.contains("ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"),
+                "ROWS ... CURRENT ROW must be emitted verbatim for {dialect}, \
+                 not elided into a peer-inclusive RANGE: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ordered_window_always_emits_frame() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Int64, false),
+            Field::new("t", DataType::Int64, false),
+        ]));
+        let table_source = Arc::new(DefaultTableSource::new(Arc::new(EmptyTable::new(schema))));
+        let scan = LogicalPlanBuilder::scan("t", table_source, None)
+            .unwrap()
+            .build()
+            .unwrap();
+
+        // The frame datafusion-sql actually synthesizes for `OVER (ORDER BY t)`
+        // when the sort key is not provably unique: RANGE, non-causal.
+        let planner_default = WindowFrame::new(Some(false));
+
+        let window_expr =
+            Expr::WindowFunction(Box::new(datafusion::logical_expr::expr::WindowFunction {
+                fun: datafusion::logical_expr::WindowFunctionDefinition::AggregateUDF(
+                    datafusion::functions_aggregate::sum::sum_udaf(),
+                ),
+                params: datafusion::logical_expr::expr::WindowFunctionParams {
+                    args: vec![col("x")],
+                    partition_by: vec![],
+                    order_by: vec![datafusion::logical_expr::expr::Sort {
+                        expr: col("t"),
+                        asc: true,
+                        nulls_first: false,
+                    }],
+                    window_frame: planner_default,
+                    null_treatment: None,
+                    distinct: false,
+                    filter: None,
+                },
+            }));
+
+        let plan = LogicalPlanBuilder::from(scan)
+            .window(vec![window_expr])
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let sql = crate::sql_gen::get_sql_for_plan(&plan, "oracle")
+            .unwrap()
+            .unwrap();
+
+        let sql_upper = sql.to_uppercase();
+        assert!(
+            sql_upper.contains("OVER (ORDER BY"),
+            "Window function OVER (ORDER BY ...) must be present: {}",
+            sql
+        );
+        assert!(
+            sql_upper.contains("RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"),
+            "The planner's own default frame must be emitted, spelling out the \
+             peer-inclusive RANGE semantics rather than relying on the remote's \
+             implicit default: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_unordered_window_still_elides_implicit_default() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Int64, false),
+            Field::new("t", DataType::Int64, false),
+        ]));
+        let table_source = Arc::new(DefaultTableSource::new(Arc::new(EmptyTable::new(schema))));
+        let scan = LogicalPlanBuilder::scan("t", table_source, None)
+            .unwrap()
+            .build()
+            .unwrap();
+
+        // No ORDER BY: the implicit default (and the value DataFusion plans) is
+        // ROWS UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING. Eliding is safe here
+        // because it is the same expression for both sides.
+        let window_expr =
+            Expr::WindowFunction(Box::new(datafusion::logical_expr::expr::WindowFunction {
+                fun: datafusion::logical_expr::WindowFunctionDefinition::AggregateUDF(
+                    datafusion::functions_aggregate::sum::sum_udaf(),
+                ),
+                params: datafusion::logical_expr::expr::WindowFunctionParams {
+                    args: vec![col("x")],
+                    partition_by: vec![],
+                    order_by: vec![],
+                    window_frame: WindowFrame::new(None),
+                    null_treatment: None,
+                    distinct: false,
+                    filter: None,
+                },
+            }));
+
+        let plan = LogicalPlanBuilder::from(scan)
+            .window(vec![window_expr])
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let sql = crate::sql_gen::get_sql_for_plan(&plan, "oracle")
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            !sql.to_uppercase().contains("BETWEEN UNBOUNDED PRECEDING"),
+            "Unordered implicit default should still be elided: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_disambiguate_truncates_multibyte_on_char_boundary() {
+        // 60 CJK chars = 180 bytes; byte 128 is not a char boundary.
+        let base = "中".repeat(60);
+        let mut taken = HashSet::new();
+        let name = disambiguate_identifier(&base, &mut taken, 128);
+        assert!(
+            name.len() <= 128,
+            "must respect the byte cap, got {}",
+            name.len()
+        );
+        assert!(
+            base.starts_with(name.as_ref()),
+            "truncation must be a prefix, not a mangled byte slice"
+        );
+    }
+
+    #[test]
+    fn test_disambiguate_multibyte_collision_adds_suffix_without_panic() {
+        let base = "中".repeat(60);
+        let mut taken = HashSet::new();
+        let first = disambiguate_identifier(&base, &mut taken, 128);
+        let second = disambiguate_identifier(&base, &mut taken, 128);
+        assert_ne!(first, second, "colliding names must be disambiguated");
+        assert!(second.len() <= 128);
+        assert!(second.as_ref().ends_with("_1"), "got {second}");
+    }
+
+    #[test]
+    fn test_disambiguate_exact_fit_is_not_renamed() {
+        let mut taken = HashSet::new();
+        assert_eq!(&*disambiguate_identifier("abc", &mut taken, 128), "abc");
+    }
+
+    #[test]
+    fn test_disambiguate_smallest_valid_limit_terminates() {
+        // Guards the livelock: with the old loop, `candidate.len() > max_len`
+        // could never become false once max_base_len saturated to 0. A
+        // `max_len` below 3 is now rejected outright by the debug_assert in
+        // disambiguate_identifier, since it cannot fit a `_N` suffix.
+        let mut taken = HashSet::new();
+        let a = disambiguate_identifier("abcdef", &mut taken, 3);
+        assert!(a.len() <= 3, "got {a}");
+        let b = disambiguate_identifier("abcdef", &mut taken, 3);
+        assert!(b.len() <= 3, "got {b}");
+        assert_ne!(a, b, "collision must still be resolved within the cap");
+    }
+
+    #[test]
+    fn test_strip_qualifiers_handles_non_ascii_case_folding() {
+        // 'İ' (U+0130) is 2 bytes but lowercases to 3 ("i̇"), so an offset
+        // located via to_lowercase() is not an offset into the original.
+        let name = format!(
+            "{}abc RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
+            "İ".repeat(10)
+        );
+        assert_eq!(
+            strip_qualifiers_in_function(&name),
+            format!("{}abc", "İ".repeat(10))
+        );
+    }
+
+    #[test]
+    fn test_strip_qualifiers_strips_frame_from_alias() {
+        assert_eq!(
+            strip_qualifiers_in_function(
+                "SUM(t.amount) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
+            ),
+            "SUM(amount)"
+        );
+    }
+
+    #[test]
+    fn test_find_ci_is_case_insensitive_and_char_safe() {
+        assert_eq!(find_ci("SUM(A.b) rows between", " ROWS BETWEEN"), Some(8));
+        assert_eq!(find_ci("abc", "xyz"), None);
+        assert_eq!(find_ci("İİİ", " range"), None);
+    }
+
+    #[test]
+    fn test_derive_bare_name_non_ascii_function_alias() {
+        assert_eq!(
+            derive_bare_name("SUM(中.值) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW")
+                .as_ref(),
+            "SUM(值)"
+        );
+    }
+
+    #[test]
+    fn test_join_qualified_column_resolution() {
+        let schema1 = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("val", DataType::Utf8, false),
+        ]));
+        let schema2 = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("val", DataType::Utf8, false),
+        ]));
+        let scan1 = LogicalPlanBuilder::scan(
+            "t1",
+            Arc::new(DefaultTableSource::new(Arc::new(EmptyTable::new(schema1)))),
+            None,
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        let scan2 = LogicalPlanBuilder::scan(
+            "t2",
+            Arc::new(DefaultTableSource::new(Arc::new(EmptyTable::new(schema2)))),
+            None,
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+
+        let join_plan = LogicalPlanBuilder::from(scan1)
+            .join(
+                scan2,
+                datafusion::logical_expr::JoinType::Inner,
+                (vec!["id"], vec!["id"]),
+                None,
+            )
+            .unwrap()
+            .project(vec![col("t1.id"), col("t2.val")])
+            .unwrap()
+            .sort(vec![datafusion::logical_expr::expr::Sort {
+                expr: col("t1.id"),
+                asc: true,
+                nulls_first: false,
+            }])
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let sql = crate::sql_gen::get_sql_for_plan(&join_plan, "oracle")
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            sql.contains("INNER JOIN"),
+            "Join must be generated: {}",
+            sql
+        );
+        assert!(
+            sql.contains("ORDER BY"),
+            "ORDER BY on t1.id must resolve unambiguously: {}",
+            sql
+        );
     }
 }

@@ -297,7 +297,7 @@ fn unparse_window_empty_over_omits_frame() {
 }
 
 #[test]
-fn unparse_window_with_order_by_preserves_frame() {
+fn unparse_window_with_order_by_emits_rows_frame() {
     use datafusion::functions_window::expr_fn::row_number;
     use datafusion::logical_expr::col;
     use datafusion::prelude::ExprFunctionExt;
@@ -315,9 +315,40 @@ fn unparse_window_with_order_by_preserves_frame() {
         "Expected ORDER BY in: {}",
         sql
     );
+    // `ExprFunctionExt` builds the frame `WindowFrame::new(Some(true))` -- ROWS
+    // UNBOUNDED PRECEDING AND CURRENT ROW. Under ORDER BY this is *not* the
+    // implicit default (which is peer-inclusive RANGE), so it must be emitted
+    // rather than elided. Eliding it would silently rewrite the frame's
+    // semantics for any peer values in the sort key.
     assert!(
-        sql.contains("ROWS BETWEEN"),
-        "Expected window frame when ORDER BY is present in: {}",
+        sql.contains("ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"),
+        "ROWS frame under ORDER BY must be emitted verbatim: {}",
+        sql
+    );
+}
+
+#[test]
+fn unparse_window_range_current_row_frame_under_order_by_is_emitted() {
+    use datafusion::functions_window::expr_fn::row_number;
+    use datafusion::logical_expr::col;
+    use datafusion::prelude::ExprFunctionExt;
+    use strake_sql::sql_gen::unparse_expr_to_sql;
+
+    // The frame datafusion-sql synthesizes for `OVER (ORDER BY t)` with a
+    // non-unique sort key. Emitting it is redundant but not incorrect: the
+    // remote applies the identical RANGE default either way. What must never
+    // happen is the opposite substitution -- ROWS being elided into RANGE.
+    let window_fn = row_number()
+        .partition_by(vec![col("INGOT_NUM")])
+        .order_by(vec![col("EVENT_DATE").sort(true, false)])
+        .window_frame(datafusion::logical_expr::WindowFrame::new(Some(false)))
+        .build()
+        .unwrap();
+
+    let sql = unparse_expr_to_sql(&window_fn, "oracle").unwrap();
+    assert!(
+        sql.contains("RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"),
+        "Planner's own default frame should be emitted, not elided: {}",
         sql
     );
 }

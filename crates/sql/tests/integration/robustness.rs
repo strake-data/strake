@@ -151,6 +151,7 @@ async fn test_scope_violation_context() -> Result<()> {
                         data_type: DataType::Int32,
                         source_alias: "rel_0".into(),
                         provenance: vec!["rel_0".to_string()],
+                        qualified_provenance: vec![],
                         unique_id: strake_sql::sql_generator::context::ColumnId(0),
                     },
                     ColumnEntry {
@@ -159,6 +160,7 @@ async fn test_scope_violation_context() -> Result<()> {
                         data_type: DataType::Utf8,
                         source_alias: "rel_0".into(),
                         provenance: vec!["rel_0".to_string()],
+                        qualified_provenance: vec![],
                         unique_id: strake_sql::sql_generator::context::ColumnId(1),
                     },
                 ]
@@ -363,6 +365,7 @@ async fn test_function_mapper_security() -> Result<()> {
                 data_type: DataType::Int32,
                 source_alias: "rel_0".into(),
                 provenance: vec!["rel_0".to_string()],
+                qualified_provenance: vec![],
                 unique_id: strake_sql::sql_generator::context::ColumnId(0),
             }]
             .into(),

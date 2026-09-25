@@ -88,6 +88,13 @@ pub(crate) fn handle_table_scan(
             let name_str = f.name();
             let stable_name = super::derive_bare_name(name_str);
             let stable_name_lower = Arc::from(stable_name.to_lowercase().as_str());
+            let qualified_provenance = qualifiers
+                .iter()
+                .map(|q| crate::sql_generator::context::ColumnProvenance {
+                    qualifier: Some(q.clone()),
+                    column_name: name_str.to_string(),
+                })
+                .collect();
 
             ColumnEntry {
                 name: stable_name,
@@ -95,6 +102,7 @@ pub(crate) fn handle_table_scan(
                 data_type: f.data_type().clone(),
                 source_alias: alias_arc.clone(),
                 provenance,
+                qualified_provenance,
                 unique_id: generator.context.next_column_id(),
             }
         })
@@ -143,6 +151,13 @@ pub(crate) fn handle_table_scan(
             let name_str = f.name();
             let stable_name = super::derive_bare_name(name_str);
             let stable_name_lower = Arc::from(stable_name.to_lowercase().as_str());
+            let qualified_provenance = qualifiers
+                .iter()
+                .map(|q| crate::sql_generator::context::ColumnProvenance {
+                    qualifier: Some(q.clone()),
+                    column_name: name_str.to_string(),
+                })
+                .collect();
 
             ColumnEntry {
                 name: stable_name,
@@ -150,6 +165,7 @@ pub(crate) fn handle_table_scan(
                 data_type: f.data_type().clone(),
                 source_alias: alias_arc.clone(),
                 provenance,
+                qualified_provenance,
                 unique_id: generator.context.next_column_id(),
             }
         })

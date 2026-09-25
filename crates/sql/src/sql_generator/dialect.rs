@@ -83,6 +83,14 @@ pub trait DialectCapabilities: Send + Sync {
     fn supports_window_frame_without_order_by(&self) -> bool {
         true
     }
+    /// Returns true if the dialect supports `GROUPS` window frame units.
+    fn supports_window_frame_groups(&self) -> bool {
+        true
+    }
+    /// Maximum allowed identifier length in bytes for this dialect (e.g. 128 for modern Oracle/Postgres, 30 for Oracle <12.2).
+    fn max_identifier_length(&self) -> usize {
+        128
+    }
     /// Returns the offset rows preference/suffix style for the dialect.
     fn offset_rows_style(&self) -> sqlparser::ast::OffsetRows {
         sqlparser::ast::OffsetRows::None

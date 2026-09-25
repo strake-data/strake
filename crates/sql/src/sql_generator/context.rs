@@ -48,6 +48,15 @@ impl std::fmt::Display for ColumnId {
     }
 }
 
+/// Qualified column provenance tracking original qualifier and column name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ColumnProvenance {
+    /// Original table or relation qualifier, if any.
+    pub qualifier: Option<String>,
+    /// Original column name before disambiguation or aliasing.
+    pub column_name: String,
+}
+
 /// Metadata for a column in the SQL generator's scope.
 #[derive(Debug, Clone)]
 pub struct ColumnEntry {
@@ -63,6 +72,8 @@ pub struct ColumnEntry {
     /// Chain of aliases/qualifiers this column has passed through.
     /// Used for disambiguation in complex joins.
     pub provenance: Vec<String>,
+    /// Qualified provenance history tracking `(Option<Qualifier>, original_name)`.
+    pub qualified_provenance: Vec<ColumnProvenance>,
     /// Global unique identifier for this specific column instance,
     /// used to track columns through transformations.
     pub unique_id: ColumnId,
@@ -271,69 +282,96 @@ impl GeneratorContext {
     ) -> Result<&ColumnEntry, SqlGenError> {
         let lookup_name = crate::sql_generator::translator::derive_bare_name(&col.name);
         let lookup_lower = lookup_name.to_lowercase();
+        let sought_qualifier = col
+            .relation
+            .as_ref()
+            .map(|r| r.to_string().replace('"', "").to_lowercase());
 
         for scope in self.scope_stack.iter().rev() {
-            // Primary match: derive_bare_name normalization
-            let mut matches: Vec<&ColumnEntry> = scope
-                .columns
-                .iter()
-                .filter(|e| {
-                    let entry_bare =
-                        crate::sql_generator::translator::derive_bare_name(e.name.as_ref());
-                    entry_bare == lookup_name
-                })
-                .collect();
-
-            // Fallback: direct case-insensitive comparison (safety net)
-            if matches.is_empty() {
-                matches = scope
+            if let Some(ref rel_norm) = sought_qualifier {
+                let qualified_matches: Vec<&ColumnEntry> = scope
                     .columns
                     .iter()
-                    .filter(|e| e.name_lower.as_ref() == lookup_lower.as_str())
+                    .filter(|e| {
+                        let name_matches = {
+                            let entry_bare =
+                                crate::sql_generator::translator::derive_bare_name(e.name.as_ref());
+                            entry_bare == lookup_name
+                                || e.name_lower.as_ref() == lookup_lower.as_str()
+                                || e.qualified_provenance.iter().any(|qp| {
+                                    let p_bare = crate::sql_generator::translator::derive_bare_name(
+                                        &qp.column_name,
+                                    );
+                                    p_bare == lookup_name
+                                        || qp.column_name.to_lowercase() == lookup_lower
+                                })
+                                || e.provenance.iter().any(|p| {
+                                    let p_bare =
+                                        crate::sql_generator::translator::derive_bare_name(p);
+                                    p_bare == lookup_name || p.to_lowercase() == lookup_lower
+                                })
+                        };
+                        if !name_matches {
+                            return false;
+                        }
+                        e.source_alias.as_ref().replace('"', "").to_lowercase() == *rel_norm
+                            || e.provenance
+                                .iter()
+                                .any(|p| p.replace('"', "").to_lowercase() == *rel_norm)
+                            || e.qualified_provenance.iter().any(|qp| {
+                                qp.qualifier
+                                    .as_deref()
+                                    .is_some_and(|q| q.replace('"', "").to_lowercase() == *rel_norm)
+                            })
+                    })
                     .collect();
-            }
 
-            if matches.is_empty() {
-                continue;
-            }
-
-            if let Some(relation) = &col.relation {
-                let table_str = relation.to_string();
-                let table_norm = table_str.replace('"', "").to_lowercase();
-
-                let specific = matches.iter().find(|e| {
-                    e.source_alias.as_ref().replace('"', "").to_lowercase() == table_norm
-                        || e.provenance
+                if qualified_matches.len() == 1 {
+                    return Ok(qualified_matches[0]);
+                } else if qualified_matches.len() > 1 {
+                    return Err(SqlGenError::AmbiguousColumn {
+                        name: col.to_string(),
+                        candidates: qualified_matches
                             .iter()
-                            .any(|p| p.replace('"', "").to_lowercase() == table_norm)
-                });
-
-                if let Some(found) = specific {
-                    return Ok(found);
+                            .map(|e| format!("{}.{}", e.source_alias, e.name))
+                            .collect(),
+                    });
                 }
-
-                let scope_alias_norm = scope.alias.replace('"', "").to_lowercase();
-                if !scope
-                    .qualifiers
+            } else {
+                let unqualified_matches: Vec<&ColumnEntry> = scope
+                    .columns
                     .iter()
-                    .any(|q| q.replace('"', "").to_lowercase() == table_norm)
-                    && scope_alias_norm != table_norm
-                {
-                    continue;
+                    .filter(|e| {
+                        let entry_bare =
+                            crate::sql_generator::translator::derive_bare_name(e.name.as_ref());
+                        entry_bare == lookup_name
+                            || e.name_lower.as_ref() == lookup_lower.as_str()
+                            || e.qualified_provenance.iter().any(|qp| {
+                                let p_bare = crate::sql_generator::translator::derive_bare_name(
+                                    &qp.column_name,
+                                );
+                                p_bare == lookup_name
+                                    || qp.column_name.to_lowercase() == lookup_lower
+                            })
+                            || e.provenance.iter().any(|p| {
+                                let p_bare = crate::sql_generator::translator::derive_bare_name(p);
+                                p_bare == lookup_name || p.to_lowercase() == lookup_lower
+                            })
+                    })
+                    .collect();
+
+                if unqualified_matches.len() == 1 {
+                    return Ok(unqualified_matches[0]);
+                } else if unqualified_matches.len() > 1 {
+                    return Err(SqlGenError::AmbiguousColumn {
+                        name: col.name.clone(),
+                        candidates: unqualified_matches
+                            .iter()
+                            .map(|e| format!("{}.{}", e.source_alias, e.name))
+                            .collect(),
+                    });
                 }
             }
-
-            if matches.len() == 1 {
-                return Ok(matches[0]);
-            }
-
-            return Err(SqlGenError::AmbiguousColumn {
-                name: col.name.clone(),
-                candidates: matches
-                    .iter()
-                    .map(|e| format!("{}.{}", e.source_alias, e.name))
-                    .collect(),
-            });
         }
 
         Err(SqlGenError::ScopeViolation {

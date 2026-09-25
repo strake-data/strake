@@ -79,8 +79,13 @@ pub(crate) fn handle_projection(
             let (qualifier, _field) = proj.schema.qualified_field(i);
             let name = output_names[i].clone();
             let mut provenance = vec![proj_alias.clone()];
+            let mut qualified_provenance = vec![];
             if let Some(q) = qualifier {
                 provenance.push(q.to_string());
+                qualified_provenance.push(crate::sql_generator::context::ColumnProvenance {
+                    qualifier: Some(q.to_string()),
+                    column_name: name.to_string(),
+                });
             }
             ColumnEntry {
                 name: name.clone(),
@@ -88,6 +93,7 @@ pub(crate) fn handle_projection(
                 data_type: proj.schema.field(i).data_type().clone(),
                 source_alias: Arc::from(proj_alias.as_str()),
                 provenance,
+                qualified_provenance,
                 unique_id: generator.context.next_column_id(),
             }
         })
@@ -196,8 +202,13 @@ pub(crate) fn handle_subquery_alias(
             let (qualifier, field) = alias.schema.qualified_field(i);
             let name = derive_bare_name(field.name());
             let mut provenance = vec![subquery_alias.clone(), alias.alias.to_string()];
+            let mut qualified_provenance = vec![];
             if let Some(q) = qualifier {
                 provenance.push(q.to_string());
+                qualified_provenance.push(crate::sql_generator::context::ColumnProvenance {
+                    qualifier: Some(q.to_string()),
+                    column_name: name.to_string(),
+                });
             }
             ColumnEntry {
                 name: name.clone(),
@@ -205,6 +216,7 @@ pub(crate) fn handle_subquery_alias(
                 data_type: field.data_type().clone(),
                 source_alias: subquery_alias.clone().into(),
                 provenance,
+                qualified_provenance,
                 unique_id: generator.context.next_column_id(),
             }
         })

@@ -100,13 +100,50 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
                     })
                     .collect::<Result<Vec<_>, SqlGenError>>()?;
 
-                let window_frame = if order_by.is_empty()
-                    && !self
+                // Elide a frame only when it is value-identical to the dialect's
+                // implicit default, so that suppressing it cannot change results.
+                //
+                // Unordered windows: both Oracle and Postgres imply
+                // `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING`,
+                // which is exactly `WindowFrame::new(None)`. A user-authored
+                // frame with that value is semantically the same expression, so
+                // eliding is safe.
+                //
+                // Ordered windows: the implicit default is
+                // `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`
+                // (peer-inclusive). DataFusion's planner synthesizes exactly
+                // `WindowFrame::new(Some(false))` for a non-unique sort key, but
+                // a user-authored `ROWS ... CURRENT ROW` is a *different*
+                // `WindowFrame` value. Matching a sentinel by value equality
+                // would therefore elide the ROWS frame (turning it into the
+                // peer-inclusive RANGE) while still emitting the real default,
+                // which inverts the intent twice over. So ordered frames are
+                // always emitted: Oracle accepts an explicit frame under
+                // ORDER BY and treats `RANGE UNBOUNDED PRECEDING AND CURRENT
+                // ROW` identically to the implicit default.
+                let elides_implicit_unordered_default =
+                    |frame: &datafusion::logical_expr::WindowFrame| -> bool {
+                        frame == &datafusion::logical_expr::WindowFrame::new(None)
+                    };
+
+                let window_frame = if order_by.is_empty() {
+                    if elides_implicit_unordered_default(&window.params.window_frame) {
+                        None
+                    } else if !self
                         .dialect
                         .capabilities
                         .supports_window_frame_without_order_by()
-                {
-                    None
+                    {
+                        return Err(SqlGenError::UnsupportedPlan {
+                            message: format!(
+                                "Dialect '{}' does not support explicit window frame without an ORDER BY clause",
+                                self.dialect.source_type.as_str()
+                            ),
+                            node_type: "WindowFunction".to_string(),
+                        });
+                    } else {
+                        Some(self.translate_window_frame(&window.params.window_frame)?)
+                    }
                 } else {
                     Some(self.translate_window_frame(&window.params.window_frame)?)
                 };
@@ -371,6 +408,18 @@ impl<'a, 'b> ExprTranslator<'a, 'b> {
     ) -> Result<sqlparser::ast::WindowFrame, SqlGenError> {
         use datafusion::logical_expr::WindowFrameUnits;
         use sqlparser::ast::WindowFrameUnits as SqlUnits;
+
+        if frame.units == WindowFrameUnits::Groups
+            && !self.dialect.capabilities.supports_window_frame_groups()
+        {
+            return Err(SqlGenError::UnsupportedPlan {
+                message: format!(
+                    "Dialect '{}' does not support GROUPS window frame units",
+                    self.dialect.source_type.as_str()
+                ),
+                node_type: "WindowFunction".to_string(),
+            });
+        }
 
         let units = match frame.units {
             WindowFrameUnits::Rows => SqlUnits::Rows,

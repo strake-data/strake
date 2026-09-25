@@ -382,6 +382,12 @@ impl crate::sql_generator::dialect::DialectCapabilities for OracleDialect {
     fn supports_window_frame_without_order_by(&self) -> bool {
         false
     }
+    fn supports_window_frame_groups(&self) -> bool {
+        false
+    }
+    fn max_identifier_length(&self) -> usize {
+        128
+    }
     fn strip_catalog_qualifier(&self) -> bool {
         true
     }

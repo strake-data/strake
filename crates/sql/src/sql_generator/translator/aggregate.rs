@@ -140,8 +140,13 @@ pub(crate) fn handle_aggregate(
             let (qualifier, field) = agg.schema.qualified_field(i);
             let name = output_names[i].clone();
             let mut provenance = vec![output_alias.clone()];
+            let mut qualified_provenance = vec![];
             if let Some(q) = qualifier {
                 provenance.push(q.to_string());
+                qualified_provenance.push(crate::sql_generator::context::ColumnProvenance {
+                    qualifier: Some(q.to_string()),
+                    column_name: name.to_string(),
+                });
             }
             ColumnEntry {
                 name: name.clone(),
@@ -149,6 +154,7 @@ pub(crate) fn handle_aggregate(
                 data_type: field.data_type().clone(),
                 source_alias: output_alias.clone().into(),
                 provenance,
+                qualified_provenance,
                 unique_id: generator.context.next_column_id(),
             }
         })
@@ -231,8 +237,13 @@ pub(crate) fn handle_window(
             let (qualifier, field) = window.schema.qualified_field(i);
             let name = output_names[i].clone();
             let mut provenance = vec![output_alias.clone()];
+            let mut qualified_provenance = vec![];
             if let Some(q) = qualifier {
                 provenance.push(q.to_string());
+                qualified_provenance.push(crate::sql_generator::context::ColumnProvenance {
+                    qualifier: Some(q.to_string()),
+                    column_name: name.to_string(),
+                });
             }
             ColumnEntry {
                 name: name.clone(),
@@ -240,6 +251,7 @@ pub(crate) fn handle_window(
                 data_type: field.data_type().clone(),
                 source_alias: Arc::from(output_alias.as_ref()),
                 provenance,
+                qualified_provenance,
                 unique_id: generator.context.next_column_id(),
             }
         })

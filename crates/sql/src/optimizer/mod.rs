@@ -15,5 +15,9 @@ pub mod defensive_trace;
 pub mod distinct_decorrelation;
 /// Rule for flattening join trees into N-way joins.
 pub mod flatten_federated;
+/// Rule for propagating transitive interval domain constraints across joins.
+pub mod interval_propagation;
 /// Custom logical node for representing N-way joins.
 pub mod join_flattener;
+
+pub use interval_propagation::IntervalDomainPropagationRule;

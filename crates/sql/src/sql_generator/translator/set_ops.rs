@@ -74,6 +74,7 @@ pub(crate) fn handle_union(
                 data_type: f.data_type().clone(),
                 source_alias: union_alias.clone().into(),
                 provenance: vec![union_alias.clone()],
+                qualified_provenance: vec![],
                 unique_id: generator.context.next_column_id(),
             })
             .collect::<Vec<_>>()
@@ -224,6 +225,7 @@ pub(crate) fn handle_empty_relation(
             data_type: f.data_type().clone(),
             source_alias: alias.clone().into(),
             provenance: vec![alias.clone()],
+            qualified_provenance: vec![],
             unique_id: generator.context.next_column_id(),
         })
         .collect::<Vec<_>>()
@@ -330,6 +332,7 @@ pub(crate) fn handle_values(
             data_type: f.data_type().clone(),
             source_alias: alias.clone().into(),
             provenance: vec![alias.clone()],
+            qualified_provenance: vec![],
             unique_id: generator.context.next_column_id(),
         })
         .collect::<Vec<_>>()
@@ -612,6 +615,7 @@ pub(crate) fn handle_recursive_query(
                 data_type: f.data_type().clone(),
                 source_alias: alias.clone().into(),
                 provenance: vec![alias.clone()],
+                qualified_provenance: vec![],
                 unique_id: generator.context.next_column_id(),
             },
         )

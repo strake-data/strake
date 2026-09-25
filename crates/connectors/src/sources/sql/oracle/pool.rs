@@ -18,6 +18,8 @@ use datafusion_table_providers::sql::db_connection_pool::DbConnectionPool;
 use datafusion_table_providers::sql::db_connection_pool::JoinPushDown;
 use datafusion_table_providers::sql::db_connection_pool::dbconnection::DbConnection;
 
+use super::conn::OracleSourceConfig;
+
 const DEFAULT_CONNECTION_TIMEOUT_SECS: u64 = 60;
 
 type ThickModeResult = std::result::Result<(), String>;
@@ -93,6 +95,10 @@ pub enum OraclePoolError {
     /// An error occurred while retrieving a connection from the pool.
     #[error("Unable to get Oracle connection from pool: {0}")]
     PoolRunError(String),
+
+    /// A source configuration value was invalid.
+    #[error("Oracle configuration error: {0}")]
+    Configuration(String),
 }
 
 /// A specialized `Result` type for Oracle pool operations.
@@ -102,6 +108,7 @@ pub type Result<T, E = OraclePoolError> = std::result::Result<T, E>;
 pub struct OracleConnectionPool {
     pool: Arc<bb8::Pool<OracleConnectionManager>>,
     connection_string: String,
+    config: OracleSourceConfig,
 }
 
 impl std::fmt::Debug for OracleConnectionPool {
@@ -167,7 +174,33 @@ fn parse_oracle_connect_string(
 
 impl OracleConnectionPool {
     /// Creates a new `OracleConnectionPool` with the given connection string and pool size.
+    ///
+    /// The fetch size is read from `ORACLE_FETCH_ARRAY_SIZE` via
+    /// [`OracleSourceConfig::from_env`]. Use
+    /// [`OracleConnectionPool::with_config`] to supply a config resolved from
+    /// `SessionConfig` instead, which is what the engine does.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a `Configuration` error if `ORACLE_FETCH_ARRAY_SIZE` is set to
+    /// a value outside `MIN_FETCH..=MAX_FETCH`, and connection/pool errors from
+    /// OCI.
     pub async fn new(connection_string: &str, pool_size: usize) -> Result<Self> {
+        let config = OracleSourceConfig::from_env()
+            .map_err(|e| OraclePoolError::Configuration(e.to_string()))?;
+        Self::with_config(connection_string, pool_size, config).await
+    }
+
+    /// Creates a new `OracleConnectionPool` with an explicit [`OracleSourceConfig`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates connection/pool errors from OCI.
+    pub async fn with_config(
+        connection_string: &str,
+        pool_size: usize,
+        config: OracleSourceConfig,
+    ) -> Result<Self> {
         tracing::info!("Oracle: creating connection pool");
 
         let _ = ensure_oracle_thick_mode();
@@ -205,11 +238,21 @@ impl OracleConnectionPool {
             .await
             .map_err(OraclePoolError::PoolCreationError)?;
 
-        tracing::info!("Oracle: pool ready");
+        tracing::info!(
+            "Oracle: pool ready (fetch_array_size={}, prefetch_rows={})",
+            config.fetch_array_size,
+            config.prefetch_rows
+        );
         Ok(Self {
             pool: Arc::new(pool),
             connection_string: connection_string.to_string(),
+            config,
         })
+    }
+
+    /// Returns the fetch/scan configuration applied to connections from this pool.
+    pub fn config(&self) -> &OracleSourceConfig {
+        &self.config
     }
 
     /// Returns the connection string for this pool.
@@ -241,7 +284,10 @@ impl
                 as Box<dyn std::error::Error + Send + Sync>
         })?;
 
-        Ok(Box::new(super::conn::OracleConnection::new(conn)))
+        Ok(Box::new(super::conn::OracleConnection::with_config(
+            conn,
+            self.config.clone(),
+        )))
     }
 
     fn join_push_down(&self) -> JoinPushDown {

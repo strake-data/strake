@@ -95,7 +95,7 @@ impl SourceProvider for SqlSourceProvider {
         struct SqlConfig {
             #[serde(default)]
             dialect: Option<SqlDialect>,
-            #[serde(default)]
+            #[serde(default, alias = "connection")]
             url: Option<String>,
             #[serde(default = "default_pool_size")]
             pool_size: usize,

@@ -13,6 +13,7 @@ ignore = [
     "RUSTSEC-2026-0194", # quick-xml quadratic duplicate attribute checks
     "RUSTSEC-2026-0195", # quick-xml unbounded namespace allocation in NsReader
     "RUSTSEC-2026-0258", # h2 unbounded empty DATA frames (fallback ignore)
+    "RUSTSEC-2026-0271", # suppaftp CRLF injection via opendal-service-ftp
 ]
 
 [licenses]
@@ -57,7 +58,11 @@ version = "0.51.0"
 
 [[bans.skip]]
 name = "zip"
-version = "0.6.6"
+version = "6.0.0"
+
+[[bans.skip]]
+name = "zip"
+version = "8.6.0"
 
 [[bans.skip]]
 name = "core-foundation"

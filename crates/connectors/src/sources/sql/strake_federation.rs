@@ -12,6 +12,13 @@
 //! - **Pushdown**: Uses `strake_sql` for high-fidelity SQL generation, enabling pushdown of joins, aggregations, and complex filters.
 //! - **Normalization**: Automatically strips table qualifiers and normalizes identifiers to match source-specific scoping rules.
 //!
+//! ## Pushdown Architecture
+//!
+//! All predicate pushdown and column projection remapping in Strake SQL federation are executed
+//! by translating the subplan directly into remote dialect-specific SQL text. Because the subplan
+//! is passed whole to the underlying remote engine ([`SQLExecutor`]), no local physical scan
+//! remapping or stale column index caching across `with_new_children` occurs.
+//!
 //! ## Safety
 //!
 //! - **Thread Safety**: `GenericFederatedExec` captures only the SQL string and executor, ensuring compatibility with DataFusion's multi-threaded execution.
@@ -441,15 +448,23 @@ impl ExecutionPlan for StrakeFederationExec {
             datafusion::physical_plan::metrics::BaselineMetrics::new(&self.metrics, partition);
         let output_bytes = datafusion::physical_plan::metrics::MetricBuilder::new(&self.metrics)
             .output_bytes(partition);
+        let batch_count = datafusion::physical_plan::metrics::MetricBuilder::new(&self.metrics)
+            .counter("batch_count", partition);
+        let fetch_wall_time = datafusion::physical_plan::metrics::MetricBuilder::new(&self.metrics)
+            .subset_time("fetch_wall_time", partition);
 
         let stream = self.executor.execute(&self.sql, self.schema.clone(), &[])?;
 
         let schema = self.schema.clone();
         let stream = stream.map(move |batch| {
+            let _timer = fetch_wall_time.timer();
+            let mut compute_timer = metrics.elapsed_compute().timer();
             if let Ok(ref b) = batch {
                 metrics.record_output(b.num_rows());
                 output_bytes.add(b.get_array_memory_size());
+                batch_count.add(1);
             }
+            compute_timer.stop();
             batch
         });
 

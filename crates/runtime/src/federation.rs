@@ -115,6 +115,7 @@ pub(crate) fn should_cache_plan(
 }
 use strake_sql::optimizer::defensive_trace::DefensiveLimitRule;
 use strake_sql::optimizer::distinct_decorrelation::CorrelatedDistinctPushdownRule;
+use strake_sql::optimizer::interval_propagation::IntervalDomainPropagationRule;
 
 use crate::query::orchestrator::{BudgetPolicy, CachePolicy, ExecutionPolicy};
 use tokio::sync::Semaphore;
@@ -354,6 +355,17 @@ impl FederationEngine {
             .with_default_catalog_and_schema(catalog_name, "public")
             .with_information_schema(true);
 
+        // Register the Oracle fetch-size tunables so `SET oracle.fetch_array_size
+        // = ...` is accepted and reaches OracleConnectionPool. Without this the
+        // extension is inert and the fetch size is hardcoded to 8192.
+        let oracle_config =
+            strake_connectors::sources::sql::oracle::conn::OracleSourceConfig::from_env()
+                .map_err(|e| anyhow::anyhow!("invalid Oracle source configuration: {e}"))?;
+        session_config
+            .options_mut()
+            .extensions
+            .insert(oracle_config);
+
         // Enable predicate pushdown and advanced Parquet features to match high-performance engines
         session_config
             .options_mut()
@@ -447,6 +459,9 @@ impl FederationEngine {
             rules.push(rule);
         }
 
+        // Register interval domain propagation before federation extraction so that
+        // implied range filters are pushed down into remote native SQL.
+        rules.push(Arc::new(IntervalDomainPropagationRule::new()));
         rules.push(Arc::new(FederationOptimizerRule::new()));
         // Ensure nested federated nodes are flattened to prevent unparser failures
         rules.push(Arc::new(

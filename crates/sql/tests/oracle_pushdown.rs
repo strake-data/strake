@@ -512,6 +512,11 @@ async fn test_oracle_empty_window_omits_rows_frame() -> Result<()> {
         "The OVER specification must NOT contain 'ROWS' frame for empty OVER. Got: {}",
         over_spec
     );
+    assert!(
+        !sql_upper.contains("ROWS BETWEEN"),
+        "Generated SQL must not leak a window frame into a column alias: {}",
+        sql
+    );
 
     Ok(())
 }

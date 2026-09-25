@@ -21,15 +21,33 @@ pub mod table;
 
 use super::base_connector::GenericSqlConnector;
 use super::common::{GenericFederatedTableFactory, SchemaMappingRule, SqlSourceParams};
+use crate::sources::sql::oracle::conn::OracleSourceConfig;
 use crate::sources::sql::oracle::pool::OracleConnectionPool;
 use crate::sources::sql::oracle::table::OracleTableFactory;
 
 /// Registers the Oracle data source with the given parameters.
 pub async fn register_oracle(params: SqlSourceParams) -> anyhow::Result<()> {
     tracing::info!("Oracle: registering source {}", params.name);
+
+    // Prefer the config registered on the engine's SessionConfig; fall back to
+    // the environment-derived default so a directly-constructed pool still
+    // works. `SET oracle.fetch_array_size = ...` reaches us only via the former.
+    let source_config = params
+        .context
+        .copied_config()
+        .options()
+        .extensions
+        .get::<OracleSourceConfig>()
+        .cloned()
+        .unwrap_or(OracleSourceConfig::from_env()?);
+
     let pool = Arc::new(
-        OracleConnectionPool::new(params.connection_string.expose_secret(), params.pool_size)
-            .await?,
+        OracleConnectionPool::with_config(
+            params.connection_string.expose_secret(),
+            params.pool_size,
+            source_config,
+        )
+        .await?,
     );
     let inner_factory = OracleTableFactory::new(pool.clone());
 
